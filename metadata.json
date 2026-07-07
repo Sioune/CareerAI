@@ -1,0 +1,6 @@
+{
+  "name": "AI CareerFit",
+  "description": "AI高阶岗位调研与简历优化智能体 - 真实的中文高阶招聘市场职位精准研判、差距分析与简历靶向改写。支持 WeChat/Alipay 模拟解锁完整优化版简历及 Word / PDF 导出。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

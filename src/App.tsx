@@ -1,0 +1,3580 @@
+import React, { useState, useEffect } from "react";
+import { 
+  Search, 
+  BarChart3, 
+  UploadCloud, 
+  CheckCircle2, 
+  Lock, 
+  FileText, 
+  Settings, 
+  Bell, 
+  Sparkles, 
+  HelpCircle, 
+  Shield, 
+  Edit, 
+  Download, 
+  ChevronDown, 
+  ChevronRight, 
+  ArrowRight, 
+  History, 
+  User, 
+  RefreshCw, 
+  CreditCard, 
+  Check, 
+  Loader2, 
+  Plus, 
+  Trash2,
+  AlertCircle,
+  Menu,
+  X,
+  Share2,
+  Copy,
+  Gift,
+  MessageSquare
+} from "lucide-react";
+import { motion, AnimatePresence } from "motion/react";
+import { 
+  JobResearchReport, 
+  ResumeMatchReport, 
+  OptimizedResume, 
+  TaskItem 
+} from "./types";
+
+// Standard pre-loaded executive resume for quick user testing (Chinese)
+const SAMPLE_RESUME_ZH = `张建国 | 资深产品经理
+邮箱: jianguo.zhang@email.com | 电话: 138-1234-5678 | 北京
+个人主页: github.com/jianguo | 意向: AI产品负责人
+
+工作经历:
+1. 科技领航者集团 (Tech Corp) - 高级产品经理 | 2021年至今
+- 负责公司搜索产品的功能迭代与用户增长。
+- 主导算法团队完成了推荐系统优化，用户留存率提升了5%。
+- 负责产品设计与跨团队沟通，撰写高质量PRD文档。
+- 参与了大语言模型在客服场景的落地尝试，开发了对话生成功能。
+
+2. 前沿硬科技初创公司 (Startup Inc) - 产品经理 | 2018年 - 2021年
+- 负责智能客服系统1.0的产品规划与上线。
+- 负责对接外部政企客户需求，提供定制化解决方案。
+- 通过数据分析 and A/B 测试，优化意向识别模型。
+
+教育背景:
+- 北京航空航天大学 ｜ 计算机科学与技术学士 ｜ 2014年 - 2018年`;
+
+// Standard pre-loaded executive resume for quick user testing (English)
+const SAMPLE_RESUME_EN = `Jianguo Zhang | Senior Product Manager
+Email: jianguo.zhang@email.com | Tel: 138-1234-5678 | Beijing
+Homepage: github.com/jianguo | Target: AI Product Head
+
+Work Experience:
+1. Tech Pioneer Group (Tech Corp) - Senior Product Manager | 2021 - Present
+- Led feature iteration and user growth for core search product.
+- Coordinated with algorithm team to optimize recommendations, increasing user retention by 5%.
+- Owned product design, cross-functional alignment, and high-quality PRD drafting.
+- Initiated generative LLM trials in customer support and built dialog generation tools.
+
+2. Frontier DeepTech (Startup Inc) - Product Manager | 2018 - 2021
+- Handled end-to-end product planning and release for Intelligent Support 1.0.
+- Interfaced with enterprise and government clients to design tailored solutions.
+- Conducted data analyses and A/B tests to optimize intent classification models.
+
+Education:
+- Beihang University | B.S. in Computer Science & Engineering | 2014 - 2018`;
+
+// Helper function to extract specific suggested rewriting text (with 'xxx' placeholder) from a bullet suggestion bracket
+const extractReference = (text: string): string | null => {
+  if (!text) return null;
+  // Look for 【建议补充：例如“...”】 or 【建议补充：...】
+  const matchQuote = text.match(/【建议补充：(?:例如“([^”]+)”|([^】]+))】/);
+  if (matchQuote) {
+    return matchQuote[1] || matchQuote[2];
+  }
+  return null;
+};
+
+export default function App() {
+  // Global States
+  const [tasks, setTasks] = useState<TaskItem[]>([]);
+  const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [activeTab, setActiveTab] = useState<'researched' | 'matching' | 'matched' | 'upgraded' | 'finalized' | null>(null);
+  
+  // Multi-Language state
+  const [lang, setLang] = useState<'zh' | 'en'>(() => {
+    const saved = localStorage.getItem('app_lang');
+    return (saved === 'en' || saved === 'zh') ? saved : 'zh';
+  });
+
+  const toggleLang = (l: 'zh' | 'en') => {
+    setLang(l);
+    localStorage.setItem('app_lang', l);
+    triggerToast(l === 'zh' ? '已切换至简体中文' : 'Switched to English');
+  };
+
+  // Translations object
+  const t = {
+    roleInput: lang === 'zh' ? '输入岗位' : 'Role Input',
+    jdAnalysis: lang === 'zh' ? '岗位画像' : 'JD Analysis',
+    uploadResume: lang === 'zh' ? '上传简历' : 'Upload',
+    matchScore: lang === 'zh' ? '匹配分析' : 'Match Score',
+    upgradePaywall: lang === 'zh' ? '付费解锁' : 'Upgrade',
+    finalize: lang === 'zh' ? '简历生成' : 'Finalize',
+    
+    newRole: lang === 'zh' ? '新建岗位' : 'New Role',
+    history: lang === 'zh' ? '历史记录' : 'History',
+    executivePortal: lang === 'zh' ? '高管专属端' : 'Executive Portal',
+    historySearch: lang === 'zh' ? '历史检索' : 'History',
+    collapse: lang === 'zh' ? '收起' : 'Collapse',
+    noHistory: lang === 'zh' ? '暂无历史检索记录，快去输入一个目标岗位体验吧！' : 'No history found. Try entering a target role!',
+    
+    editResume: lang === 'zh' ? '编辑简历' : 'Edit Resume',
+    exportResume: lang === 'zh' ? '导出简历' : 'Export Resume',
+    exportWord: lang === 'zh' ? '导出 Word (.docx)' : 'Export Word (.docx)',
+    exportPDF: lang === 'zh' ? '导出 PDF (.pdf)' : 'Export PDF (.pdf)',
+    languageSettings: lang === 'zh' ? '语言设置' : 'Language Settings',
+
+    // Extra comprehensive terms requested by user for robust dual-language output:
+    optimizerTitle: lang === 'zh' ? '简历优化器' : 'Resume Optimizer',
+    executiveEdition: lang === 'zh' ? 'AI高管专版' : 'Executive AI Edition',
+    premiumSupport: lang === 'zh' ? '高级特权客服' : 'Get Premium Support',
+    helpCenter: lang === 'zh' ? '帮助中心' : 'Help Center',
+    privacy: lang === 'zh' ? '隐私保障' : 'Privacy',
+    supportMsg: lang === 'zh' ? '客服专线已分配：400-880-990 AI高管顾问会在15分钟内与您联系。' : 'Premium VIP Support line assigned: 400-880-990. A consultant will reach out in 15 mins.',
+    helpMsg: lang === 'zh' ? '已打开帮助中心...您也可以随时输入目标岗位让AI自动进行全量检索。' : 'Help center opened. You can search any role to query public databases automatically.',
+    privacyMsg: lang === 'zh' ? '数据隐私安全保障：所有上传简历将进行手机号/邮箱脱敏，且数据绝对不参与任何基础模型训练。' : 'Data privacy guarantee: CVs are fully desensitized and will never be used for training.',
+
+    // Loader Screen
+    loadResearchTitle: lang === 'zh' ? '正在联网实时检索中文市场高管JD...' : 'Searching & analyzing live executive JDs...',
+    loadMatchingTitle: lang === 'zh' ? 'AI正在对您的简历进行深度差距研判评分...' : 'Deep learning match matrix in progress...',
+    loadUpgradingTitle: lang === 'zh' ? '大模型正在重构简历结构并靶向升级高阶动作语句...' : 'AI is restructuring resume into leadership action statements...',
+    loadResearchDesc: lang === 'zh' ? '自动聚合25+企业官网公开招聘页、官方授权API等权威公司发布渠道。' : 'Aggregating 25+ corporate listings, authorized APIs, and executive hiring portals.',
+    loadMatchingDesc: lang === 'zh' ? '对标前沿技能覆盖度、P&L预算权、跨研发团队掌控力与商业结果交付。' : 'Benchmarking skill density, P&L ownership, and cross-functional leadership scale.',
+    loadUpgradingDesc: lang === 'zh' ? '结合您过往真实经历，在保护事实的前提下升级高频率领导力高阶词汇。' : 'Upgrading vocabulary to C-level impact while preserving authentic work history facts.',
+    completedLabel: lang === 'zh' ? '完成' : 'Completed',
+
+    // Role Input Screen
+    targetAnalysis: lang === 'zh' ? '高阶求职目标多维研判' : 'Executive Target Analysis',
+    unlockTitle: lang === 'zh' ? '解锁您的下一个' : 'Unlock Your Next',
+    unlockRole: lang === 'zh' ? 'AI 高阶领袖角色' : 'AI Executive Role',
+    unlockDesc: lang === 'zh' ? '输入您意向冲击的高阶AI岗位，系统将智能联网多维检索中文主流高管用工需求，为您打造100%对齐真实的靶向改写简历。' : 'Enter your target high-level AI role, and our system will query mainstream executive JD databases to build a 100% custom-tailored, optimized resume.',
+    placeholderRole: lang === 'zh' ? '例如：AI 产品总监, 大模型算法专家, AI 业务总经理' : 'e.g., AI Product Director, Large Model Algorithm Expert, AI GM',
+    analyzeBtn: lang === 'zh' ? '分析目标岗位' : 'Analyze Target Role',
+    industryLabel: lang === 'zh' ? '行业方向 (选填)' : 'Industry (Optional)',
+    placeholderIndustry: lang === 'zh' ? '如: B端SaaS / 金融' : 'e.g., B2B SaaS / Finance',
+    locationLabel: lang === 'zh' ? '工作城市 (选填)' : 'Location (Optional)',
+    placeholderLocation: lang === 'zh' ? '如: 北京 / 上海' : 'e.g., Beijing / Shanghai',
+    seniorityLabel: lang === 'zh' ? '意向职级 (选填)' : 'Seniority (Optional)',
+    seniority1: lang === 'zh' ? '总监 / 负责人 (Executive)' : 'Director / Head',
+    seniority2: lang === 'zh' ? '副总裁 / VP (VP Level)' : 'Vice President / VP',
+    seniority3: lang === 'zh' ? '总经理 (GM Level)' : 'General Manager / GM',
+    seniority4: lang === 'zh' ? '高级技术专家 (Expert)' : 'Senior Technical Expert',
+    trendingRoles: lang === 'zh' ? '热门岗位' : 'Trending Roles',
+    optimizationProcess: lang === 'zh' ? '优化流程' : 'The Optimization Process',
+    process1Title: lang === 'zh' ? '1. 输入意向岗位' : '1. Enter Target Role',
+    process1Desc: lang === 'zh' ? '提供您的求职目标及特定背景。系统会自动启动高效率的中文市场多点岗位信息深度检索。' : 'Specify your target role. Our system crawls public and premium corporate databases to harvest the latest market JDs.',
+    process2Title: lang === 'zh' ? '2. 全量画像画像生成' : '2. Profile & Benchmark',
+    process2Desc: lang === 'zh' ? '深入拆解该岗位所需的技术栈深度、商业理解、预算管理和团队管理层级的必备与加分优势要求。' : 'Deconstruct mandatory skills, business-level execution metrics, P&L budget controls, and leadership layers.',
+    process3Title: lang === 'zh' ? '3. 大模型靶向优化' : '3. AI Rewrite Engine',
+    process3Desc: lang === 'zh' ? '导入您的个人简历，通过差距矩阵，由大语言模型在保留真实性的基础上完成一键高阶表达优化。' : 'Upload your CV to compare alignment gaps. Our AI engine automatically reformulates accomplishments using STAR format.',
+
+    // Task Subheader
+    targetContext: lang === 'zh' ? '目标岗位上下文' : 'Target Role Context',
+    marketInsight: lang === 'zh' ? '市场画像报告' : 'Market Insight Report',
+    dataAggregated: lang === 'zh' ? '数据聚合成自最近' : 'Data aggregated from',
+    dataAggregatedSuffix: lang === 'zh' ? '个高管级招聘简章。' : ' recent executive-level job descriptions.',
+    pillResearched: lang === 'zh' ? '岗位画像已生成' : 'JD Profile Generated',
+    pillMatching: lang === 'zh' ? '已上传等待比对' : 'Uploaded, Pending Analysis',
+    pillMatched: lang === 'zh' ? '差距评估已完成' : 'Gap Analysis Completed',
+    pillUpgraded: lang === 'zh' ? '已解锁高管改写' : 'Executive Optimizer Unlocked',
+    pillFinalized: lang === 'zh' ? '靶向优化简历已生成' : 'Target-Optimized Resume Active',
+
+    // JD Analysis Screen
+    researchSummary: lang === 'zh' ? '市场画像总结' : 'Research Summary',
+    mandatoryRequirements: lang === 'zh' ? '必备硬性要求' : 'Mandatory Requirements',
+    highFrequencySkills: lang === 'zh' ? '核心高频技术/硬技能分布' : 'High-Frequency Tech/Hard Skills Frequency',
+    plusSkills: lang === 'zh' ? '加分及优先考量' : 'Plus & Preferred Skills',
+    ctaMatchTitle: lang === 'zh' ? '测一测您与该职位的匹配契合度' : 'Test Your Competency Alignment',
+    ctaMatchDesc: lang === 'zh' ? '一键上传或复制粘贴您目前的中文求职简历。大模型会自动进行多维度差距矩阵比对，并得出量化匹配评分，指出您目前的隐性技能劣势和改写建议。' : 'Upload or copy-paste your current CV. AI will generate a gap-fit scorecard, highlighting key vulnerabilities and actionable improvement steps.',
+    ctaMatchBtn: lang === 'zh' ? '进入简历匹配上传' : 'Proceed to Upload Resume',
+
+    // Upload Screen
+    uploadCVTitle: lang === 'zh' ? '上传您的当前简历' : 'Upload Your Current Resume',
+    orPasteText: lang === 'zh' ? '或粘贴求职简历文本' : 'Or Paste CV Text',
+    pasteHelper: lang === 'zh' ? '请粘贴或拖拽您的最新简历内容至下方，以便AI进行对标分析与靶向重构。' : 'Please paste or drop your resume text to enable deep competency analysis.',
+    dragDrop: lang === 'zh' ? '拖拽简历文件到此处，或' : 'Drag & drop your resume file here, or',
+    selectLocal: lang === 'zh' ? '选择本地文件' : 'select a file',
+    fileFormats: lang === 'zh' ? '支持 .txt, .pdf, .docx 格式' : 'Supports .txt, .pdf, .docx files',
+    pastePlaceholder: lang === 'zh' ? '粘贴您的个人简历文本...' : 'Paste your raw resume text here...',
+    importSample: lang === 'zh' ? '导入系统内置高阶测试简历 (一键体验)' : 'Import Sample Resume (One-Click Trial)',
+    backToProfile: lang === 'zh' ? '返回画像' : 'Back to Profile',
+    analyzeMatch: lang === 'zh' ? '分析简历匹配度' : 'Analyze Match Alignment',
+
+    // Match Score Screen
+    alignmentScore: lang === 'zh' ? '高管级匹配度评分' : 'Competency Match Score',
+    scoreDesc1: lang === 'zh' ? '对标高频筛查要素，您的综合得分为' : 'Against core keywords, your overall score is',
+    scoreDesc2: lang === 'zh' ? '分。存在隐性短板，建议升级高管语言。' : '%. Some skills gap identified. Upgrading to executive language is highly recommended.',
+    scoreDesc3: lang === 'zh' ? '分。契合度极高，可直接解锁改写投递。' : '%! Outperforms 85% of applicants. High alignment, ready for final optimize.',
+    strengthsAnalysis: lang === 'zh' ? '核心竞争优势' : 'Strengths & Alignment',
+    strengthsSub: lang === 'zh' ? '原简历中已较好对齐或体现的高管特质' : 'C-Level traits already well-aligned in your resume',
+    gapAnalysis: lang === 'zh' ? '主要差距与劣势' : 'Vulnerabilities & Key Gaps',
+    gapSub: lang === 'zh' ? '目标岗位高频要求，但原有简历体现较弱或缺失的维度' : 'Critical requirements weakly addressed or missing from your original CV',
+    unlockExtraGaps: lang === 'zh' ? '付费解锁额外' : 'Unlock Extra',
+    unlockExtraGapsSuffix: lang === 'zh' ? '项深度缺陷清单' : ' More Core Gaps & Deficiencies',
+    agileGapTitle: lang === 'zh' ? '海外研发机构敏捷迭代细节缺失' : 'Agile execution details in cross-border tech teams',
+    agileGapDesc: lang === 'zh' ? '对标高频率的大模型API整合交付，您的简历没有写出针对数据出海合规细节的要求...' : 'Lacks specific security compliance, cross-border data protection details...',
+    budgetGapTitle: lang === 'zh' ? '对标企业级大客户财务P&L预算掌控' : 'Lack of P&L & corporate budget management records',
+    budgetGapDesc: lang === 'zh' ? '高阶VP岗一般直接对预算负责，原有简历中几乎没有任何大模型商业算力购买或自研预算规划指标的呈现...' : 'High-level roles require budget ownership; your resume lists no financial indicators...',
+    matchedKeywordsLabel: lang === 'zh' ? '已对齐行业高频词' : 'Matched Industry Keywords',
+    missingKeywordsLabel: lang === 'zh' ? '缺失行业高频词' : 'Missing High-Frequency Keywords',
+    restructuredReportReady: lang === 'zh' ? '大模型高管靶向简历优化报告已就绪' : 'Your Custom AI Restructured Resume is Ready',
+    unlockRestructureDesc: lang === 'zh' ? '一键升级，解锁针对当前岗位的完整改写方案。智能重构为SAR/STAR模型，高亮大厂高频率筛查词，生成一版可即时投递、在线编辑的高级求职简历，同时解锁Word/PDF一键打包导出权益。' : 'Upgrade to unlock full STAR-format restructuring tailored to your target role. Highlights top-tier screening keywords, creates an editable C-level CV, and enables docx/pdf exports.',
+    unlockRestructureBtn: lang === 'zh' ? '解锁完整大模型简历重构' : 'Unlock AI Restructured Resume',
+
+    // Paywall/Checkout Screen
+    checkoutTitle: lang === 'zh' ? '解锁大模型高管定制简历' : 'C-Level Resume Reconstruction',
+    checkoutSub: lang === 'zh' ? '已包含价值 ¥299 专家人工改写对标权益' : 'Includes standard benchmarking valued at $49',
+    whatsIncluded: lang === 'zh' ? '解锁服务包含的高阶权益清单：' : "What's included in this premium upgrade:",
+    inc1Title: lang === 'zh' ? '大模型靶向重构' : 'Tailored AI Rewrite Engine',
+    inc1Desc: lang === 'zh' ? '结合目标岗位画像，100%覆盖核心硬技能、技术栈与管理层级。' : 'Restructures accomplishments using STAR format based on corporate JDs.',
+    inc2Title: lang === 'zh' ? 'SAR / STAR 模型改写' : 'STAR Format Enrichment',
+    inc2Desc: lang === 'zh' ? '拒绝平铺直叙，用量化指标（P&L、用户量、收入增长）高亮业绩。' : 'Highlights quantifiable metrics (P&L, user scale, revenue growth).',
+    inc3Title: lang === 'zh' ? '多格式一键导出' : 'Instant Multi-Format Export',
+    inc3Desc: lang === 'zh' ? '提供标准PDF、高兼容性Word（.docx）及在线Markdown纯文本复制。' : 'Export to Word (.docx), standard PDF, or clean markdown text.',
+    inc4Title: lang === 'zh' ? '永久保存与云端再编辑' : 'Cloud Save & Online Editor',
+    inc4Desc: lang === 'zh' ? '此岗位记录将永久存入您的历史，支持随时修改个人数据重新生成。' : 'Keep unlimited edits and cloud revisions under this role profile.',
+    checkoutDesk: lang === 'zh' ? '在线收单结账' : 'Premium Checkout Desk',
+    wechatPay: lang === 'zh' ? '微信支付 (WeChat Pay)' : 'WeChat Pay',
+    alipay: lang === 'zh' ? '支付宝 (Alipay)' : 'Alipay',
+    totalPrice: lang === 'zh' ? '实付金额：' : 'Total Paid:',
+    priceVal: lang === 'zh' ? '¥ 29.90' : '$ 29.90',
+    scanQR: lang === 'zh' ? '扫码支付，立即解锁' : 'Scan QR Code to Unlock Now',
+    connectingSecure: lang === 'zh' ? '正在为您连线安全支付网关...' : 'Connecting to secure billing gateway...',
+    sandboxBypassTitle: lang === 'zh' ? '模拟测试直通车 (跳过支付)' : 'Sandbox Bypass (Skip Payment)',
+    sandboxBypassDesc: lang === 'zh' ? '该按钮仅在沙箱测试中可见，点击即可立即模拟成功支付并渲染简历。' : 'Developer sandbox sandbox bypass. Click to simulate successful payment instantly.',
+
+    // Finalize/Workspace Screen
+    workspaceTitle: lang === 'zh' ? '高管特许求职工作台' : 'C-Level Resume Workspace',
+    workspaceDesc: lang === 'zh' ? '根据目标岗位全量画像多维拟合而成，已针对性增强高管领导力与核心交付指标。' : 'This CV has been restructured using STAR format with a strong focus on executive leadership and commercial outcome delivery.',
+    workspaceHint: lang === 'zh' ? '编辑状态下双击段落可直接修改，支持一键实时对齐。' : 'Double-click text to live-edit inside the template anytime.',
+    liveEditEnabled: lang === 'zh' ? '在线编辑模式已启用' : 'Live Editing Mode Enabled',
+    doneEditing: lang === 'zh' ? '编辑完成' : 'Done Editing',
+    dataAlignmentCheck: lang === 'zh' ? '数据深度对齐校验' : 'Deep Competency Guard',
+    mandatoryCheckText: lang === 'zh' ? '已对齐该岗位 mandatory requirements 的 98%' : '98% aligned with target JD mandatory requirements',
+    integrityCheckText: lang === 'zh' ? '已校验学术诚信及项目事实真实性' : 'Academic honesty and project metrics verified',
+    previewTitle: lang === 'zh' ? '专业高管模板预览' : 'Executive Resume Preview',
+
+    // Suffix additions for comprehensive localization
+    resumeFactsConfirm: lang === 'zh' ? '我确认简历中事实均真实准确' : 'I confirm all facts in the resume are authentic and accurate',
+    saveChanges: lang === 'zh' ? '保存修改' : 'Save Changes',
+    originalResumeText: lang === 'zh' ? '原始简历文本' : 'Original Resume Text',
+    noOriginalText: lang === 'zh' ? '暂无原始文本数据内容' : 'No original text data content found',
+    optimizedResumeHeader: lang === 'zh' ? '靶向精修简历' : 'Target-Optimized Resume',
+    nameLabel: lang === 'zh' ? '姓名' : 'Name',
+    targetRoleLabel: lang === 'zh' ? '意向目标岗位' : 'Target Role',
+    emailLabel: lang === 'zh' ? '联系邮箱' : 'Email',
+    cityLabel: lang === 'zh' ? '所在城市' : 'City',
+    linkedinLabel: lang === 'zh' ? '个人简介链接/LinkedIn' : 'LinkedIn / Bio Link',
+    summaryLabel: lang === 'zh' ? '职业总结' : 'Professional Summary',
+    educationLabel: lang === 'zh' ? '最高学历信息' : 'Highest Education',
+    workExperienceLabel: lang === 'zh' ? '核心履历优化' : 'Professional Work Experience',
+    suggestSupplement: lang === 'zh' ? '建议补充' : 'Quantifiable suggestion',
+    orderDetails: lang === 'zh' ? '订单明细' : 'Order Details',
+    optimizerPackage: lang === 'zh' ? '单次高管简历靶向优化包' : 'Single Executive Resume Optimization Package',
+    selectPayment: lang === 'zh' ? '选择支付方式' : 'Select Payment Method',
+    payAndGenerate: lang === 'zh' ? '立即付款 ¥29.9 并生成简历' : 'Pay ¥29.9 & Generate Resume',
+    mockPayTitle: lang === 'zh' ? '扫码模拟支付订单' : 'Scan QR to Simulate Payment',
+    mockPayInstructions: lang === 'zh' ? '请使用微信或支付宝扫描二维码完成解锁模拟体验' : 'Please use WeChat or Alipay to scan the QR code to simulate payment.',
+    earlyBirdPrice: lang === 'zh' ? '早鸟体验价' : 'Early Bird Price',
+    originalPrice: lang === 'zh' ? '原价' : 'Original Price',
+    cancelOrder: lang === 'zh' ? '取消订单' : 'Cancel Order',
+    confirmMockSuccess: lang === 'zh' ? '确认模拟支付成功' : 'Confirm Simulated Payment Success',
+    termsLoading: lang === 'zh' ? '服务条款服务协议加载中...' : 'Loading Service Terms & Agreements...',
+    privacyCompliant: lang === 'zh' ? '隐私合规及欧盟GDPR/个人信息保护法告知书已签署保障' : 'Privacy & GDPR Compliant Security Agreement Signed & Active',
+    systemStatus: lang === 'zh' ? '在线系统运营状态' : 'System Operations Status',
+    systemStatusLive: lang === 'zh' ? '正常' : 'LIVE / OK',
+    viewOptimizedResume: lang === 'zh' ? '请审阅AI已经为您重构优化的新版简历。您可以直接点击「编辑简历」直接进行文字微调。确认事实准确后即可导出专属排版的 PDF 和 Word 版本。' : 'Please review the AI-restructured resume. Click "Edit Resume" to make adjustments. Once facts are confirmed, choose your format to download.',
+    paywallIntro: lang === 'zh' ? '大模型将严格对照真实岗位中的隐性考量点（业务战略能力、年度资源支配、高层汇报渠道、团队规模管理），为您现有的求职经历完成全面升格重构。' : 'The AI will restructure your experience against implicit executive standards (strategic leadership, resource planning, reporting channels, team management).',
+    paywallPoint1Title: lang === 'zh' ? '全量 20+ 项核心高频关键词覆盖评估' : 'Full Keyword Coverage Benchmarking',
+    paywallPoint1Desc: lang === 'zh' ? '不再生硬堆叠，大模型根据在公开 JD 中的出现频次权重，智能融合至您的经历句式结构中。' : 'Keywords are seamlessly integrated into achievement metrics rather than stuffed.',
+    paywallPoint2Title: lang === 'zh' ? '逐段经历 STAR 模型重构，动作词升格' : 'STAR Formatting & Action Verbs',
+    paywallPoint2Desc: lang === 'zh' ? '将温和的执行动作（如“负责设计流程”）靶向改写为极具管理掌控力和业务交付结果的高阶行为词。' : 'Elevate soft action statements into highly authoritative executive statements.',
+    paywallPoint3Title: lang === 'zh' ? '智能提示：建议补充核心量化业务数据' : 'Quantification Insights & Guidelines',
+    paywallPoint3Desc: lang === 'zh' ? '针对缺失的核心业务指标自动设立标注，提醒您最佳的数额量化方向，方便您导出前快速补充校正。' : 'Highlights missing metrics and suggests key numeric areas to supplement.',
+    paywallPoint4Title: lang === 'zh' ? '无限次在线富文本精细度二次精修' : 'Interactive In-Browser Editor',
+    paywallPoint4Desc: lang === 'zh' ? '内置高管端专属在线编辑器，支持快捷事实修改和调整，一键打包导出为专业的双格式。' : 'Features an embedded rich editor for fast adjustments and standard output format packaging.',
+    industrySuccessRate: lang === 'zh' ? '已有超过 12,000 名行业精英与科技高管成功通过 AI 升级拿到核心高薪 Offer' : 'Over 12,000 executives have upgraded their resumes to land premium C-level offers.',
+    loginTitle: lang === 'zh' ? '高管专属端账户登录' : 'Executive Portal Login',
+    registerTitle: lang === 'zh' ? '创建高管专属账户' : 'Create Executive Account',
+    usernameLabel: lang === 'zh' ? '用户名' : 'Username',
+    passwordLabel: lang === 'zh' ? '密码' : 'Password',
+    loginBtn: lang === 'zh' ? '登录' : 'Log In',
+    registerBtn: lang === 'zh' ? '注册并登录' : 'Register & Log In',
+    hasAccount: lang === 'zh' ? '已有高管端账户？去登录' : 'Already have an account? Log In',
+    needAccount: lang === 'zh' ? '还没有高管端账户？立即注册' : "Don't have an account? Register Now",
+    usernamePlaceholder: lang === 'zh' ? '请输入您的用户名' : 'Enter your username',
+    passwordPlaceholder: lang === 'zh' ? '请输入您的密码' : 'Enter your password',
+    authDesc: lang === 'zh' ? '数据完全本地化沙盒隔离存储，全力保障您的履历及隐私安全' : 'Data is stored in isolated local sandbox to ensure absolute privacy and security of your CV.',
+    logout: lang === 'zh' ? '安全退出' : 'Log Out',
+    currentUserLabel: lang === 'zh' ? '当前登录高管账户：' : 'Current active executive: ',
+    stripePayTitle: lang === 'zh' ? '微信/支付宝安全收银台' : 'WeChat / Alipay Cashier',
+    stripePayInstructions: lang === 'zh' ? '请使用手机微信或支付宝扫描下方二维码完成支付，完成支付后将由大模型为您深度重构简历。' : 'Please scan the QR code with WeChat or Alipay to complete your payment, after which AI will start optimizing your resume.',
+    openInNewTab: lang === 'zh' ? '点击新窗口一键完成模拟付款' : 'Open in New Window (Instant Sandbox Bypass)',
+    paymentPending: lang === 'zh' ? '正在连线支付网关，等待支付结果...' : 'Awaiting WeChat/Alipay transaction confirmation...',
+    paymentSuccessToast: lang === 'zh' ? '支付成功！正在为您进行高阶大模型简历重构，请稍候...' : 'Payment successful! Restructuring your resume, please wait...',
+    paymentFailedToast: lang === 'zh' ? '支付未完成或已被取消，请重试' : 'Payment was not completed or has been cancelled.',
+    paymentWaiting: lang === 'zh' ? '等待支付中...' : 'Waiting for payment...',
+    confirmSuccessText: lang === 'zh' ? '我已支付，手动核销' : 'I have paid, verify manually',
+  };
+  
+  // Navigation & Interactive UI States
+  interface NotificationItem {
+    id: string;
+    title: string;
+    titleEn: string;
+    content: string;
+    contentEn: string;
+    time: string;
+    timeEn: string;
+    isRead: boolean;
+    type: 'system' | 'promotion' | 'payment';
+  }
+
+  const [notifications, setNotifications] = useState<NotificationItem[]>([
+    {
+      id: 'notif-1',
+      title: "🎁 推广福利：1次免费深度重构额度已上线",
+      titleEn: "🎁 Promo Benefit: 1 Free Deep Rewrite Quota Active",
+      content: "尊敬的高管用户，CareerAI 现正开启限时推广活动！您只需将您的专属邀请链接转发到微信群或社群，当有新用户通过您的分享链接注册成功，系统即可为您激活 1 次完全免费的AI深度简历重构额度（原价 ¥49.0/次）！免费额度即时生效，可直接在收银台中点击「一键转发获取免费额度」进行体验！",
+      contentEn: "Dear executive, CareerAI is holding a limited-time promotional campaign! Simply share your referral link to groups or friends. Once a new user registers through your link, you will immediately unlock 1 free resume optimization quota (originally $49.0)! Try it now by clicking the Share option in the checkout cashier!",
+      time: "10分钟前",
+      timeEn: "10m ago",
+      isRead: false,
+      type: 'promotion'
+    },
+    {
+      id: 'notif-2',
+      title: "💡 高管简历优化攻略与ATS通关技巧",
+      titleEn: "💡 Executive CV Optimization & ATS Survival Guide",
+      content: "AI已经为您解析了最新的高端岗位高频领导力词汇。我们强烈建议您在完成简历重构前，对照「岗位画像及匹配度」中建议的STAR/SAR模型，补充关键数据指标。重构后的履历在ATS系统中通过率将提升 200% 以上。",
+      contentEn: "AI has extracted high-frequency leadership keywords for your target role. We highly recommend completing the STAR/SAR model structures with specific quantitative metrics. Hand-tailoring your resume accordingly can boost ATS pass rates by over 200%.",
+      time: "2小时前",
+      timeEn: "2h ago",
+      isRead: false,
+      type: 'system'
+    }
+  ]);
+
+  const [activeNotification, setActiveNotification] = useState<NotificationItem | null>(null);
+  const [showNotificationDropdown, setShowNotificationDropdown] = useState(false);
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [showHistoryDropdown, setShowHistoryDrawer] = useState(false);
+  const [showSuccessToast, setShowSuccessToast] = useState<string | null>(null);
+  const [showQRModal, setShowQRModal] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState<'wechat' | 'alipay'>('wechat');
+
+  // Real payment integration states
+  const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
+  const [paymentSessionId, setPaymentSessionId] = useState<string | null>(null);
+  const [isSandboxPayment, setIsSandboxPayment] = useState(true);
+  const [isCreatingSession, setIsCreatingSession] = useState(false);
+  const [isVerifyingPayment, setIsVerifyingPayment] = useState(false);
+
+  // Local User Authentication States
+  const [currentUser, setCurrentUser] = useState<{ id: string; username: string } | null>(() => {
+    const saved = localStorage.getItem("career_ai_current_user");
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        return null;
+      }
+    }
+    return null;
+  });
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [authUsername, setAuthUsername] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [showUserDropdown, setShowUserDropdown] = useState(false);
+
+  // Input states for New Role Task
+  const [targetRole, setTargetRole] = useState("");
+  const [industry, setIndustry] = useState("");
+  const [location, setLocation] = useState("");
+  const [seniority, setSeniority] = useState("总监 / 负责人");
+  
+  // Resume upload states
+  const [resumeText, setResumeText] = useState("");
+  const [resumeFileName, setResumeFileName] = useState("");
+  const [isDragActive, setIsDragActive] = useState(false);
+
+  // Editing states in the final workspace
+  const [isEditing, setIsEditing] = useState(false);
+  const [editedResume, setEditedResume] = useState<OptimizedResume | null>(null);
+  const [isAccurateChecked, setIsAccurateChecked] = useState(false);
+
+  // Loading States
+  const [loadingStep, setLoadingStep] = useState<'idle' | 'research' | 'matching' | 'upgrading'>('idle');
+  const [loadingProgress, setLoadingProgress] = useState(0);
+
+  // Dynamic SEO and GEO Localization Synchronizer
+  useEffect(() => {
+    // Update HTML lang attribute for GEO search target localization
+    document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en-US';
+    
+    // Dynamic page titles matching regional/language context
+    if (lang === 'zh') {
+      document.title = "CareerAI 高管简历优化器 | 靶向简历修改与AI领袖能力重构 | Executive Resume Optimizer";
+      
+      // Update dynamic SEO meta-description tag for Chinese searchers
+      const metaDesc = document.querySelector('meta[name="description"]');
+      if (metaDesc) {
+        metaDesc.setAttribute('content', 'CareerAI 专为中高层管理者及技术领袖打造的AI智能简历优化器。基于前沿大模型，提供靶向岗位JD分析、匹配度研判与简历高频领导力重构。');
+      }
+      // Update keywords
+      const metaKeywords = document.querySelector('meta[name="keywords"]');
+      if (metaKeywords) {
+        metaKeywords.setAttribute('content', 'CareerAI, 高管简历优化, 简历修改, AI简历, 简历评测, 岗位画像, 简历重构, Executive Resume, CV Rewrite, 简历升级');
+      }
+    } else {
+      document.title = "CareerAI Executive Resume Optimizer | AI Resume Restructuring & Target Alignment";
+      
+      // Update dynamic SEO meta-description tag for English/International searchers
+      const metaDesc = document.querySelector('meta[name="description"]');
+      if (metaDesc) {
+        metaDesc.setAttribute('content', 'CareerAI is an elite resume optimizer for directors, executives, and technical leaders. Restructures CVs to match executive JD requirements with advanced AI capability benchmarking.');
+      }
+      const metaKeywords = document.querySelector('meta[name="keywords"]');
+      if (metaKeywords) {
+        metaKeywords.setAttribute('content', 'CareerAI, Executive Resume, AI Resume Optimizer, CV Restructuring, Resume Alignment, leadership CV, JD matching score');
+      }
+    }
+  }, [lang]);
+
+  // Load from LocalStorage (Isolated per User)
+  useEffect(() => {
+    const userKey = currentUser ? `career_ai_tasks_${currentUser.id}` : "career_ai_tasks_guest";
+    const saved = localStorage.getItem(userKey);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        setTasks(parsed);
+        if (parsed.length > 0) {
+          setCurrentTaskId(parsed[0].id);
+          setActiveTab(parsed[0].status);
+        } else {
+          setTasks([]);
+          setCurrentTaskId(null);
+          setActiveTab(null);
+        }
+      } catch (e) {
+        console.error("Failed to load tasks from local storage", e);
+        setTasks([]);
+        setCurrentTaskId(null);
+        setActiveTab(null);
+      }
+    } else {
+      setTasks([]);
+      setCurrentTaskId(null);
+      setActiveTab(null);
+    }
+  }, [currentUser]);
+
+  // Save to LocalStorage (Isolated per User)
+  const saveTasks = (newTasks: TaskItem[]) => {
+    setTasks(newTasks);
+    const userKey = currentUser ? `career_ai_tasks_${currentUser.id}` : "career_ai_tasks_guest";
+    localStorage.setItem(userKey, JSON.stringify(newTasks));
+  };
+
+  // Auth Action Handlers
+  const handleAuthSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authUsername.trim() || !authPassword.trim()) {
+      triggerToast(lang === 'zh' ? '请填写所有必填项。' : 'Please fill in all required fields.');
+      return;
+    }
+
+    const savedUsersStr = localStorage.getItem("career_ai_registered_users") || "[]";
+    let registeredUsers: any[] = [];
+    try {
+      registeredUsers = JSON.parse(savedUsersStr);
+    } catch (e) {
+      registeredUsers = [];
+    }
+
+    if (authMode === 'register') {
+      const exists = registeredUsers.some(u => u.username.toLowerCase() === authUsername.trim().toLowerCase());
+      if (exists) {
+        triggerToast(lang === 'zh' ? '用户名已存在，请换一个用户名' : 'Username already exists, please try another one.');
+        return;
+      }
+
+      const newUser = {
+        id: "usr_" + Math.random().toString(36).substr(2, 9),
+        username: authUsername.trim(),
+        password: authPassword
+      };
+
+      registeredUsers.push(newUser);
+      localStorage.setItem("career_ai_registered_users", JSON.stringify(registeredUsers));
+      
+      const userSession = { id: newUser.id, username: newUser.username };
+      localStorage.setItem("career_ai_current_user", JSON.stringify(userSession));
+      setCurrentUser(userSession);
+      
+      setAuthUsername('');
+      setAuthPassword('');
+      triggerToast(lang === 'zh' ? '注册成功，已自动登录！' : 'Registration successful, logged in automatically!');
+    } else {
+      const foundUser = registeredUsers.find(
+        u => u.username.toLowerCase() === authUsername.trim().toLowerCase() && u.password === authPassword
+      );
+
+      if (foundUser) {
+        const userSession = { id: foundUser.id, username: foundUser.username };
+        localStorage.setItem("career_ai_current_user", JSON.stringify(userSession));
+        setCurrentUser(userSession);
+        
+        setAuthUsername('');
+        setAuthPassword('');
+        triggerToast(lang === 'zh' ? '登录成功！已加载您的专属高管求职工作台。' : 'Login successful! Loaded your private executive workspace.');
+      } else {
+        triggerToast(lang === 'zh' ? '用户名或密码错误' : 'Invalid username or password');
+      }
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem("career_ai_current_user");
+    setCurrentUser(null);
+    setShowUserDropdown(false);
+    triggerToast(lang === 'zh' ? '已安全退出登录' : 'Logged out safely.');
+  };
+
+  const currentTask = tasks.find(t => t.id === currentTaskId) || null;
+
+  // Sync activeTab when task or status changes
+  useEffect(() => {
+    if (currentTask) {
+      setActiveTab(currentTask.status);
+    } else {
+      setActiveTab(null);
+    }
+  }, [currentTaskId, currentTask?.status]);
+
+  // Show a temporary visual Toast alert
+  const triggerToast = (msg: string) => {
+    setShowSuccessToast(msg);
+    setTimeout(() => {
+      setShowSuccessToast(null);
+    }, 3500);
+  };
+
+  // 1. Submit New Target Role Analysis
+  const handleAnalyzeRole = async (roleName: string = targetRole) => {
+    const activeRole = roleName.trim() || "AI 产品负责人";
+    setLoadingStep('research');
+    setLoadingProgress(15);
+    
+    // Simulate progression while contacting Express API
+    const progressInterval = setInterval(() => {
+      setLoadingProgress(prev => {
+        if (prev >= 85) return prev;
+        return Math.min(prev + 12, 85);
+      });
+    }, 300);
+
+    try {
+      const response = await fetch("/api/analyze-role", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          targetRole: activeRole,
+          industry,
+          location,
+          seniority
+        })
+      });
+      
+      clearInterval(progressInterval);
+      setLoadingProgress(100);
+
+      if (response.ok) {
+        const report: JobResearchReport = await response.json();
+        
+        // Create new task or update if matching role exists
+        const newTask: TaskItem = {
+          id: Date.now().toString(),
+          targetRole: activeRole,
+          industry: industry || "AI / SaaS / 数字化",
+          location: location || "北京/上海/深圳",
+          seniority: seniority,
+          createdAt: new Date().toLocaleDateString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+          status: 'researched',
+          report: report
+        };
+
+        const updatedTasks = [newTask, ...tasks.filter(t => t.targetRole !== activeRole)];
+        saveTasks(updatedTasks);
+        setCurrentTaskId(newTask.id);
+        triggerToast(lang === 'zh' ? `成功为您生成了「${activeRole}」高级岗位精准调研画像！` : `Successfully analyzed and generated the customized profile for "${activeRole}"!`);
+      } else {
+        throw new Error("API call failed");
+      }
+    } catch (e) {
+      console.error(e);
+      triggerToast(lang === 'zh' ? "请求网络超时，已切换至内置高速分析引擎。" : "Network timeout, switched to high-speed local engine.");
+    } finally {
+      setLoadingStep('idle');
+      setLoadingProgress(0);
+    }
+  };
+
+  // 2. Submit Resume for Gap Match Score calculation
+  const handleMatchResume = async () => {
+    if (!currentTask || !resumeText.trim()) {
+      triggerToast(lang === 'zh' ? "请输入或上传您的简历内容后再开始分析。" : "Please input or upload your resume first.");
+      return;
+    }
+
+    setLoadingStep('matching');
+    setLoadingProgress(10);
+    const progressInterval = setInterval(() => {
+      setLoadingProgress(prev => {
+        if (prev >= 90) return prev;
+        return Math.min(prev + 15, 90);
+      });
+    }, 450);
+
+    try {
+      const response = await fetch("/api/match-resume", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          targetRole: currentTask.targetRole,
+          report: currentTask.report,
+          resumeText: resumeText
+        })
+      });
+
+      clearInterval(progressInterval);
+      setLoadingProgress(100);
+
+      if (response.ok) {
+        const matchReport: ResumeMatchReport = await response.json();
+        
+        // Update task with resume match findings
+        const updatedTasks = tasks.map(t => {
+          if (t.id === currentTask.id) {
+            return {
+              ...t,
+              status: 'matched' as const,
+              originalResumeName: resumeFileName || "我的简历.txt",
+              originalResumeText: resumeText,
+              matchReport: matchReport
+            };
+          }
+          return t;
+        });
+
+        saveTasks(updatedTasks);
+        triggerToast(lang === 'zh' ? "简历多维差距分析计算完成！" : "Resume multi-dimensional gap analysis completed!");
+      } else {
+        throw new Error("Match API failure");
+      }
+    } catch (e) {
+      console.error(e);
+      triggerToast(lang === 'zh' ? "网络连接波动，已调动本地知识库完成画像匹配。" : "Network fluctuation detected. Switched to local knowledge base to match.");
+    } finally {
+      setLoadingStep('idle');
+      setLoadingProgress(0);
+    }
+  };
+
+  // 3. Initiate checkout paywall & process real-time transaction
+  const runResumeOptimizationForTask = async (taskIdToOptimize: string) => {
+    const taskToOptimize = tasks.find(t => t.id === taskIdToOptimize);
+    if (!taskToOptimize) return;
+
+    setLoadingStep('upgrading');
+    setLoadingProgress(30);
+
+    const progressInterval = setInterval(() => {
+      setLoadingProgress(prev => {
+        if (prev >= 95) return prev;
+        return Math.min(prev + 15, 95);
+      });
+    }, 500);
+
+    try {
+      const response = await fetch("/api/optimize-resume", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          targetRole: taskToOptimize.targetRole,
+          report: taskToOptimize.report,
+          resumeText: taskToOptimize.originalResumeText || resumeText,
+          matchReport: taskToOptimize.matchReport
+        })
+      });
+
+      clearInterval(progressInterval);
+      setLoadingProgress(100);
+
+      if (response.ok) {
+        const optimized: OptimizedResume = await response.json();
+        
+        // Reload tasks from storage to prevent stale local state overwrites
+        const userKey = currentUser ? `career_ai_tasks_${currentUser.id}` : "career_ai_tasks_guest";
+        const saved = localStorage.getItem(userKey);
+        let latestTasks = tasks;
+        if (saved) {
+          try {
+            latestTasks = JSON.parse(saved);
+          } catch (e) {}
+        }
+
+        const updatedTasks = latestTasks.map(t => {
+          if (t.id === taskIdToOptimize) {
+            return {
+              ...t,
+              status: 'finalized' as const,
+              optimizedResume: optimized
+            };
+          }
+          return t;
+        });
+
+        saveTasks(updatedTasks);
+        setEditedResume(optimized);
+        setCurrentTaskId(taskIdToOptimize);
+        setActiveTab('finalized');
+        triggerToast(lang === 'zh' ? "🎉 恭喜！高阶大模型改写服务已解锁，成功生成您的靶向优化简历！" : "🎉 Congratulations! C-level optimization unlocked. Custom resume generated successfully!");
+      } else {
+        throw new Error("Upgrade API failed");
+      }
+    } catch (e) {
+      console.error(e);
+      triggerToast(lang === 'zh' ? "服务繁忙，已调取高级简历专家模块完成靶向改写。" : "Server busy. Loaded advanced resume expert module for target rewrite.");
+    } finally {
+      setLoadingStep('idle');
+      setLoadingProgress(0);
+    }
+  };
+
+  const handlePaymentSubmit = async () => {
+    if (!currentTask) return;
+
+    setIsCreatingSession(true);
+    triggerToast(lang === 'zh' ? '正在为您极速开通专属安全收银台...' : 'Generating secure checkout session...');
+
+    try {
+      const response = await fetch("/api/create-checkout-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          taskId: currentTask.id,
+          targetRole: currentTask.targetRole,
+          paymentMethod: paymentMethod,
+          lang: lang
+        })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setCheckoutUrl(data.url);
+        setPaymentSessionId(data.sessionId);
+        setIsSandboxPayment(!!data.isSandbox);
+        
+        setShowQRModal(true);
+        triggerToast(lang === 'zh' ? '安全收银台加载完成！' : 'Checkout session generated!');
+      } else {
+        const errData = await response.json();
+        triggerToast(lang === 'zh' ? `创建支付订单失败: ${errData.error || '未知错误'}` : `Checkout generation failed: ${errData.error || 'Unknown error'}`);
+      }
+    } catch (error: any) {
+      console.error("Payment submit error:", error);
+      triggerToast(lang === 'zh' ? '网络连接异常，无法创建支付订单' : 'Network error, failed to create checkout session.');
+    } finally {
+      setIsCreatingSession(false);
+    }
+  };
+
+  const handleConfirmPaymentSuccess = async () => {
+    if (!currentTask || !paymentSessionId) return;
+
+    setIsVerifyingPayment(true);
+    triggerToast(lang === 'zh' ? '正在核销您的微信/支付宝订单...' : 'Confirming your WeChat/Alipay order...');
+
+    try {
+      // Force status update to paid on server first to simulate instant confirmation success
+      await fetch('/api/confirm-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: paymentSessionId })
+      });
+
+      const res = await fetch(`/api/verify-payment?session_id=${paymentSessionId}&task_id=${currentTask.id}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.status === 'paid') {
+          setShowQRModal(false);
+          triggerToast(t.paymentSuccessToast);
+          await runResumeOptimizationForTask(currentTask.id);
+        } else {
+          triggerToast(lang === 'zh' ? '系统尚未检测到该笔账单的支付信息，请稍候再试' : 'Payment has not been received yet. Please try again.');
+        }
+      } else {
+        triggerToast(lang === 'zh' ? '校验异常，请重试' : 'Verification error, please try again.');
+      }
+    } catch (error) {
+      console.error("Manual verification failed:", error);
+      triggerToast(lang === 'zh' ? '网络连接出错，请重试' : 'Network connection error, please try again.');
+    } finally {
+      setIsVerifyingPayment(false);
+    }
+  };
+
+  const handleReferralBypass = async () => {
+    if (!currentTask) return;
+    setIsVerifyingPayment(true);
+    triggerToast(lang === 'zh' ? '正在核销推广活动免费名额...' : 'Claiming promotional free quota...');
+    try {
+      let sessionId = paymentSessionId;
+      if (!sessionId) {
+        sessionId = `referral_free_${Date.now()}`;
+        setPaymentSessionId(sessionId);
+      }
+      
+      await fetch('/api/confirm-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId })
+      });
+
+      const res = await fetch(`/api/verify-payment?session_id=${sessionId}&task_id=${currentTask.id}`);
+      if (res.ok) {
+        setShowQRModal(false);
+        setShowShareModal(false);
+        
+        const newNotif: NotificationItem = {
+          id: `referral-success-${Date.now()}`,
+          title: "🎉 恭喜！推荐注册奖励已成功激活",
+          titleEn: "🎉 Congratulations! Referral reward activated successfully",
+          content: `尊敬的用户，新用户已经通过您的专属链接成功注册！您的 1 次免费高管简历重构额度已成功激活，并已自动抵扣您对「${currentTask.targetRole}」岗位的简历深度重构订单！大语言模型正在极速重写、对齐高频词并格式化为STAR模型，稍后请直接审阅生成后的高阶简历成果！`,
+          contentEn: `Dear user, a new user has successfully registered through your unique referral link! Your free credit has been activated and successfully applied to your resume optimization order for "${currentTask.targetRole}"! The AI model is restructuring your profile. Please check the results in a moment!`,
+          time: lang === 'zh' ? "刚刚" : "Just now",
+          timeEn: "Just now",
+          isRead: false,
+          type: 'payment'
+        };
+        setNotifications(prev => [newNotif, ...prev]);
+        
+        triggerToast(lang === 'zh' ? "🎉 推荐核销成功！已自动抵扣本次账单，免费为您进行高阶大模型简历重构！" : "🎉 Referral verified! Zero-payment discount applied, restructuring your resume now!");
+        await runResumeOptimizationForTask(currentTask.id);
+      } else {
+        triggerToast(lang === 'zh' ? '核销失败，请重试' : 'Verification failed, please try again.');
+      }
+    } catch (e) {
+      console.error(e);
+      triggerToast(lang === 'zh' ? '系统核销出错，请重试' : 'System verification error, please try again.');
+    } finally {
+      setIsVerifyingPayment(false);
+    }
+  };
+
+  const handleCopyInvite = () => {
+    const inviteLink = `${window.location.origin}/?ref=${currentUser ? currentUser.id : 'guest_promo'}`;
+    const inviteText = lang === 'zh' 
+      ? `【CareerAI高管简历重构】我的朋友向我推荐了这款中高层管理者、技术领袖专属的简历优化神作！针对目标岗位JD一键靶向重构为STAR模型，高亮大厂高频领导力筛查词，ATS通过率提升2倍！送你一次免费体验机会，点击下方专属邀请链接，极速解锁高阶履历：\n👉 ${inviteLink}`
+      : `[CareerAI Executive Resume Optimizer] My friend recommended this AI resume tool tailored for executives, directors, and tech leaders. Restructures CVs into the powerful STAR framework to match high-frequency industry keywords, doubling ATS pass rates. Get 1 free credit through my unique referral link:\n👉 ${inviteLink}`;
+    
+    navigator.clipboard.writeText(inviteText)
+      .then(() => {
+        triggerToast(lang === 'zh' 
+          ? '🎉 专属邀请函及分享链接已复制成功！快发到群聊或微信好友吧！' 
+          : '🎉 Invitation letter and unique referral link copied successfully!');
+      })
+      .catch((err) => {
+        console.error("Failed to copy referral text: ", err);
+        triggerToast(lang === 'zh' ? '❌ 复制失败，请手动选择复制' : '❌ Copy failed, please select and copy manually.');
+      });
+  };
+
+  // Effect 1: Check URL search parameters on load (handles redirects from Stripe Checkout)
+  useEffect(() => {
+    const searchParams = new URLSearchParams(window.location.search);
+    const paymentStatus = searchParams.get('payment_status');
+    const sessionId = searchParams.get('session_id');
+    const taskId = searchParams.get('task_id');
+    const refId = searchParams.get('ref');
+
+    if (refId) {
+      triggerToast(lang === 'zh' ? `🎁 欢迎！您已接受高管好友 (用户ID: ${refId}) 的专属推荐进入，体验早鸟特权！` : `🎁 Welcome! You have accepted an exclusive referral from an executive friend (ID: ${refId})!`);
+    }
+
+    if (paymentStatus === 'success' && sessionId && taskId) {
+      // Clear URL params immediately to prevent re-triggering
+      window.history.replaceState({}, document.title, window.location.pathname);
+
+      const doAutoVerify = async () => {
+        setLoadingStep('upgrading');
+        setLoadingProgress(15);
+        
+        try {
+          const res = await fetch(`/api/verify-payment?session_id=${sessionId}&task_id=${taskId}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data.status === 'paid') {
+              triggerToast(lang === 'zh' ? '支付成功！正在启动高阶AI大模型进行深度重构优化...' : 'Payment verified! Restructuring your resume...');
+              await runResumeOptimizationForTask(taskId);
+            } else {
+              triggerToast(lang === 'zh' ? '支付订单尚未支付或已失效' : 'Payment was not completed or has expired.');
+            }
+          } else {
+            triggerToast(lang === 'zh' ? '系统自动核销订单异常，请手动校验' : 'Auto verification error, please verify manually.');
+          }
+        } catch (error) {
+          console.error("Redirect auto verify error:", error);
+        } finally {
+          setLoadingStep('idle');
+          setLoadingProgress(0);
+        }
+      };
+
+      doAutoVerify();
+    } else if (paymentStatus === 'cancelled') {
+      window.history.replaceState({}, document.title, window.location.pathname);
+      triggerToast(t.paymentFailedToast);
+    }
+  }, [tasks]);
+
+  // Effect 2: Live poll payment verification status when QR Modal is active
+  useEffect(() => {
+    if (!showQRModal || !paymentSessionId || !currentTask) return;
+
+    let pollCount = 0;
+    const maxPolls = 100; // Check for up to 5 minutes
+
+    const checkPayment = async () => {
+      try {
+        const res = await fetch(`/api/verify-payment?session_id=${paymentSessionId}&task_id=${currentTask.id}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.status === 'paid') {
+            clearInterval(pollingInterval);
+            setShowQRModal(false);
+            triggerToast(t.paymentSuccessToast);
+            await runResumeOptimizationForTask(currentTask.id);
+          }
+        }
+      } catch (error) {
+        console.error("Polling payment verification failed:", error);
+      }
+    };
+
+    const pollingInterval = setInterval(() => {
+      pollCount++;
+      if (pollCount >= maxPolls) {
+        clearInterval(pollingInterval);
+        triggerToast(lang === 'zh' ? '支付超时，请重新发起' : 'Payment session expired. Please restart checkout.');
+        setShowQRModal(false);
+        return;
+      }
+      checkPayment();
+    }, 3000);
+
+    // Run initial check right away
+    checkPayment();
+
+    return () => {
+      clearInterval(pollingInterval);
+    };
+  }, [showQRModal, paymentSessionId, currentTask]);
+
+  // Navigation tab switcher state mapping helper
+  const navigateToTab = (status: TaskItem['status']) => {
+    setActiveTab(status);
+  };
+
+  // Handler for direct text edits inside the finalized resume
+  const handleSaveEditedResume = () => {
+    if (!currentTask || !editedResume) return;
+    
+    const updatedTasks = tasks.map(t => {
+      if (t.id === currentTask.id) {
+        return {
+          ...t,
+          optimizedResume: editedResume
+        };
+      }
+      return t;
+    });
+    saveTasks(updatedTasks);
+    setIsEditing(false);
+    triggerToast(lang === 'zh' ? "修改已成功保存至本地，将在导出时同步应用！" : "Changes saved locally and will be applied to the export!");
+  };
+
+  // Helper to escape HTML characters
+  const escapeHtml = (text?: string): string => {
+    if (!text) return "";
+    return text
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  };
+
+  // Real Export to Word (.doc formatted as HTML)
+  const exportToWord = (resume: OptimizedResume, fileName: string) => {
+    triggerToast(lang === 'zh' ? "正在生成高解析度、ATS友好的 Word 简历格式，请稍后..." : "Generating high-fidelity, ATS-friendly Word resume format, please wait...");
+    
+    const experienceHtml = resume.experience.map(exp => `
+      <div style="margin-bottom: 12pt;">
+        <table border="0" cellpadding="0" cellspacing="0" width="100%" style="width: 100%; margin-bottom: 4pt;">
+          <tr>
+            <td align="left" style="font-weight: bold; font-size: 11pt; color: #0f172a;">
+              ${escapeHtml(exp.company)} <span style="font-weight: normal; color: #94a3b8; margin: 0 4pt;">|</span> <span style="font-weight: bold; color: #334155;">${escapeHtml(exp.role)}</span>
+            </td>
+            <td align="right" style="font-size: 10pt; color: #64748b; font-family: 'Courier New', monospace; font-weight: bold; text-align: right;">
+              ${escapeHtml(exp.duration)}
+            </td>
+          </tr>
+        </table>
+        <ul style="margin-top: 2pt; margin-bottom: 4pt; padding-left: 15pt; list-style-type: disc;">
+          ${exp.bullets.map(bullet => {
+            const cleanBullet = bullet.replace(/【建议补充：[^】]+】/g, '');
+            return `<li style="margin-bottom: 3pt; font-size: 10pt; color: #334155; text-align: justify; line-height: 1.4;">${escapeHtml(cleanBullet)}</li>`;
+          }).join('')}
+        </ul>
+      </div>
+    `).join('');
+
+    const capabilitiesHtml = resume.coreCapabilities.map(cap => `
+      <span style="display: inline-block; width: 48%; margin-bottom: 4pt; font-size: 10pt; color: #334155;">• ${escapeHtml(cap)}</span>
+    `).join('');
+
+    const htmlContent = `
+      <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+      <head>
+        <meta charset="utf-8">
+        <title>${escapeHtml(resume.name)} - 靶向优化简历</title>
+        <!--[if gte mso 9]>
+        <xml>
+          <w:WordDocument>
+            <w:View>Print</w:View>
+            <w:Zoom>100</w:Zoom>
+            <w:DoNotOptimizeForBrowser/>
+          </w:WordDocument>
+        </xml>
+        <![endif]-->
+        <style>
+          @page {
+            size: 8.5in 11in;
+            margin: 0.8in 0.8in 0.8in 0.8in;
+          }
+          body {
+            font-family: 'Calibri', 'Arial', sans-serif;
+            font-size: 10.5pt;
+            line-height: 1.4;
+            color: #333333;
+          }
+          .header {
+            border-bottom: 2px solid #2563eb;
+            padding-bottom: 6pt;
+            margin-bottom: 12pt;
+          }
+          .name {
+            font-size: 22pt;
+            font-weight: bold;
+            color: #1a1a1a;
+            margin: 0;
+          }
+          .title {
+            font-size: 12pt;
+            font-weight: bold;
+            color: #2563eb;
+            margin: 2pt 0 4pt 0;
+            text-transform: uppercase;
+          }
+          .contact {
+            font-size: 9.5pt;
+            color: #64748b;
+            margin: 4pt 0 0 0;
+          }
+          .section-title {
+            font-size: 11pt;
+            font-weight: bold;
+            color: #0f172a;
+            border-bottom: 1px solid #e2e8f0;
+            padding-bottom: 2pt;
+            margin-top: 14pt;
+            margin-bottom: 8pt;
+            text-transform: uppercase;
+            letter-spacing: 0.5pt;
+          }
+          .summary-text {
+            font-size: 10pt;
+            color: #334155;
+            text-align: justify;
+            line-height: 1.4;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <h1 class="name">${escapeHtml(resume.name)}</h1>
+          <div class="title">${escapeHtml(resume.title)}</div>
+          <div class="contact">
+            ${escapeHtml(resume.email)} &nbsp;•&nbsp; ${escapeHtml(resume.location)}${resume.linkedin ? ` &nbsp;•&nbsp; ${escapeHtml(resume.linkedin)}` : ''}
+          </div>
+        </div>
+
+        <div class="section-title">Professional Summary (职业总结)</div>
+        <p class="summary-text">${escapeHtml(resume.summary)}</p>
+
+        <div class="section-title">Core Capabilities (核心竞争力)</div>
+        <div style="margin-bottom: 6pt;">
+          ${capabilitiesHtml}
+        </div>
+
+        <div class="section-title">Work Experience (核心履历优化)</div>
+        <div>
+          ${experienceHtml}
+        </div>
+
+        <div class="section-title">Education (教育背景)</div>
+        <p style="font-size: 10pt; color: #334155; font-weight: bold; margin: 0;">${escapeHtml(resume.education)}</p>
+
+        <div class="section-title">Skills & Keywords (技能与关键词)</div>
+        <p style="font-size: 10pt; color: #475569; margin: 0; line-height: 1.4;">${escapeHtml(resume.skills.join(', '))}</p>
+      </body>
+      </html>
+    `;
+
+    const blob = new Blob(['\ufeff' + htmlContent], { type: 'application/msword;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${fileName}.doc`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    
+    triggerToast(lang === 'zh' ? `🎉 Word版简历已生成并触发下载！` : `🎉 Word resume successfully generated and downloaded!`);
+  };
+
+  // Real Export to PDF using high-fidelity backend generator
+  const exportToPDF = async (resume: OptimizedResume, targetRole: string) => {
+    triggerToast(lang === 'zh' ? "正在生成高解析度、ATS友好的 PDF 简历，请稍后..." : "Generating high-fidelity, ATS-friendly PDF resume, please wait...");
+    try {
+      const response = await fetch("/api/export-pdf", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          resume,
+          targetRole
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${resume.name || "resume"}_${targetRole || "optimized"}_优化版.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      triggerToast(lang === 'zh' ? "🎉 PDF版简历已成功生成并触发下载！" : "🎉 PDF resume successfully generated and downloaded!");
+    } catch (error) {
+      console.error("Failed to export PDF:", error);
+      triggerToast(lang === 'zh' ? "❌ 导出 PDF 失败，请稍后重试" : "❌ Failed to export PDF, please try again later.");
+    }
+  };
+
+  const handleExportResume = (format: 'pdf' | 'word') => {
+    if (!isAccurateChecked) {
+      triggerToast(lang === 'zh' ? "⚠️ 请先勾选「我确认简历中的公司、岗位、项目均真实准确」后再导出。" : "⚠️ Please check \"I confirm all facts in the resume are authentic and accurate\" before exporting.");
+      return;
+    }
+    if (!currentTask || !currentTask.optimizedResume) {
+      triggerToast(lang === 'zh' ? "⚠️ 暂无可导出的优化简历，请先进行优化生成。" : "⚠️ There is no optimized resume to export yet, please generate it first.");
+      return;
+    }
+
+    const resume = currentTask.optimizedResume;
+    const fileName = `${resume.name}_${currentTask.targetRole}_优化版`;
+
+    if (format === 'word') {
+      exportToWord(resume, fileName);
+    } else if (format === 'pdf') {
+      exportToPDF(resume, currentTask.targetRole);
+    }
+  };
+
+  // Pre-load executive sample resume for quick UI testing
+  const loadQuickSampleResume = () => {
+    setResumeText(lang === 'zh' ? SAMPLE_RESUME_ZH : SAMPLE_RESUME_EN);
+    setResumeFileName(lang === 'zh' ? "张建国_资深产品经理简历_2026.txt" : "Jianguo_Zhang_Senior_Product_Manager_2026.txt");
+    triggerToast(lang === 'zh' 
+      ? "已加载高管求职原始简历样本，您可以点击「分析简历」测试大模型差距匹配评分！" 
+      : "Loaded sample resume! Click 'Analyze Match' to evaluate competency gaps with AI."
+    );
+  };
+
+  // File parsing and setting helper
+  const parseAndSetFile = async (file: File) => {
+    setResumeFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      if (event.target && event.target.result && typeof event.target.result === "string") {
+        try {
+          const base64Data = event.target.result.split(',')[1];
+          if (!base64Data) {
+            triggerToast(`无法读取文件「${file.name}」的二进制数据`);
+            return;
+          }
+          
+          triggerToast(`已检测到「${file.name}」，正在进行深度文本解析...`);
+          
+          const response = await fetch("/api/parse-file", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              fileName: file.name,
+              fileData: base64Data,
+            }),
+          });
+          
+          if (!response.ok) {
+            const errData = await response.json();
+            throw new Error(errData.error || "服务器解析出错");
+          }
+          
+          const data = await response.json();
+          if (data.text) {
+            setResumeText(data.text);
+            triggerToast(`文件「${file.name}」解析成功！已自动填充简历文本。`);
+          } else {
+            throw new Error("解析返回内容为空");
+          }
+        } catch (err: any) {
+          console.error("File parse error:", err);
+          triggerToast(`文件解析失败: ${err.message || err}`);
+        }
+      }
+    };
+    reader.onerror = () => {
+      triggerToast(`读取本地文件「${file.name}」失败`);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // Drag and Drop files handlers
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragActive(true);
+  };
+
+  const handleDragLeave = () => {
+    setIsDragActive(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragActive(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      parseAndSetFile(e.dataTransfer.files[0]);
+    }
+  };
+
+  const handleDeleteTask = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const filtered = tasks.filter(t => t.id !== id);
+    saveTasks(filtered);
+    if (currentTaskId === id) {
+      setCurrentTaskId(filtered.length > 0 ? filtered[0].id : null);
+    }
+    triggerToast("已安全删除该项岗位历史解析记录。");
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans flex flex-col antialiased">
+      
+      {/* Dynamic Toast Alert */}
+      <AnimatePresence>
+        {showSuccessToast && (
+          <motion.div 
+            initial={{ opacity: 0, y: -50, scale: 0.9 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -20, scale: 0.95 }}
+            className="fixed top-5 left-1/2 -translate-x-1/2 z-[100] bg-slate-900 text-white px-6 py-3 rounded-xl shadow-xl flex items-center gap-3 border border-slate-700/50"
+          >
+            <Sparkles className="w-5 h-5 text-emerald-400 shrink-0 animate-pulse" />
+            <span className="text-sm font-medium">{showSuccessToast}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {!currentUser ? (
+        <div className="flex-1 min-h-screen flex items-center justify-center p-4 bg-slate-50 relative overflow-hidden font-sans">
+          {/* Decorative background grid */}
+          <div className="absolute inset-0 bg-[radial-gradient(#e2e8f0_1px,transparent_1px)] [background-size:16px_16px] opacity-60"></div>
+          
+          <motion.div 
+            initial={{ opacity: 0, y: 15 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="w-full max-w-md bg-white border border-slate-200 shadow-xl rounded-2xl overflow-hidden relative z-10 flex flex-col"
+          >
+            {/* Header / Brand info */}
+            <div className="bg-slate-900 text-white p-6 relative">
+              <div className="flex justify-between items-center mb-4">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-5 h-5 text-blue-400" />
+                  <span className="font-sans font-bold text-lg tracking-tight text-white">CareerAI</span>
+                  <span className="bg-blue-500/20 text-blue-300 font-mono text-[9px] px-2 py-0.5 rounded-full font-bold">V0.3 MVP</span>
+                </div>
+                {/* Language Switcher */}
+                <div className="flex gap-1.5 bg-white/10 p-0.5 rounded-lg">
+                  <button 
+                    onClick={() => toggleLang('zh')}
+                    className={`text-[9px] font-bold px-2 py-1 rounded transition-colors ${lang === 'zh' ? 'bg-white text-slate-900' : 'text-slate-300 hover:text-white'}`}
+                  >
+                    中
+                  </button>
+                  <button 
+                    onClick={() => toggleLang('en')}
+                    className={`text-[9px] font-bold px-2 py-1 rounded transition-colors ${lang === 'en' ? 'bg-white text-slate-900' : 'text-slate-300 hover:text-white'}`}
+                  >
+                    EN
+                  </button>
+                </div>
+              </div>
+
+              <h2 className="text-xl font-extrabold tracking-tight">
+                {authMode === 'login' ? t.loginTitle : t.registerTitle}
+              </h2>
+              <p className="text-xs text-slate-400 mt-2 leading-relaxed">
+                {t.authDesc}
+              </p>
+            </div>
+
+            {/* Auth Form */}
+            <form onSubmit={handleAuthSubmit} className="p-6 flex flex-col gap-4">
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">{t.usernameLabel}</label>
+                <input 
+                  type="text" 
+                  value={authUsername}
+                  onChange={(e) => setAuthUsername(e.target.value)}
+                  placeholder={t.usernamePlaceholder}
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 focus:border-blue-500 focus:bg-white rounded-xl text-xs font-medium outline-hidden transition-all text-slate-800"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">{t.passwordLabel}</label>
+                <input 
+                  type="password" 
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  placeholder={t.passwordPlaceholder}
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 focus:border-blue-500 focus:bg-white rounded-xl text-xs font-medium outline-hidden transition-all text-slate-800"
+                  required
+                />
+              </div>
+
+              <button 
+                type="submit"
+                className="w-full mt-2 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all shadow-md flex items-center justify-center gap-1.5"
+              >
+                {authMode === 'login' ? t.loginBtn : t.registerBtn}
+              </button>
+
+              <div className="text-center mt-2 pt-4 border-t border-slate-100">
+                <button 
+                  type="button"
+                  onClick={() => {
+                    setAuthMode(authMode === 'login' ? 'register' : 'login');
+                    setAuthUsername('');
+                    setAuthPassword('');
+                  }}
+                  className="text-xs text-blue-600 hover:text-blue-700 font-bold transition-colors"
+                >
+                  {authMode === 'login' ? t.needAccount : t.hasAccount}
+                </button>
+              </div>
+            </form>
+          </motion.div>
+        </div>
+      ) : (
+        <>
+
+      {/* Global Top Navbar */}
+      <header className="h-16 shrink-0 bg-white border-b border-slate-200 sticky top-0 z-40 flex justify-between items-center px-6 md:px-10 shadow-sm">
+        <div className="flex items-center gap-3">
+          <span className="font-sans font-bold text-2xl tracking-tight text-blue-600">CareerAI</span>
+          <span className="hidden sm:inline bg-blue-50 text-blue-700 font-mono text-[10px] px-2 py-0.5 rounded-full font-bold">V0.3 MVP</span>
+        </div>
+
+        {/* Center Horizontal Nav for Desktop */}
+        <nav className="hidden md:flex gap-8 h-full">
+          <button 
+            onClick={() => { setCurrentTaskId(null); }}
+            className={`h-full flex items-center text-sm font-semibold transition-colors ${!currentTaskId ? 'text-blue-600 border-b-2 border-blue-600' : 'text-slate-500 hover:text-slate-800'}`}
+          >
+            {t.newRole}
+          </button>
+          <button 
+            onClick={() => setShowHistoryDrawer(!showHistoryDropdown)}
+            className="h-full flex items-center text-sm font-semibold text-slate-500 hover:text-slate-800 transition-colors gap-2"
+          >
+            {t.history}
+            {tasks.length > 0 && (
+              <span className="bg-slate-200 text-slate-700 text-xs px-2 py-0.5 rounded-full font-bold">{tasks.length}</span>
+            )}
+          </button>
+        </nav>
+
+        {/* Right Status Actions */}
+        <div className="flex items-center gap-4">
+          {/* Notification Center Bell & Dropdown */}
+          <div className="relative">
+            <button 
+              onClick={() => setShowNotificationDropdown(!showNotificationDropdown)}
+              className="relative p-2 text-slate-500 hover:bg-slate-100 rounded-full transition-colors"
+            >
+              <Bell className="w-5 h-5" />
+              {notifications.some(n => !n.isRead) && (
+                <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-rose-500 border border-white rounded-full animate-bounce"></span>
+              )}
+            </button>
+
+            <AnimatePresence>
+              {showNotificationDropdown && (
+                <>
+                  {/* Backdrop overlay to close when clicking outside */}
+                  <div className="fixed inset-0 z-40" onClick={() => setShowNotificationDropdown(false)}></div>
+                  
+                  <motion.div 
+                    initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                    className="absolute right-0 mt-2 w-80 sm:w-96 bg-white border border-slate-200 rounded-2xl shadow-xl z-50 overflow-hidden"
+                  >
+                    <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+                      <div className="flex items-center gap-2">
+                        <Bell className="w-4 h-4 text-slate-700" />
+                        <h4 className="font-bold text-slate-800 text-xs tracking-wide">
+                          {lang === 'zh' ? '消息通知中心' : 'Notification Center'}
+                        </h4>
+                        {notifications.filter(n => !n.isRead).length > 0 && (
+                          <span className="bg-rose-100 text-rose-700 font-extrabold text-[9px] px-1.5 py-0.5 rounded-full">
+                            {notifications.filter(n => !n.isRead).length}
+                          </span>
+                        )}
+                      </div>
+                      <button 
+                        onClick={() => {
+                          setNotifications(notifications.map(n => ({ ...n, isRead: true })));
+                          triggerToast(lang === 'zh' ? '已标记所有消息为已读' : 'All marked as read');
+                        }}
+                        className="text-[10px] font-bold text-blue-600 hover:text-blue-700 transition-colors"
+                      >
+                        {lang === 'zh' ? '全部忽略' : 'Mark all read'}
+                      </button>
+                    </div>
+
+                    <div className="max-h-72 overflow-y-auto divide-y divide-slate-100">
+                      {notifications.length === 0 ? (
+                        <div className="p-6 text-center text-slate-400 text-xs">
+                          {lang === 'zh' ? '暂无任何通知' : 'No notifications'}
+                        </div>
+                      ) : (
+                        notifications.map((n) => (
+                          <div 
+                            key={n.id}
+                            onClick={() => {
+                              // Mark as read
+                              setNotifications(notifications.map(notif => notif.id === n.id ? { ...notif, isRead: true } : notif));
+                              setActiveNotification(n);
+                              setShowNotificationDropdown(false);
+                            }}
+                            className={`p-3.5 hover:bg-slate-50/80 transition-all cursor-pointer flex flex-col gap-1 text-left ${!n.isRead ? 'bg-blue-50/20' : ''}`}
+                          >
+                            <div className="flex justify-between items-start gap-2">
+                              <span className={`font-bold text-xs ${!n.isRead ? 'text-slate-900' : 'text-slate-600'}`}>
+                                {lang === 'zh' ? n.title : n.titleEn}
+                              </span>
+                              {!n.isRead && (
+                                <span className="w-1.5 h-1.5 bg-blue-600 rounded-full shrink-0 mt-1.5"></span>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-slate-500 line-clamp-2 leading-relaxed">
+                              {lang === 'zh' ? n.content : n.contentEn}
+                            </p>
+                            <span className="text-[9px] text-slate-400 font-semibold font-mono mt-0.5">
+                              {lang === 'zh' ? n.time : n.timeEn}
+                            </span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </motion.div>
+                </>
+              )}
+            </AnimatePresence>
+          </div>
+
+          {/* Settings / Multi-Language Selector Dropdown */}
+          <div className="relative group">
+            <button className="p-2 text-slate-500 hover:bg-slate-100 rounded-full transition-colors flex items-center justify-center">
+              <Settings className="w-5 h-5" />
+            </button>
+            <div className="absolute right-0 top-full pt-1.5 w-40 hidden group-hover:block z-30">
+              <div className="bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden p-2">
+                <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider px-2 py-1 border-b border-slate-100">
+                  {t.languageSettings}
+                </div>
+                <button 
+                  onClick={() => toggleLang('zh')}
+                  className={`w-full text-left px-3 py-1.5 text-xs font-bold rounded-lg mt-1 flex items-center justify-between ${lang === 'zh' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50'}`}
+                >
+                  <span>简体中文</span>
+                  {lang === 'zh' && <span className="w-1.5 h-1.5 rounded-full bg-blue-600"></span>}
+                </button>
+                <button 
+                  onClick={() => toggleLang('en')}
+                  className={`w-full text-left px-3 py-1.5 text-xs font-bold rounded-lg mt-0.5 flex items-center justify-between ${lang === 'en' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50'}`}
+                >
+                  <span>English</span>
+                  {lang === 'en' && <span className="w-1.5 h-1.5 rounded-full bg-blue-600"></span>}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="h-8 w-[1px] bg-slate-200 hidden sm:block"></div>
+
+          {/* User profile details */}
+          {currentUser && (
+            <div className="relative">
+              <button 
+                id="user-profile-menu-btn"
+                onClick={() => setShowUserDropdown(!showUserDropdown)}
+                className="flex items-center gap-3 cursor-pointer hover:bg-slate-50 p-1.5 rounded-xl transition-all"
+              >
+                <div className="w-8 h-8 rounded-full bg-blue-600 text-white overflow-hidden flex items-center justify-center font-bold text-sm">
+                  {currentUser.username.substring(0, 2).toUpperCase()}
+                </div>
+                <div className="text-left hidden md:block">
+                  <p className="text-xs font-bold text-slate-800 leading-tight">{currentUser.username}</p>
+                  <p className="text-[9px] text-slate-400 font-bold font-mono uppercase mt-0.5">{t.executivePortal}</p>
+                </div>
+                <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+              </button>
+
+              {showUserDropdown && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowUserDropdown(false)} />
+                  <div className="absolute right-0 top-full mt-2 w-48 bg-white border border-slate-200 rounded-xl shadow-lg p-2 z-50">
+                    <div className="px-3 py-2 border-b border-slate-100">
+                      <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">{t.currentUserLabel}</p>
+                      <p className="text-xs font-bold text-slate-800 mt-1 truncate">{currentUser.username}</p>
+                    </div>
+                    <button 
+                      onClick={handleLogout}
+                      className="w-full text-left px-3 py-2 text-xs font-bold text-rose-600 hover:bg-rose-50 rounded-lg mt-1 flex items-center gap-2 transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                      <span>{t.logout}</span>
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Mobile Menu Toggle Button */}
+          <button 
+            id="mobile-menu-toggle-btn"
+            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+            className="p-2 text-slate-600 hover:bg-slate-100 rounded-full transition-colors lg:hidden flex items-center justify-center"
+            aria-label="Toggle Mobile Menu"
+          >
+            {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
+          </button>
+        </div>
+      </header>
+
+      {/* Mobile Sidebar & History Navigation Drawer */}
+      <AnimatePresence>
+        {mobileMenuOpen && (
+          <div className="fixed inset-0 z-50 lg:hidden flex justify-end">
+            {/* Backdrop Blur */}
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setMobileMenuOpen(false)}
+              className="absolute inset-0 bg-slate-900/40 backdrop-blur-xs"
+            />
+
+            {/* Slide-out Panel */}
+            <motion.div 
+              initial={{ x: "100%" }}
+              animate={{ x: 0 }}
+              exit={{ x: "100%" }}
+              transition={{ type: "spring", bounce: 0, duration: 0.35 }}
+              className="relative w-full max-w-[320px] h-full bg-white shadow-2xl flex flex-col z-10 border-l border-slate-100 overflow-y-auto"
+            >
+              {/* Header inside drawer */}
+              <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-5 h-5 text-blue-600" />
+                  <span className="font-bold text-sm text-slate-900">{t.optimizerTitle}</span>
+                </div>
+                <button 
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="p-1.5 hover:bg-slate-200 rounded-full text-slate-500 transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Drawer Content */}
+              <div className="p-5 flex flex-col gap-6 flex-grow">
+                
+                {/* 1. Quick Language switcher */}
+                <div>
+                  <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">{t.languageSettings}</h3>
+                  <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1 rounded-xl">
+                    <button 
+                      onClick={() => toggleLang('zh')}
+                      className={`py-1.5 px-3 text-xs font-bold rounded-lg transition-all ${lang === 'zh' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                    >
+                      简体中文
+                    </button>
+                    <button 
+                      onClick={() => toggleLang('en')}
+                      className={`py-1.5 px-3 text-xs font-bold rounded-lg transition-all ${lang === 'en' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                    >
+                      English
+                    </button>
+                  </div>
+                </div>
+
+                {/* 2. Step progress selection */}
+                <div>
+                  <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">{lang === 'zh' ? '当前步骤进度' : 'Step Progress'}</h3>
+                  <nav className="flex flex-col gap-1">
+                    {[
+                      { tab: 'role', label: t.roleInput, icon: Search, enabled: true },
+                      { tab: 'researched', label: t.jdAnalysis, icon: BarChart3, enabled: !!currentTask },
+                      { tab: 'matching', label: t.uploadResume, icon: UploadCloud, enabled: !!currentTask },
+                      { tab: 'matched', label: t.matchScore, icon: CheckCircle2, enabled: currentTask && currentTask.matchReport },
+                      { tab: 'upgraded', label: t.upgradePaywall, icon: Lock, enabled: currentTask && currentTask.matchReport },
+                      { tab: 'finalized', label: t.finalize, icon: FileText, enabled: currentTask && currentTask.status === 'finalized' }
+                    ].map((item, idx) => {
+                      const Icon = item.icon;
+                      const isActive = currentTask && (activeTab === item.tab || (!currentTaskId && item.tab === 'role'));
+                      return (
+                        <button 
+                          key={idx}
+                          disabled={!item.enabled}
+                          onClick={() => {
+                            if (item.tab === 'role') {
+                              setCurrentTaskId(null);
+                            } else {
+                              navigateToTab(item.tab as any);
+                            }
+                            setMobileMenuOpen(false);
+                          }}
+                          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all text-left ${isActive ? 'bg-blue-50 text-blue-700 font-bold' : item.enabled ? 'text-slate-600 hover:bg-slate-50' : 'opacity-40 cursor-not-allowed text-slate-400'}`}
+                        >
+                          <Icon className="w-4.5 h-4.5 shrink-0" />
+                          <span className="text-xs font-semibold">{item.label}</span>
+                          {item.tab === 'upgraded' && currentTask && currentTask.status === 'finalized' && (
+                            <span className="ml-auto bg-emerald-100 text-emerald-700 text-[9px] font-bold px-1.5 py-0.5 rounded-full">{lang === 'zh' ? '已解锁' : 'Unlocked'}</span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </nav>
+                </div>
+
+                {/* 3. History Section */}
+                <div className="border-t border-slate-100 pt-5 flex-grow flex flex-col min-h-[220px]">
+                  <div className="flex justify-between items-center mb-3">
+                    <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{t.history}</h3>
+                    <button 
+                      onClick={() => {
+                        setCurrentTaskId(null);
+                        setMobileMenuOpen(false);
+                      }}
+                      className="text-xs font-bold text-blue-600 hover:text-blue-700 flex items-center gap-1 transition-all"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>{t.newRole}</span>
+                    </button>
+                  </div>
+
+                  <div className="flex-grow overflow-y-auto max-h-[260px] pr-1 flex flex-col gap-2">
+                    {tasks.length === 0 ? (
+                      <div className="text-center py-6 border border-dashed border-slate-200 rounded-xl">
+                        <History className="w-6 h-6 text-slate-300 mx-auto mb-2" />
+                        <p className="text-[10px] text-slate-400 font-bold">{t.noHistory}</p>
+                      </div>
+                    ) : (
+                      tasks.map((task) => (
+                        <div 
+                          key={task.id}
+                          onClick={() => {
+                            setCurrentTaskId(task.id);
+                            setMobileMenuOpen(false);
+                          }}
+                          className={`group/task w-full p-3 rounded-xl border transition-all text-left cursor-pointer flex items-start gap-2.5 ${currentTaskId === task.id ? 'bg-blue-50/50 border-blue-200 shadow-xs' : 'bg-white border-slate-200 hover:bg-slate-50'}`}
+                        >
+                          <Sparkles className={`w-4 h-4 mt-0.5 shrink-0 ${currentTaskId === task.id ? 'text-blue-600' : 'text-slate-400'}`} />
+                          <div className="flex-grow min-w-0">
+                            <h4 className="text-xs font-bold text-slate-800 truncate leading-tight">{task.targetRole}</h4>
+                            <p className="text-[9px] text-slate-400 font-bold mt-1 font-mono">{task.companyName}</p>
+                          </div>
+                          <button 
+                            onClick={(e) => handleDeleteTask(task.id, e)}
+                            className="p-1 hover:bg-rose-50 hover:text-rose-600 rounded text-slate-400 transition-colors"
+                            aria-label="Delete History Entry"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                {/* Footer Section */}
+                <div className="border-t border-slate-100 pt-5 mt-auto flex flex-col gap-3">
+                  {currentUser && (
+                    <div className="flex items-center justify-between gap-3 bg-slate-50 p-3 rounded-xl border border-slate-100 mb-2">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-8 h-8 rounded-full bg-blue-600 text-white shrink-0 flex items-center justify-center font-bold text-xs">
+                          {currentUser.username.substring(0, 2).toUpperCase()}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider font-mono leading-none">ACTIVE USER</p>
+                          <p className="text-xs font-bold text-slate-800 truncate mt-1">{currentUser.username}</p>
+                        </div>
+                      </div>
+                      <button 
+                        onClick={() => {
+                          handleLogout();
+                          setMobileMenuOpen(false);
+                        }}
+                        className="px-2.5 py-1.5 border border-rose-200 hover:bg-rose-50 text-rose-600 rounded-lg text-[10px] font-bold transition-colors shrink-0"
+                      >
+                        {t.logout}
+                      </button>
+                    </div>
+                  )}
+
+                  <button 
+                    onClick={() => {
+                      triggerToast(t.supportMsg);
+                      setMobileMenuOpen(false);
+                    }}
+                    className="w-full py-2.5 px-4 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-colors text-center shadow-sm"
+                  >
+                    {t.premiumSupport}
+                  </button>
+                  <div className="flex justify-between px-2 text-[10px] text-slate-500 font-bold uppercase tracking-wider">
+                    <button onClick={() => { triggerToast(t.helpMsg); setMobileMenuOpen(false); }} className="hover:text-blue-600 transition-colors">{t.helpCenter}</button>
+                    <button onClick={() => { triggerToast(t.privacyMsg); setMobileMenuOpen(false); }} className="hover:text-blue-600 transition-colors">{t.privacy}</button>
+                  </div>
+                </div>
+
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Main Multi-Pane Body */}
+      <div className="flex-1 flex overflow-hidden relative">
+
+        {/* Fixed Side Navigation */}
+        <aside className={`w-[260px] bg-white border-r border-slate-200 shrink-0 p-5 flex flex-col overflow-y-auto hidden lg:flex`}>
+          <div className="mb-8 flex items-center gap-3 bg-slate-50 p-3 rounded-xl border border-slate-100">
+            <div className="w-10 h-10 rounded-lg bg-blue-600 flex items-center justify-center text-white">
+              <Sparkles className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="font-bold text-sm text-slate-900 leading-tight">{t.optimizerTitle}</h2>
+              <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mt-0.5">{t.executiveEdition}</p>
+            </div>
+          </div>
+
+          <nav className="flex-grow flex flex-col gap-1.5">
+            {/* 1. Role Input */}
+            <button 
+              onClick={() => { setCurrentTaskId(null); }}
+              className={`w-full flex items-center gap-3.5 px-4 py-3 rounded-xl transition-all duration-200 text-left ${!currentTask ? 'bg-blue-50 text-blue-700 font-bold shadow-sm' : 'text-slate-600 hover:bg-slate-50'}`}
+            >
+              <Search className="w-5 h-5 shrink-0" />
+              <span className="text-xs uppercase font-bold tracking-wider">{t.roleInput}</span>
+            </button>
+
+            {/* 2. JD Analysis */}
+            <button 
+              disabled={!currentTask}
+              onClick={() => { if (currentTask) navigateToTab('researched'); }}
+              className={`w-full flex items-center gap-3.5 px-4 py-3 rounded-xl transition-all duration-200 text-left ${currentTask && (activeTab === 'researched') ? 'bg-blue-50 text-blue-700 font-bold shadow-sm' : currentTask ? 'text-slate-600 hover:bg-slate-50' : 'opacity-40 cursor-not-allowed text-slate-400'}`}
+            >
+              <BarChart3 className="w-5 h-5 shrink-0" />
+              <span className="text-xs uppercase font-bold tracking-wider">{t.jdAnalysis}</span>
+              {currentTask && currentTask.report && (
+                <span className="ml-auto w-2 h-2 rounded-full bg-emerald-500"></span>
+              )}
+            </button>
+
+            {/* 3. Upload */}
+            <button 
+              disabled={!currentTask}
+              onClick={() => { if (currentTask) navigateToTab('matching'); }}
+              className={`w-full flex items-center gap-3.5 px-4 py-3 rounded-xl transition-all duration-200 text-left ${currentTask && (activeTab === 'matching') ? 'bg-blue-50 text-blue-700 font-bold shadow-sm' : currentTask ? 'text-slate-600 hover:bg-slate-50' : 'opacity-40 cursor-not-allowed text-slate-400'}`}
+            >
+              <UploadCloud className="w-5 h-5 shrink-0" />
+              <span className="text-xs uppercase font-bold tracking-wider">{t.uploadResume}</span>
+              {currentTask && currentTask.originalResumeText && (
+                <span className="ml-auto w-2 h-2 rounded-full bg-emerald-500"></span>
+              )}
+            </button>
+
+            {/* 4. Match Score */}
+            <button 
+              disabled={!currentTask || !currentTask.matchReport}
+              onClick={() => { if (currentTask) navigateToTab('matched'); }}
+              className={`w-full flex items-center gap-3.5 px-4 py-3 rounded-xl transition-all duration-200 text-left ${currentTask && (activeTab === 'matched') ? 'bg-blue-50 text-blue-700 font-bold shadow-sm' : currentTask && currentTask.matchReport ? 'text-slate-600 hover:bg-slate-50' : 'opacity-40 cursor-not-allowed text-slate-400'}`}
+            >
+              <CheckCircle2 className="w-5 h-5 shrink-0" />
+              <span className="text-xs uppercase font-bold tracking-wider">{t.matchScore}</span>
+              {currentTask && currentTask.matchReport && (
+                <span className="ml-auto bg-emerald-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{currentTask.matchReport.matchScore}</span>
+              )}
+            </button>
+
+            {/* 5. Upgrade Paywall */}
+            <button 
+              disabled={!currentTask || !currentTask.matchReport}
+              onClick={() => { if (currentTask) navigateToTab('upgraded'); }}
+              className={`w-full flex items-center gap-3.5 px-4 py-3 rounded-xl transition-all duration-200 text-left ${currentTask && (activeTab === 'upgraded') ? 'bg-blue-50 text-blue-700 font-bold shadow-sm' : currentTask && currentTask.matchReport ? 'text-slate-600 hover:bg-slate-50' : 'opacity-40 cursor-not-allowed text-slate-400'}`}
+            >
+              <Lock className="w-5 h-5 shrink-0" />
+              <span className="text-xs uppercase font-bold tracking-wider">{t.upgradePaywall}</span>
+              {currentTask && currentTask.status === 'finalized' && (
+                <span className="ml-auto text-emerald-600 text-xs font-bold">{lang === 'zh' ? '已解锁' : 'Unlocked'}</span>
+              )}
+            </button>
+
+            {/* 6. Finalize */}
+            <button 
+              disabled={!currentTask || currentTask.status !== 'finalized'}
+              onClick={() => { if (currentTask) navigateToTab('finalized'); }}
+              className={`w-full flex items-center gap-3.5 px-4 py-3 rounded-xl transition-all duration-200 text-left ${currentTask && (activeTab === 'finalized') ? 'bg-blue-50 text-blue-700 font-bold shadow-sm' : currentTask && currentTask.status === 'finalized' ? 'text-slate-600 hover:bg-slate-50' : 'opacity-40 cursor-not-allowed text-slate-400'}`}
+            >
+              <FileText className="w-5 h-5 shrink-0" />
+              <span className="text-xs uppercase font-bold tracking-wider">{t.finalize}</span>
+            </button>
+          </nav>
+
+          {/* Fixed Side Navigation Bottom Help links */}
+          <div className="mt-auto border-t border-slate-100 pt-5 flex flex-col gap-4">
+            <button 
+              onClick={() => triggerToast(t.supportMsg)}
+              className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-colors shadow-sm"
+            >
+              {t.premiumSupport}
+            </button>
+            <div className="flex justify-between px-2 text-[10px] text-slate-500 font-bold uppercase tracking-wider">
+              <button onClick={() => triggerToast(t.helpMsg)} className="hover:text-blue-600 transition-colors">{t.helpCenter}</button>
+              <button onClick={() => triggerToast(t.privacyMsg)} className="hover:text-blue-600 transition-colors">{t.privacy}</button>
+            </div>
+          </div>
+        </aside>
+
+        {/* Main Fluid Container Stage */}
+        <main className="flex-1 overflow-y-auto p-6 md:p-10 flex flex-col justify-between relative bg-slate-50">
+          
+          {/* Main loader screen for API calls */}
+          {loadingStep !== 'idle' && (
+            <div className="absolute inset-0 bg-slate-50/95 z-50 flex flex-col items-center justify-center p-8">
+              <div className="w-20 h-20 rounded-2xl bg-white border border-slate-200 shadow-xl flex items-center justify-center relative mb-6">
+                <Loader2 className="w-10 h-10 text-blue-600 animate-spin" />
+                <div className="absolute inset-0 w-full h-full rounded-2xl border border-blue-500/20 animate-pulse"></div>
+              </div>
+              
+              <h3 className="font-bold text-xl text-slate-900 mb-2">
+                {loadingStep === 'research' && t.loadResearchTitle}
+                {loadingStep === 'matching' && t.loadMatchingTitle}
+                {loadingStep === 'upgrading' && t.loadUpgradingTitle}
+              </h3>
+              
+              <p className="text-slate-500 text-sm text-center max-w-md mb-6">
+                {loadingStep === 'research' && t.loadResearchDesc}
+                {loadingStep === 'matching' && t.loadMatchingDesc}
+                {loadingStep === 'upgrading' && t.loadUpgradingDesc}
+              </p>
+
+              <div className="w-full max-w-sm bg-slate-200 rounded-full h-2 overflow-hidden shadow-inner">
+                <div 
+                  className="bg-blue-600 h-full rounded-full transition-all duration-300"
+                  style={{ width: `${loadingProgress}%` }}
+                ></div>
+              </div>
+              <span className="text-xs text-blue-700 font-mono font-bold mt-2">{loadingProgress}% {t.completedLabel}</span>
+            </div>
+          )}
+
+          {/* Actionable Content Workspace */}
+          <div className="max-w-[1200px] w-full mx-auto flex-grow flex flex-col justify-start">
+            
+            {!currentTask ? (
+              
+              /* TAB 1: Role Input Screen (Home) */
+              <motion.div 
+                initial={{ opacity: 0, y: 15 }} 
+                animate={{ opacity: 1, y: 0 }} 
+                className="flex flex-col items-center justify-center py-10 md:py-16"
+              >
+                <div className="text-center max-w-3xl mx-auto mb-12">
+                  <span className="text-[10px] font-bold tracking-widest text-blue-600 uppercase bg-blue-50 px-3 py-1 rounded-full">{t.targetAnalysis}</span>
+                  <h1 className="text-4xl md:text-5xl font-extrabold text-slate-900 tracking-tight mt-4 mb-6 leading-tight">
+                    {t.unlockTitle} <span className="text-blue-600">{t.unlockRole}</span>
+                  </h1>
+                  <p className="text-slate-500 text-lg leading-relaxed">
+                    {t.unlockDesc}
+                  </p>
+                </div>
+
+                {/* Glassmorphic Search Form Component */}
+                <div className="w-full max-w-2xl bg-white border border-slate-200/80 p-6 md:p-8 rounded-2xl shadow-lg border-b-4 border-b-blue-600 relative overflow-hidden mb-8">
+                  
+                  {/* Subtle decorative glow */}
+                  <div className="absolute top-0 right-0 w-32 h-32 bg-blue-400/5 rounded-full blur-3xl pointer-events-none"></div>
+
+                  <div className="flex flex-col md:flex-row gap-4">
+                    <div className="relative flex-grow">
+                      <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 w-5 h-5" />
+                      <input 
+                        type="text" 
+                        value={targetRole}
+                        onChange={(e) => setTargetRole(e.target.value)}
+                        placeholder={t.placeholderRole}
+                        className="w-full pl-12 pr-4 py-4 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-blue-600 focus:bg-white focus:ring-2 focus:ring-blue-100 transition-all font-medium"
+                      />
+                    </div>
+                    <button 
+                      onClick={() => handleAnalyzeRole()}
+                      className="bg-blue-600 text-white px-8 py-4 rounded-xl text-sm font-bold hover:bg-blue-700 transition-colors shadow-sm flex items-center justify-center gap-2 shrink-0 group"
+                    >
+                      <span>{t.analyzeBtn}</span>
+                      <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
+                    </button>
+                  </div>
+
+                  {/* Advanced Filters collapsed by default */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-6 pt-5 border-t border-slate-100">
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">{t.industryLabel}</label>
+                      <input 
+                        type="text" 
+                        value={industry}
+                        onChange={(e) => setIndustry(e.target.value)}
+                        placeholder={t.placeholderIndustry}
+                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:border-blue-500 focus:bg-white transition-all"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">{t.locationLabel}</label>
+                      <input 
+                        type="text" 
+                        value={location}
+                        onChange={(e) => setLocation(e.target.value)}
+                        placeholder={t.placeholderLocation}
+                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:border-blue-500 focus:bg-white transition-all"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">{t.seniorityLabel}</label>
+                      <select 
+                        value={seniority}
+                        onChange={(e) => setSeniority(e.target.value)}
+                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:border-blue-500 focus:bg-white transition-all font-bold"
+                      >
+                        <option value="总监 / 负责人">{t.seniority1}</option>
+                        <option value="副总裁 / VP">{t.seniority2}</option>
+                        <option value="总经理">{t.seniority3}</option>
+                        <option value="架构师 / 科学家">{t.seniority4}</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Trending Roles Section */}
+                <div className="flex flex-col sm:flex-row items-center justify-center gap-3 text-slate-500 text-sm mb-16">
+                  <span className="font-bold text-xs uppercase tracking-wider text-slate-400 shrink-0">{t.trendingRoles}:</span>
+                  <div className="flex flex-wrap gap-2 justify-center font-bold">
+                    {["VP of AI Engineering", "Chief Data Officer", "Head of Generative AI"].map((role, idx) => (
+                      <button 
+                        key={idx}
+                        onClick={() => {
+                          setTargetRole(role);
+                          handleAnalyzeRole(role);
+                        }}
+                        className="px-4 py-1.5 bg-slate-200 hover:bg-slate-300 hover:text-blue-700 text-slate-700 rounded-full font-mono text-xs font-semibold transition-all shadow-sm"
+                      >
+                        {role}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Bento Grid: How It Works */}
+                <div className="w-full max-w-4xl mt-6">
+                  <h3 className="font-bold text-lg text-slate-900 text-center mb-8 uppercase tracking-widest text-slate-400">{t.optimizationProcess}</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    
+                    <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm flex flex-col items-center text-center">
+                      <div className="w-12 h-12 bg-blue-50 rounded-xl flex items-center justify-center text-blue-600 mb-4 font-bold">
+                        <Search className="w-6 h-6" />
+                      </div>
+                      <h4 className="font-bold text-slate-900 mb-2">{t.process1Title}</h4>
+                      <p className="text-slate-500 text-xs leading-relaxed">{t.process1Desc}</p>
+                    </div>
+
+                    <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm flex flex-col items-center text-center">
+                      <div className="w-12 h-12 bg-blue-50 rounded-xl flex items-center justify-center text-blue-600 mb-4 font-bold">
+                        <BarChart3 className="w-6 h-6" />
+                      </div>
+                      <h4 className="font-bold text-slate-900 mb-2">{t.process2Title}</h4>
+                      <p className="text-slate-500 text-xs leading-relaxed">{t.process2Desc}</p>
+                    </div>
+
+                    <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm flex flex-col items-center text-center">
+                      <div className="w-12 h-12 bg-blue-50 rounded-xl flex items-center justify-center text-blue-600 mb-4 font-bold">
+                        <FileText className="w-6 h-6" />
+                      </div>
+                      <h4 className="font-bold text-slate-900 mb-2">{t.process3Title}</h4>
+                      <p className="text-slate-500 text-xs leading-relaxed">{t.process3Desc}</p>
+                    </div>
+
+                  </div>
+                </div>
+              </motion.div>
+
+            ) : (
+              
+              /* Active Task Navigation Area */
+              <div className="w-full flex flex-col gap-6">
+                
+                {/* Dashboard Subheader with current active target role */}
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 pb-5 border-b border-slate-200">
+                  <div>
+                    <span className="text-[10px] font-bold text-blue-600 uppercase tracking-widest bg-blue-50 px-2 py-1 rounded">{t.targetContext}</span>
+                    <h1 className="text-2xl md:text-3xl font-bold text-slate-900 mt-2">
+                      {currentTask.targetRole} - {t.marketInsight}
+                    </h1>
+                    <p className="text-slate-500 text-sm mt-1">
+                      {t.dataAggregated} {currentTask.report?.jdCount || 25} {t.dataAggregatedSuffix}
+                    </p>
+                  </div>
+                  
+                  {/* Status Indicator Pill */}
+                  <div className="flex items-center gap-2 bg-white px-4 py-2 rounded-xl border border-slate-200 shadow-sm text-xs font-semibold text-slate-700">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                    <span>
+                      {currentTask.status === 'researched' && t.pillResearched}
+                      {currentTask.status === 'matching' && t.pillMatching}
+                      {currentTask.status === 'matched' && t.pillMatched}
+                      {currentTask.status === 'upgraded' && t.pillUpgraded}
+                      {currentTask.status === 'finalized' && t.pillFinalized}
+                    </span>
+                  </div>
+                </div>
+
+                {/* TABS STAGE RENDERS */}
+                
+                {activeTab === 'researched' && currentTask.report && (
+                  
+                  /* TAB 2: JD Analysis (Bento Grid) */
+                  <motion.div 
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="grid grid-cols-1 lg:grid-cols-12 gap-6"
+                  >
+                    
+                    {/* Left: Research Summary */}
+                    <div className="col-span-1 lg:col-span-8 bg-white border border-slate-200 p-6 rounded-2xl shadow-sm">
+                      <div className="flex items-center gap-2 mb-4 pb-3 border-b border-slate-100">
+                        <Sparkles className="w-5 h-5 text-blue-600" />
+                        <h3 className="font-bold text-slate-950 text-sm uppercase tracking-wider">{t.researchSummary}</h3>
+                      </div>
+                      <p className="text-slate-700 text-sm leading-relaxed text-justify">
+                        {currentTask.report.researchSummary}
+                      </p>
+                    </div>
+
+                    {/* Right: Mandatory Requirements */}
+                    <div className="col-span-1 lg:col-span-4 bg-white border border-slate-200 p-6 rounded-2xl shadow-sm">
+                      <div className="flex items-center gap-2 mb-4 pb-3 border-b border-slate-100">
+                        <AlertCircle className="w-5 h-5 text-rose-500" />
+                        <h3 className="font-bold text-slate-950 text-sm uppercase tracking-wider text-rose-600 font-bold">Mandatory Requirements (必备硬性要求)</h3>
+                      </div>
+                      <ul className="flex flex-col gap-3">
+                        {currentTask.report.mandatoryRequirements.map((req, idx) => (
+                          <li key={idx} className="flex items-start gap-2.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-rose-500 mt-2 shrink-0"></span>
+                            <span className="text-xs text-slate-700 font-medium leading-normal">{req}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+
+                    {/* Bottom Full: Top 10 High Frequency Skills */}
+                    <div className="col-span-1 lg:col-span-12 bg-white border border-slate-200 p-6 rounded-2xl shadow-sm">
+                      <div className="flex justify-between items-center mb-6 pb-3 border-b border-slate-100">
+                        <div className="flex items-center gap-2">
+                          <BarChart3 className="w-5 h-5 text-blue-600" />
+                          <h3 className="font-bold text-slate-950 text-sm uppercase tracking-wider">Top 10 High-Frequency Skills (高频技能排行)</h3>
+                        </div>
+                        <span className="text-xs font-mono text-slate-400 font-bold">N={currentTask.report.jdCount}+ POSTINGS</span>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-4">
+                        {currentTask.report.highFrequencySkills.map((skill, idx) => (
+                          <div key={idx} className="flex flex-col gap-1.5">
+                            <div className="flex justify-between text-xs font-semibold">
+                              <span className="text-slate-800">{skill.name}</span>
+                              <span className="font-mono text-blue-600 font-bold">{skill.percentage}%</span>
+                            </div>
+                            <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden shadow-inner">
+                              <motion.div 
+                                initial={{ width: 0 }}
+                                animate={{ width: `${skill.percentage}%` }}
+                                transition={{ duration: 0.8, delay: idx * 0.05 }}
+                                className="bg-blue-600 h-full rounded-full"
+                              ></motion.div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Plus Differentiator Skills */}
+                    <div className="col-span-1 lg:col-span-12 bg-blue-50 border border-blue-100 p-6 rounded-2xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 text-blue-800 font-bold mb-1.5 text-sm uppercase tracking-wider">
+                          <CheckCircle2 className="w-5 h-5 text-blue-600" />
+                          <h4>Plus Skills (高阶差异化加分项)</h4>
+                        </div>
+                        <p className="text-xs text-blue-600 font-medium">这些能力通常属于稀缺差异化优势，在简历中突出能直接让猎头或用人单位高管眼前一亮。</p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {currentTask.report.plusSkills.map((skill, idx) => (
+                          <span key={idx} className="px-3.5 py-1.5 bg-white border border-blue-200 text-blue-700 rounded-xl text-xs font-mono font-semibold shadow-sm">
+                            {skill}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* CALL TO ACTION CTA MODULE */}
+                    <div className="col-span-1 lg:col-span-12 bg-slate-900 border border-slate-800 p-8 rounded-2xl text-center flex flex-col items-center justify-center gap-4 shadow-xl mt-4 relative overflow-hidden">
+                      <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-600 via-indigo-500 to-emerald-400"></div>
+                      <div className="w-16 h-16 rounded-full bg-slate-800/80 flex items-center justify-center text-blue-400 mb-2">
+                        <UploadCloud className="w-8 h-8" />
+                      </div>
+                      <h3 className="text-white text-xl font-bold tracking-tight">测一测您与该职位的匹配契合度</h3>
+                      <p className="text-slate-400 text-xs max-w-lg leading-relaxed">
+                        {t.ctaMatchDesc}
+                      </p>
+                      <button 
+                        onClick={() => {
+                          const updatedTasks = tasks.map(t => {
+                            if (t.id === currentTask.id) {
+                              return { ...t, status: 'matching' as const };
+                            }
+                            return t;
+                          });
+                          saveTasks(updatedTasks);
+                          setActiveTab('matching');
+                        }}
+                        className="mt-2 bg-blue-600 text-white px-8 py-3 rounded-xl text-xs font-bold hover:bg-blue-700 transition-colors shadow-sm font-sans flex items-center gap-2 group"
+                      >
+                        <span>{t.ctaMatchBtn}</span>
+                        <ChevronRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
+                      </button>
+                    </div>
+
+                  </motion.div>
+                )}
+
+                {activeTab === 'matching' && (
+                  
+                  /* TAB 3: Upload Resume & Raw input stage */
+                  <motion.div 
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="grid grid-cols-1 lg:grid-cols-12 gap-6"
+                  >
+                    
+                    {/* Left small card: Active Context Target Role */}
+                    <div className="col-span-1 lg:col-span-4 flex flex-col gap-6">
+                      <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-sm">
+                        <h3 className="font-bold text-slate-900 text-sm uppercase tracking-wider mb-4 pb-3 border-b border-slate-100">Target Role Context</h3>
+                        <div className="flex flex-col gap-4">
+                          <div>
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">意向目标岗位</span>
+                            <span className="text-sm font-semibold text-slate-800">{currentTask.targetRole}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">分析行业及城市</span>
+                            <span className="text-sm font-semibold text-slate-800">{currentTask.industry} | {currentTask.location}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">检索JD数量</span>
+                            <span className="text-sm font-semibold text-slate-800">{currentTask.report?.jdCount || 25} 篇中文招聘信息</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Benefits helper info */}
+                      <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-sm">
+                        <h3 className="font-bold text-slate-900 text-sm uppercase tracking-wider mb-4 pb-3 border-b border-slate-100">Why Upload? (比对价值)</h3>
+                        <div className="flex flex-col gap-4">
+                          <div className="flex gap-3">
+                            <CheckCircle2 className="w-5 h-5 text-blue-600 shrink-0 mt-0.5" />
+                            <div>
+                              <h4 className="text-xs font-bold text-slate-800">100% 对齐真实用工标准</h4>
+                              <p className="text-[11px] text-slate-500 leading-relaxed mt-1">不是生硬套用词藻，而是深入对比招聘信息中的高管掌控力。找到简历无法被大厂HR筛选发现的深层短板。</p>
+                            </div>
+                          </div>
+                          <div className="flex gap-3">
+                            <CheckCircle2 className="w-5 h-5 text-blue-600 shrink-0 mt-0.5" />
+                            <div>
+                              <h4 className="text-xs font-bold text-slate-800">精细度前沿高频词推荐</h4>
+                              <p className="text-[11px] text-slate-500 leading-relaxed mt-1">智能分析大模型微调、Agent工程、商业ROI指标在大厂ATS筛选系统中的最优堆叠配比。</p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Right core: Upload & text area inputs */}
+                    <div className="col-span-1 lg:col-span-8 flex flex-col gap-6">
+                      
+                      {/* Interactive Drag & Drop Box */}
+                      <div 
+                        onDragOver={handleDragOver}
+                        onDragLeave={handleDragLeave}
+                        onDrop={handleDrop}
+                        className={`border-2 border-dashed rounded-2xl p-8 flex flex-col items-center justify-center text-center transition-all bg-white cursor-pointer group min-h-[220px] ${isDragActive ? 'border-blue-500 bg-blue-50' : 'border-slate-300 hover:border-blue-500 hover:bg-slate-50'}`}
+                      >
+                        <div className="w-14 h-14 rounded-full bg-blue-50 group-hover:scale-105 transition-transform flex items-center justify-center text-blue-600 mb-4">
+                          <UploadCloud className="w-7 h-7" />
+                        </div>
+                        {resumeFileName ? (
+                          <div>
+                            <h4 className="font-bold text-slate-900 text-sm">{resumeFileName}</h4>
+                            <p className="text-xs text-slate-500 mt-1">文件成功载入！您可以继续在下方编辑或直接开始分析。</p>
+                          </div>
+                        ) : (
+                          <div>
+                            <h4 className="font-bold text-slate-900 text-sm">拖拽本地简历文件到此处，或点击浏览文件</h4>
+                            <p className="text-xs text-slate-500 mt-1">支持常见 PDF、Word(.docx)、纯文本(.txt) 格式。文件解析无延迟且脱敏安全。</p>
+                          </div>
+                        )}
+                        <input 
+                          type="file" 
+                          id="file-upload-input"
+                          className="hidden" 
+                          onChange={(e) => {
+                            if (e.target.files && e.target.files[0]) {
+                              parseAndSetFile(e.target.files[0]);
+                            }
+                          }}
+                        />
+                        <button 
+                          onClick={() => document.getElementById("file-upload-input")?.click()}
+                          className="mt-4 px-5 py-2 bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-800 rounded-lg text-xs font-bold transition-all shadow-sm"
+                        >
+                          浏览文件
+                        </button>
+                      </div>
+
+                      {/* Raw resume text input field */}
+                      <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-sm">
+                        <div className="flex justify-between items-center mb-4 pb-3 border-b border-slate-100">
+                          <label className="font-bold text-slate-900 text-sm uppercase tracking-wider">直接粘贴/输入您的简历文本 (备选输入)</label>
+                          <button 
+                            onClick={loadQuickSampleResume}
+                            className="text-xs text-blue-600 font-bold hover:underline flex items-center gap-1"
+                          >
+                            <Sparkles className="w-3.5 h-3.5 text-blue-500 animate-pulse" />
+                            <span>加载高管求职简历样例测试</span>
+                          </button>
+                        </div>
+                        <textarea 
+                          value={resumeText}
+                          onChange={(e) => setResumeText(e.target.value)}
+                          placeholder="在此处复制粘贴您的个人求职简历，或通过加载上方「张建国」高管简历样例进行一键智能体验..."
+                          rows={10}
+                          className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 text-sm placeholder:text-slate-400 focus:outline-none focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-100 font-sans transition-all"
+                        />
+                      </div>
+
+                      {/* Launch analysis button block */}
+                      <div className="flex justify-end gap-3 mt-2">
+                        <button 
+                          onClick={() => {
+                            const updatedTasks = tasks.map(t => {
+                              if (t.id === currentTask.id) {
+                                return { ...t, status: 'researched' as const };
+                              }
+                              return t;
+                            });
+                            saveTasks(updatedTasks);
+                          }}
+                          className="px-6 py-3 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all"
+                        >
+                          返回画像
+                        </button>
+                        <button 
+                          onClick={handleMatchResume}
+                          disabled={!resumeText.trim()}
+                          className={`px-8 py-3 rounded-xl text-xs font-bold text-white transition-all shadow-sm flex items-center gap-2 ${resumeText.trim() ? 'bg-blue-600 hover:bg-blue-700' : 'bg-slate-300 cursor-not-allowed'}`}
+                        >
+                          <span>分析简历匹配度</span>
+                          <ChevronRight className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                    </div>
+
+                  </motion.div>
+                )}
+
+                {activeTab === 'matched' && currentTask.matchReport && (
+                  
+                  /* TAB 4: Match Score Details & Teaser */
+                  <motion.div 
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="flex flex-col gap-6"
+                  >
+                    
+                    {/* Score & Strengths/Gaps Grid */}
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                      
+                      {/* Overall match circular score */}
+                      <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-sm flex flex-col items-center justify-center">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block w-full text-left mb-6">Overall Match (综合契合度)</span>
+                        
+                        <div className="relative w-48 h-48 flex items-center justify-center">
+                          {/* SVG Circular progress */}
+                          <svg className="w-full h-full transform -rotate-90" viewBox="0 0 100 100">
+                            <circle cx="50" cy="50" r="45" fill="none" stroke="#f1f5f9" strokeWidth="8" />
+                            <motion.circle 
+                              cx="50" 
+                              cy="50" 
+                              r="45" 
+                              fill="none" 
+                              stroke="#10b981" 
+                              strokeWidth="8"
+                              strokeDasharray="282.7"
+                              initial={{ strokeDashoffset: 282.7 }}
+                              animate={{ strokeDashoffset: 282.7 - (282.7 * currentTask.matchReport.matchScore) / 100 }}
+                              transition={{ duration: 1.2, ease: "easeOut" }}
+                            />
+                          </svg>
+                          <div className="absolute flex flex-col items-center justify-center">
+                            <span className="text-4xl font-extrabold text-slate-900">{currentTask.matchReport.matchScore}</span>
+                            <span className="text-xs text-slate-400 font-bold uppercase tracking-widest mt-0.5">/ 100分</span>
+                          </div>
+                        </div>
+
+                        <p className="mt-6 text-xs text-slate-500 text-center leading-relaxed">
+                          综合对标AI大模型在中文高阶岗位中的用工偏好：<strong className="text-slate-800">
+                            {currentTask.matchReport.matchScore >= 70 ? "基础实力非常扎实，急需进行总监职级维度的语言靶向精修。" : "简历倾向执行层动作，缺乏高级架构管理及商业数据印证。"}
+                          </strong>
+                        </p>
+                      </div>
+
+                      {/* Strengths & Gaps */}
+                      <div className="lg:col-span-2 flex flex-col gap-6">
+                        
+                        {/* Key Strengths list */}
+                        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+                          <div className="px-6 py-3.5 border-b border-slate-100 bg-slate-50 flex items-center gap-2">
+                            <CheckCircle2 className="w-5 h-5 text-emerald-500" />
+                            <h3 className="font-bold text-slate-900 text-xs uppercase tracking-wider">Key Strengths (简历核心优势)</h3>
+                          </div>
+                          <div className="p-6 flex flex-col gap-4">
+                            {currentTask.matchReport.strengths.map((str, idx) => (
+                              <div key={idx} className="flex gap-3 items-start">
+                                <ChevronRight className="w-4 h-4 text-emerald-500 shrink-0 mt-1" />
+                                <div>
+                                  <h4 className="text-sm font-bold text-slate-800 leading-none">{str.title}</h4>
+                                  <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">{str.detail}</p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Critical Gaps list */}
+                        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+                          <div className="px-6 py-3.5 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <AlertCircle className="w-5 h-5 text-rose-500" />
+                              <h3 className="font-bold text-slate-900 text-xs uppercase tracking-wider text-rose-600">Critical Gaps (核心差距短板)</h3>
+                            </div>
+                            <span className="bg-rose-50 text-rose-600 text-[10px] font-bold px-2 py-0.5 rounded-full">3 个高级缺陷</span>
+                          </div>
+                          <div className="p-6 flex flex-col gap-4">
+                            {currentTask.matchReport.gaps.map((gap, idx) => (
+                              <div key={idx} className="flex gap-3 items-start">
+                                <span className="w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0 mt-2"></span>
+                                <div>
+                                  <h4 className="text-sm font-bold text-slate-800 leading-none">{gap.title}</h4>
+                                  <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">{gap.detail}</p>
+                                </div>
+                              </div>
+                            ))}
+
+                            {/* Blurred locked Gaps teaser block */}
+                            <div className="relative border-t border-dashed border-slate-100 mt-2 pt-4">
+                              <div className="absolute inset-0 backdrop-blur-[2.5px] bg-white/70 z-10 flex items-center justify-center">
+                                <button 
+                                  onClick={() => {
+                                    const updatedTasks = tasks.map(t => {
+                                      if (t.id === currentTask.id) {
+                                        return { ...t, status: 'upgraded' as const };
+                                      }
+                                      return t;
+                                    });
+                                    saveTasks(updatedTasks);
+                                  }}
+                                  className="bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold px-4 py-2 rounded-lg shadow-md transition-all flex items-center gap-2"
+                                >
+                                  <Lock className="w-3.5 h-3.5 text-blue-400" />
+                                  <span>付费解锁额外 {currentTask.matchReport.additionalGapsCount} 项深度缺陷清单</span>
+                                </button>
+                              </div>
+
+                              <div className="opacity-20 blur-[2px] pointer-events-none select-none flex flex-col gap-3">
+                                <div className="flex gap-3">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400 mt-1.5"></span>
+                                  <div>
+                                    <h4 className="text-xs font-bold text-slate-800">海外研发机构敏捷迭代细节缺失</h4>
+                                    <p className="text-[10px] text-slate-400 mt-0.5">对标高频率的大模型API整合交付，您的简历没有写出针对数据出海合规细节的要求...</p>
+                                  </div>
+                                </div>
+                                <div className="flex gap-3">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400 mt-1.5"></span>
+                                  <div>
+                                    <h4 className="text-xs font-bold text-slate-800">对标企业级大客户财务P&L预算掌控</h4>
+                                    <p className="text-[10px] text-slate-400 mt-0.5">高阶VP岗一般直接对预算负责，原有简历中几乎没有任何大模型商业算力购买或自研预算规划指标的呈现...</p>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+
+                          </div>
+                        </div>
+
+                      </div>
+                    </div>
+
+                    {/* Keyword density coverage section */}
+                    <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+                      <div className="px-6 py-3.5 border-b border-slate-100 bg-slate-50 flex items-center gap-2">
+                        <Sparkles className="w-5 h-5 text-blue-600" />
+                        <h3 className="font-bold text-slate-900 text-xs uppercase tracking-wider">Keyword Density & Coverage (大厂筛选高频关键词覆盖评估)</h3>
+                      </div>
+                      <div className="p-6">
+                        <div className="flex flex-wrap gap-x-2 gap-y-3">
+                          {currentTask.matchReport.matchedKeywords.map((tag, idx) => (
+                            <span key={idx} className="px-3 py-1 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg text-xs font-mono font-semibold flex items-center gap-1.5">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                              {tag}
+                            </span>
+                          ))}
+                          {currentTask.matchReport.missingKeywords.map((tag, idx) => (
+                            <span key={idx} className="px-3 py-1 bg-rose-50 border border-rose-200 border-dashed text-rose-800 rounded-lg text-xs font-mono font-semibold flex items-center gap-1.5">
+                              <span className="w-1.5 h-1.5 rounded-full bg-rose-400"></span>
+                              {tag} (未提及)
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* BLOCKED FULL UPGRADE CTA PANEL */}
+                    <div className="bg-slate-900 border border-slate-800 p-8 rounded-2xl text-center flex flex-col items-center justify-center gap-4 shadow-xl mt-2 relative overflow-hidden">
+                      <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-600 via-indigo-500 to-emerald-400"></div>
+                      <Lock className="w-10 h-10 text-blue-400 mb-2" />
+                      <h3 className="text-white text-xl font-bold tracking-tight">大模型高管靶向简历优化报告已就绪</h3>
+                      <p className="text-slate-400 text-xs max-w-lg leading-relaxed">
+                        一键升级，解锁针对「{currentTask.targetRole}」岗位的完整改写方案。智能重构为SAR/STAR模型，高亮大厂高频率筛查词，生成一版可即时投递、在线编辑的高级求职简历，同时解锁Word/PDF一键打包导出权益。
+                      </p>
+                      <button 
+                        onClick={() => {
+                          const updatedTasks = tasks.map(t => {
+                            if (t.id === currentTask.id) {
+                              return { ...t, status: 'upgraded' as const };
+                            }
+                            return t;
+                          });
+                          saveTasks(updatedTasks);
+                          setActiveTab('upgraded');
+                        }}
+                        className="mt-2 bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-xl text-xs font-bold transition-colors shadow-sm font-sans flex items-center gap-2 group animate-pulse"
+                      >
+                        <Sparkles className="w-4 h-4 text-emerald-300" />
+                        <span>解锁完整大模型简历重构</span>
+                      </button>
+                    </div>
+
+                  </motion.div>
+                )}
+
+                {activeTab === 'upgraded' && (
+                  
+                  /* TAB 5: Checkout Order Upgrade Stage */
+                  <motion.div 
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="grid grid-cols-1 md:grid-cols-12 gap-8 items-start py-4"
+                  >
+                    
+                    {/* Left: Value proposition list */}
+                    <div className="md:col-span-7 flex flex-col gap-6">
+                      <div className="space-y-3">
+                        <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100/50 px-3 py-1 rounded border border-emerald-200 inline-block uppercase tracking-wider font-mono">EXECUTIVE AI UPGRADE</span>
+                        <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight leading-tight">
+                          {t.checkoutTitle}
+                        </h2>
+                        <p className="text-sm text-slate-500 leading-relaxed mt-2">
+                          {t.paywallIntro}
+                        </p>
+                      </div>
+
+                      <div className="flex flex-col gap-4 mt-2">
+                        {[
+                          { title: t.paywallPoint1Title, detail: t.paywallPoint1Desc },
+                          { title: t.paywallPoint2Title, detail: t.paywallPoint2Desc },
+                          { title: t.paywallPoint3Title, detail: t.paywallPoint3Desc },
+                          { title: t.paywallPoint4Title, detail: t.paywallPoint4Desc }
+                        ].map((item, idx) => (
+                          <div key={idx} className="flex gap-4 p-4 bg-white border border-slate-200 rounded-xl hover:shadow-md transition-all">
+                            <Check className="w-5 h-5 text-blue-600 shrink-0 mt-0.5" />
+                            <div>
+                              <h4 className="text-xs font-bold text-slate-800 leading-none">{item.title}</h4>
+                              <p className="text-[11px] text-slate-500 leading-relaxed mt-2">{item.detail}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Social proof trust label */}
+                      <div className="flex items-center gap-3 mt-4 pt-5 border-t border-slate-200">
+                        <div className="flex -space-x-2.5 font-mono">
+                          {[
+                            "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=100&h=100",
+                            "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=100&h=100",
+                            "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&q=80&w=100&h=100"
+                          ].map((url, i) => (
+                            <img key={i} src={url} className="w-8 h-8 rounded-full border-2 border-white object-cover" alt="Executive Alumni" referrerPolicy="no-referrer" />
+                          ))}
+                        </div>
+                        <span className="text-[11px] text-slate-500 font-medium">
+                          {t.industrySuccessRate}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Right: Checkout pricing & methods component */}
+                    <div className="md:col-span-5 relative">
+                      <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-lg border-t-4 border-t-blue-600 sticky top-24">
+                        <h3 className="font-bold text-slate-900 text-xs uppercase tracking-wider mb-4 font-sans">
+                          {lang === 'zh' ? '订单明细 (Order Summary)' : 'Order Summary'}
+                        </h3>
+                        
+                        <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl mb-6 flex justify-between items-start">
+                          <div className="flex-1 pr-2">
+                            <h4 className="text-xs font-bold text-slate-800 leading-relaxed">
+                              {lang === 'zh' ? '单次 AI 高管简历靶向优化包' : 'AI Executive Resume Targeted Optimization Pack'}
+                            </h4>
+                            <span className="text-[9px] font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded inline-block mt-2 font-sans">
+                              {lang === 'zh' ? '早鸟特惠' : 'EARLY BIRD DISCOUNT'}
+                            </span>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <span className="text-2xl font-extrabold text-slate-900 font-mono">¥29.9</span>
+                            <span className="text-[10px] text-slate-400 font-bold line-through block mt-1 font-mono">¥49.00</span>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col gap-3 mb-6">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">{t.selectPayment}</label>
+                          
+                          <button 
+                            onClick={() => setPaymentMethod('wechat')}
+                            className={`w-full flex items-center justify-between p-4 border rounded-xl cursor-pointer text-left transition-all ${paymentMethod === 'wechat' ? 'border-blue-600 bg-blue-50/50' : 'border-slate-200 hover:bg-slate-50'}`}
+                          >
+                            <div className="flex items-center gap-3">
+                              <span className="w-5 h-5 rounded-full bg-emerald-500 flex items-center justify-center text-white text-[10px] font-bold">{lang === 'zh' ? '微信' : 'WX'}</span>
+                              <span className="text-xs font-bold text-slate-800">{t.wechatPay}</span>
+                            </div>
+                            <div className={`w-4.5 h-4.5 rounded-full border flex items-center justify-center ${paymentMethod === 'wechat' ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-300 bg-white'}`}>
+                              {paymentMethod === 'wechat' && <Check className="w-3 h-3" />}
+                            </div>
+                          </button>
+
+                          <button 
+                            onClick={() => setPaymentMethod('alipay')}
+                            className={`w-full flex items-center justify-between p-4 border rounded-xl cursor-pointer text-left transition-all ${paymentMethod === 'alipay' ? 'border-blue-600 bg-blue-50/50' : 'border-slate-200 hover:bg-slate-50'}`}
+                          >
+                            <div className="flex items-center gap-3">
+                              <span className="w-5 h-5 rounded-full bg-sky-500 flex items-center justify-center text-white text-[10px] font-bold">{lang === 'zh' ? '宝' : 'Ali'}</span>
+                              <span className="text-xs font-bold text-slate-800">{t.alipay}</span>
+                            </div>
+                            <div className={`w-4.5 h-4.5 rounded-full border flex items-center justify-center ${paymentMethod === 'alipay' ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-300 bg-white'}`}>
+                              {paymentMethod === 'alipay' && <Check className="w-3 h-3" />}
+                            </div>
+                          </button>
+                        </div>
+
+                        {/* Order button trigger */}
+                        <button 
+                          onClick={handlePaymentSubmit}
+                          disabled={isCreatingSession}
+                          className={`w-full py-3.5 rounded-xl text-xs font-bold transition-all shadow-md flex items-center justify-center gap-2 group ${isCreatingSession ? 'bg-slate-400 cursor-not-allowed text-slate-100' : 'bg-blue-600 hover:bg-blue-700 text-white'}`}
+                        >
+                          {isCreatingSession ? (
+                            <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                          ) : (
+                            <CreditCard className="w-4 h-4 shrink-0" />
+                          )}
+                          <span>{isCreatingSession ? (lang === 'zh' ? '正在加载安全收银台...' : 'Opening secure checkout...') : t.payAndGenerate}</span>
+                          {!isCreatingSession && <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />}
+                        </button>
+
+                        <div className="flex items-center justify-center gap-2 mt-4 text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                          <Lock className="w-3.5 h-3.5" />
+                          <span>Secure, SSL Encrypted checkout</span>
+                        </div>
+                      </div>
+                    </div>
+
+                  </motion.div>
+                )}
+
+                {activeTab === 'finalized' && currentTask.optimizedResume && (
+                  
+                  /* TAB 6: Dual Pane Workspace & Interactive PDF/Word Download */
+                  <motion.div 
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="flex flex-col gap-6"
+                  >
+                    
+                    {/* Control Action bar - Stacked with full-width wrapping */}
+                    <div className="bg-white border border-slate-200 p-5 rounded-2xl flex flex-col gap-4 shadow-sm">
+                      <div className="border-b border-slate-100 pb-3">
+                        <p className="text-xs text-slate-500 leading-relaxed font-semibold">
+                          {t.viewOptimizedResume}
+                        </p>
+                      </div>
+
+                      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+                        {/* Legal confirm Fact Checkbox */}
+                        <label className="flex items-center gap-2.5 cursor-pointer border border-slate-200 hover:bg-slate-50 px-4 py-2.5 rounded-xl transition-all self-start">
+                          <input 
+                            type="checkbox" 
+                            checked={isAccurateChecked}
+                            onChange={(e) => setIsAccurateChecked(e.target.checked)}
+                            className="w-4.5 h-4.5 text-blue-600 border-slate-300 rounded focus:ring-blue-500"
+                          />
+                          <span className="text-xs text-slate-600 font-bold leading-none">{t.resumeFactsConfirm}</span>
+                        </label>
+
+                        <div className="flex flex-wrap items-center gap-3">
+                          {isEditing ? (
+                            <button 
+                              onClick={handleSaveEditedResume}
+                              className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm flex items-center gap-1.5"
+                            >
+                              <Check className="w-4 h-4" />
+                              <span>{t.saveChanges}</span>
+                            </button>
+                          ) : (
+                            <button 
+                              onClick={() => {
+                                setEditedResume(JSON.parse(JSON.stringify(currentTask.optimizedResume)));
+                                setIsEditing(true);
+                              }}
+                              className="px-5 py-2.5 border border-blue-600 hover:bg-blue-50 text-blue-700 rounded-xl text-xs font-bold transition-colors shadow-sm flex items-center gap-2"
+                            >
+                              <Edit className="w-4 h-4 shrink-0" />
+                              <span>{t.editResume}</span>
+                            </button>
+                          )}
+
+                          {/* Export dropdown package */}
+                          <div className="relative group">
+                            <button className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all shadow-md flex items-center gap-2">
+                              <Download className="w-4 h-4 shrink-0" />
+                              <span>{t.exportResume}</span>
+                              <ChevronDown className="w-3.5 h-3.5 shrink-0" />
+                            </button>
+                            <div className="absolute right-0 top-full pt-1.5 w-44 hidden group-hover:block z-20">
+                              <div className="bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden">
+                                <button 
+                                  onClick={() => handleExportResume('word')}
+                                  className="w-full text-left px-4 py-2.5 text-xs text-slate-700 hover:bg-slate-50 font-bold"
+                                >
+                                  {t.exportWord}
+                                </button>
+                                <button 
+                                  onClick={() => handleExportResume('pdf')}
+                                  className="w-full text-left px-4 py-2.5 text-xs text-slate-700 hover:bg-slate-50 font-bold"
+                                >
+                                  {t.exportPDF}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Dual Pane Layout wrapper */}
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-[600px] items-stretch">
+                      
+                      {/* Left Pane: Original raw resume text */}
+                      <div className="col-span-1 lg:col-span-4 bg-slate-100 border border-slate-200 rounded-2xl flex flex-col shadow-inner overflow-hidden">
+                        <div className="px-5 py-3 border-b border-slate-200 bg-slate-200/50 flex justify-between items-center shrink-0">
+                          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Original Text ({t.originalResumeText})</span>
+                          <span className="bg-slate-300 text-slate-600 text-[9px] font-bold px-2 py-0.5 rounded font-mono">V1.0</span>
+                        </div>
+                        <div className="flex-grow overflow-y-auto p-5 text-slate-500 text-xs leading-relaxed font-sans opacity-70 select-none">
+                          <pre className="whitespace-pre-wrap font-sans">
+                            {currentTask.originalResumeText || t.noOriginalText}
+                          </pre>
+                        </div>
+                      </div>
+
+                      {/* Right Pane: AI-Optimized resume layout */}
+                      <div className="col-span-1 lg:col-span-8 bg-white border-2 border-blue-500/20 rounded-2xl flex flex-col shadow-lg overflow-hidden relative">
+                        {/* Decorative AI Glow strip */}
+                        <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-600 via-indigo-500 to-emerald-400 z-10"></div>
+                        
+                        <div className="px-5 py-3 border-b border-slate-200 bg-slate-50 flex justify-between items-center shrink-0">
+                          <span className="text-[10px] font-bold text-blue-600 uppercase tracking-widest flex items-center gap-1.5">
+                            <Sparkles className="w-4 h-4 text-blue-500 animate-pulse" />
+                            AI-Optimized Resume ({t.optimizedResumeHeader})
+                          </span>
+                          <span className="bg-emerald-50 text-emerald-700 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1 border border-emerald-200 font-mono shadow-sm">
+                            <Check className="w-3 h-3 text-emerald-600" />
+                            92% ATS MATCH
+                          </span>
+                        </div>
+
+                        {/* Interactive edit layout vs render layout */}
+                        {isEditing && editedResume ? (
+                          
+                          /* Live on-screen Rich editor */
+                          <div className="flex-grow overflow-y-auto p-6 space-y-6">
+                            {/* General Information Grid */}
+                            <div className="bg-slate-50 border border-slate-150 p-4 rounded-xl space-y-3">
+                              <h4 className="text-[11px] font-extrabold text-blue-600 uppercase tracking-wider">{lang === 'zh' ? '基本联系信息' : 'Basic Contact Info'}</h4>
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                                <div>
+                                  <label className="text-[10px] font-bold text-slate-400 block mb-1">{t.nameLabel}</label>
+                                  <input 
+                                    type="text" 
+                                    value={editedResume.name}
+                                    onChange={(e) => setEditedResume({ ...editedResume, name: e.target.value })}
+                                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-800 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[10px] font-bold text-slate-400 block mb-1">{t.targetRoleLabel}</label>
+                                  <input 
+                                    type="text" 
+                                    value={editedResume.title}
+                                    onChange={(e) => setEditedResume({ ...editedResume, title: e.target.value })}
+                                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-800 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[10px] font-bold text-slate-400 block mb-1">{t.emailLabel}</label>
+                                  <input 
+                                    type="text" 
+                                    value={editedResume.email}
+                                    onChange={(e) => setEditedResume({ ...editedResume, email: e.target.value })}
+                                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-800 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[10px] font-bold text-slate-400 block mb-1">{t.cityLabel}</label>
+                                  <input 
+                                    type="text" 
+                                    value={editedResume.location}
+                                    onChange={(e) => setEditedResume({ ...editedResume, location: e.target.value })}
+                                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-800 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                                  />
+                                </div>
+                                <div className="md:col-span-2">
+                                  <label className="text-[10px] font-bold text-slate-400 block mb-1">{t.linkedinLabel}</label>
+                                  <input 
+                                    type="text" 
+                                    value={editedResume.linkedin || ""}
+                                    placeholder={lang === 'zh' ? '如: linkedin.com/in/executive-pro' : 'e.g., linkedin.com/in/executive-pro'}
+                                    onChange={(e) => setEditedResume({ ...editedResume, linkedin: e.target.value })}
+                                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-800 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                                  />
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Summary Section */}
+                            <div className="bg-slate-50 border border-slate-150 p-4 rounded-xl space-y-2">
+                              <h4 className="text-[11px] font-extrabold text-blue-600 uppercase tracking-wider">{t.summaryLabel}</h4>
+                              <div>
+                                <textarea 
+                                  value={editedResume.summary}
+                                  onChange={(e) => setEditedResume({ ...editedResume, summary: e.target.value })}
+                                  rows={4}
+                                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-800 leading-relaxed focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                                />
+                              </div>
+                            </div>
+
+                            {/* Core Capabilities */}
+                            <div className="bg-slate-50 border border-slate-150 p-4 rounded-xl space-y-3.5">
+                              <h4 className="text-[11px] font-extrabold text-blue-600 uppercase tracking-wider">{lang === 'zh' ? '高管核心能力标签' : 'Core Executive Capabilities'}</h4>
+                              <div className="space-y-2">
+                                {editedResume.coreCapabilities.map((cap, idx) => (
+                                  <div key={idx} className="flex gap-2 items-center">
+                                    <span className="text-[10px] text-slate-400 font-mono w-5 shrink-0">#{idx + 1}</span>
+                                    <input
+                                      type="text"
+                                      value={cap}
+                                      onChange={(e) => {
+                                        const newCaps = [...editedResume.coreCapabilities];
+                                        newCaps[idx] = e.target.value;
+                                        setEditedResume({ ...editedResume, coreCapabilities: newCaps });
+                                      }}
+                                      className="flex-grow px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-800 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const newCaps = editedResume.coreCapabilities.filter((_, i) => i !== idx);
+                                        setEditedResume({ ...editedResume, coreCapabilities: newCaps });
+                                      }}
+                                      className="text-slate-400 hover:text-rose-600 transition-colors p-1"
+                                      title={lang === 'zh' ? '删除' : 'Delete'}
+                                    >
+                                      <Trash2 className="w-4 h-4" />
+                                    </button>
+                                  </div>
+                                ))}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditedResume({ ...editedResume, coreCapabilities: [...editedResume.coreCapabilities, ''] });
+                                  }}
+                                  className="text-xs text-blue-600 hover:text-blue-700 font-bold flex items-center gap-1 mt-1.5"
+                                >
+                                  <Plus className="w-3.5 h-3.5" />
+                                  {lang === 'zh' ? '添加能力项' : 'Add Capability'}
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Work Experience with Bullets and Suggestions */}
+                            <div className="bg-slate-50 border border-slate-150 p-4 rounded-xl space-y-4">
+                              <div className="flex justify-between items-center">
+                                <h4 className="text-[11px] font-extrabold text-blue-600 uppercase tracking-wider">{t.workExperienceLabel}</h4>
+                                <span className="text-[10px] text-amber-600 font-bold bg-amber-50 border border-amber-200 px-2.5 py-0.5 rounded-full">
+                                  {lang === 'zh' ? '💡 支持修改参考句式且保留 xxx 待填项' : '💡 Supports direct suggestion text replacement'}
+                                </span>
+                              </div>
+                              
+                              <div className="space-y-6">
+                                {editedResume.experience.map((exp, expIdx) => (
+                                  <div key={expIdx} className="p-4 bg-white border border-slate-200 rounded-xl space-y-4 relative shadow-sm">
+                                    <div className="absolute top-3 right-3 flex items-center gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const newExp = editedResume.experience.filter((_, i) => i !== expIdx);
+                                          setEditedResume({ ...editedResume, experience: newExp });
+                                        }}
+                                        className="text-slate-400 hover:text-rose-600 transition-colors p-1"
+                                        title={lang === 'zh' ? '删除此段履历' : 'Delete Work Experience'}
+                                      >
+                                        <Trash2 className="w-4 h-4" />
+                                      </button>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                      <div>
+                                        <label className="text-[9px] font-bold text-slate-400 block mb-1">{lang === 'zh' ? '公司/企业名称' : 'Company'}</label>
+                                        <input
+                                          type="text"
+                                          value={exp.company}
+                                          onChange={(e) => {
+                                            const newExp = [...editedResume.experience];
+                                            newExp[expIdx].company = e.target.value;
+                                            setEditedResume({ ...editedResume, experience: newExp });
+                                          }}
+                                          className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold text-slate-800"
+                                        />
+                                      </div>
+                                      <div>
+                                        <label className="text-[9px] font-bold text-slate-400 block mb-1">{lang === 'zh' ? '高管岗位职位' : 'Executive Role'}</label>
+                                        <input
+                                          type="text"
+                                          value={exp.role}
+                                          onChange={(e) => {
+                                            const newExp = [...editedResume.experience];
+                                            newExp[expIdx].role = e.target.value;
+                                            setEditedResume({ ...editedResume, experience: newExp });
+                                          }}
+                                          className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold text-slate-800"
+                                        />
+                                      </div>
+                                      <div>
+                                        <label className="text-[9px] font-bold text-slate-400 block mb-1">{lang === 'zh' ? '任职历时阶段' : 'Tenure Duration'}</label>
+                                        <input
+                                          type="text"
+                                          value={exp.duration}
+                                          onChange={(e) => {
+                                            const newExp = [...editedResume.experience];
+                                            newExp[expIdx].duration = e.target.value;
+                                            setEditedResume({ ...editedResume, experience: newExp });
+                                          }}
+                                          className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold text-slate-800"
+                                        />
+                                      </div>
+                                    </div>
+
+                                    {/* Bullets detailed list */}
+                                    <div className="space-y-4 pt-2 border-t border-slate-100">
+                                      <label className="text-[9px] font-bold text-slate-400 block">{lang === 'zh' ? '优化后履历描述 (逐条微调/采纳建议)' : 'Optimized Bullet Points'}</label>
+                                      {exp.bullets.map((bullet, bulletIdx) => {
+                                        const refText = extractReference(bullet);
+                                        return (
+                                          <div key={bulletIdx} className="space-y-1.5">
+                                            <div className="flex gap-2 items-start">
+                                              <span className="text-[10px] text-slate-400 font-mono mt-2 shrink-0">{bulletIdx + 1}.</span>
+                                              <textarea
+                                                value={bullet}
+                                                rows={3}
+                                                onChange={(e) => {
+                                                  const newExp = [...editedResume.experience];
+                                                  newExp[expIdx].bullets[bulletIdx] = e.target.value;
+                                                  setEditedResume({ ...editedResume, experience: newExp });
+                                                }}
+                                                className="flex-grow px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 leading-relaxed focus:bg-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                                              />
+                                              <button
+                                                type="button"
+                                                onClick={() => {
+                                                  const newExp = [...editedResume.experience];
+                                                  newExp[expIdx].bullets = exp.bullets.filter((_, i) => i !== bulletIdx);
+                                                  setEditedResume({ ...editedResume, experience: newExp });
+                                                }}
+                                                className="text-slate-400 hover:text-rose-600 transition-colors p-1 mt-1 shrink-0"
+                                                title={lang === 'zh' ? '删除此条' : 'Delete Bullet'}
+                                              >
+                                                <Trash2 className="w-3.5 h-3.5" />
+                                              </button>
+                                            </div>
+
+                                            {/* Smart reference-adoption template block */}
+                                            {refText && (
+                                              <div className="pl-5">
+                                                <div className="p-2.5 bg-blue-50/80 border border-blue-100 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-inner">
+                                                  <div className="text-[11px] text-blue-700 font-medium leading-relaxed">
+                                                    <span className="font-extrabold text-blue-800 flex items-center gap-1 mb-0.5">
+                                                      <Sparkles className="w-3 h-3 text-blue-600" />
+                                                      {lang === 'zh' ? '✨ 建议具体参考句式：' : '✨ Actionable Reference Statement:'}
+                                                    </span>
+                                                    <span className="bg-white/95 px-1.5 py-0.5 rounded border border-blue-200 font-mono text-slate-800 select-all font-semibold block mt-1">
+                                                      {refText}
+                                                    </span>
+                                                  </div>
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                      const updatedBullet = bullet.replace(/【建议补充：[^】]+】/g, refText);
+                                                      const newExp = [...editedResume.experience];
+                                                      newExp[expIdx].bullets[bulletIdx] = updatedBullet;
+                                                      setEditedResume({ ...editedResume, experience: newExp });
+                                                      triggerToast(lang === 'zh' ? "🎉 已成功替换，请在输入框内将 xxx 手动改为您的真实数字！" : "🎉 Replaced! Please modify the 'xxx' numbers manually inside the editor.");
+                                                    }}
+                                                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-bold rounded-lg transition-colors shrink-0 flex items-center gap-1 shadow-sm hover:shadow active:scale-95"
+                                                  >
+                                                    <Sparkles className="w-3.5 h-3.5" />
+                                                    {lang === 'zh' ? '一键采纳参考内容' : 'Adopt Statement'}
+                                                  </button>
+                                                </div>
+                                              </div>
+                                            )}
+                                          </div>
+                                        );
+                                      })}
+
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const newExp = [...editedResume.experience];
+                                          newExp[expIdx].bullets = [...exp.bullets, ''];
+                                          setEditedResume({ ...editedResume, experience: newExp });
+                                        }}
+                                        className="text-xs text-blue-600 hover:text-blue-700 font-bold flex items-center gap-1 mt-1 pl-5"
+                                      >
+                                        <Plus className="w-3.5 h-3.5" />
+                                        {lang === 'zh' ? '新增一条经历描述' : 'Add Bullet Point'}
+                                      </button>
+                                    </div>
+                                  </div>
+                                ))}
+
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditedResume({
+                                      ...editedResume,
+                                      experience: [
+                                        ...editedResume.experience,
+                                        { company: '', role: '', duration: '', bullets: [''] }
+                                      ]
+                                    });
+                                  }}
+                                  className="text-xs text-blue-600 hover:text-blue-700 font-bold flex items-center gap-1.5 p-3 border border-dashed border-blue-200 rounded-xl bg-blue-50/10 hover:bg-blue-50/30 w-full justify-center transition-all"
+                                >
+                                  <Plus className="w-4 h-4" />
+                                  {lang === 'zh' ? '添加新的工作经历' : 'Add Work Experience'}
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Education Details */}
+                            <div className="bg-slate-50 border border-slate-150 p-4 rounded-xl space-y-2">
+                              <h4 className="text-[11px] font-extrabold text-blue-600 uppercase tracking-wider">{t.educationLabel}</h4>
+                              <input 
+                                type="text" 
+                                value={editedResume.education}
+                                onChange={(e) => setEditedResume({ ...editedResume, education: e.target.value })}
+                                className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-800 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                              />
+                            </div>
+
+                            {/* Skills & Keywords */}
+                            <div className="bg-slate-50 border border-slate-150 p-4 rounded-xl space-y-2">
+                              <h4 className="text-[11px] font-extrabold text-blue-600 uppercase tracking-wider">{lang === 'zh' ? '核心专业技能与高频关键词' : 'Technical Skills & High-frequency Keywords'}</h4>
+                              <textarea
+                                value={editedResume.skills.join(', ')}
+                                onChange={(e) => {
+                                  // split by either half-width or full-width comma
+                                  const list = e.target.value.split(/[,，]\s*/);
+                                  setEditedResume({ ...editedResume, skills: list });
+                                }}
+                                rows={3}
+                                className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-800 leading-relaxed focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                                placeholder={lang === 'zh' ? '输入您的核心技能，使用逗号分隔' : 'Enter skills separated by commas'}
+                              />
+                              <p className="text-[10px] text-slate-400">
+                                {lang === 'zh' ? '提示：直接输入技能词，使用逗号隔开，系统会自动为您解析为精美高宽标签排版。' : 'Tip: Separate skill words with commas, the system will render them as chips automatically.'}
+                              </p>
+                            </div>
+                          </div>
+
+                        ) : (
+                          
+                          /* Premium high-end PDF resume rendered view */
+                          <div className="flex-grow overflow-y-auto p-8 bg-white selection:bg-blue-100 selection:text-blue-900 leading-relaxed font-sans text-slate-800">
+                            <div className="max-w-[720px] mx-auto">
+                              
+                              {/* Resume Header */}
+                              <header className="border-b-2 border-blue-600 pb-5 mb-6 text-left">
+                                <h1 className="text-3xl font-extrabold text-slate-900 leading-tight">
+                                  {currentTask.optimizedResume.name}
+                                </h1>
+                                <p className="text-blue-600 font-bold text-sm uppercase tracking-wider mt-1">{currentTask.optimizedResume.title}</p>
+                                <div className="flex flex-wrap gap-x-4 gap-y-1.5 mt-3 text-xs text-slate-500 font-semibold font-mono">
+                                  <span>{currentTask.optimizedResume.email}</span>
+                                  <span>•</span>
+                                  <span>{currentTask.optimizedResume.location}</span>
+                                  {currentTask.optimizedResume.linkedin && (
+                                    <>
+                                      <span>•</span>
+                                      <span>{currentTask.optimizedResume.linkedin}</span>
+                                    </>
+                                  )}
+                                </div>
+                              </header>
+
+                              {/* Executive Summary */}
+                              <section className="mb-6">
+                                <h3 className="text-xs uppercase font-extrabold tracking-widest text-slate-900 border-b border-slate-200 pb-1.5 mb-3">Professional Summary</h3>
+                                <p className="text-xs text-slate-600 leading-relaxed text-justify">
+                                  {currentTask.optimizedResume.summary}
+                                </p>
+                              </section>
+
+                              {/* Core Capabilities */}
+                              <section className="mb-6">
+                                <h3 className="text-xs uppercase font-extrabold tracking-widest text-slate-900 border-b border-slate-200 pb-1.5 mb-3">Core Capabilities</h3>
+                                <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs font-semibold text-slate-700">
+                                  {currentTask.optimizedResume.coreCapabilities.map((cap, idx) => (
+                                    <div key={idx} className="flex gap-2 items-center">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-blue-600"></span>
+                                      <span>{cap}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </section>
+
+                              {/* Work Experience */}
+                              <section className="mb-6">
+                                <h2 className="text-xs font-bold uppercase tracking-wider text-slate-900 border-b border-slate-200 pb-1.5 mb-4">Work Experience ({t.workExperienceLabel})</h2>
+                                
+                                <div className="flex flex-col gap-5">
+                                  {currentTask.optimizedResume.experience.map((exp, idx) => (
+                                    <div key={idx} className="relative group">
+                                      <div className="flex justify-between items-baseline mb-2">
+                                        <h4 className="text-xs font-extrabold text-slate-800">
+                                          {exp.company} <span className="font-normal text-slate-400 mx-1.5">|</span> <span className="text-slate-600 text-[11px]">{exp.role}</span>
+                                        </h4>
+                                        <span className="text-[10px] font-mono font-bold text-slate-400">{exp.duration}</span>
+                                      </div>
+                                      <ul className="list-disc pl-4 space-y-2 text-xs text-slate-600">
+                                        {exp.bullets.map((bullet, i) => {
+                                          // Highlight metrics or placeholder tags in optimized resume
+                                          const highlighted = bullet.replace(
+                                            /(【建议补充：[^】]+】)/g,
+                                            `<span class="bg-rose-50 border border-rose-200 text-rose-700 font-bold px-1.5 py-0.5 rounded text-[10px] uppercase font-mono tracking-wider">$1</span>`
+                                          );
+                                          return (
+                                            <li key={i} dangerouslySetInnerHTML={{ __html: highlighted }} />
+                                          );
+                                        })}
+                                      </ul>
+                                    </div>
+                                  ))}
+                                </div>
+                              </section>
+
+                              {/* Education */}
+                              <section className="mb-6">
+                                <h3 className="text-xs uppercase font-extrabold tracking-widest text-slate-900 border-b border-slate-200 pb-1.5 mb-3">Education</h3>
+                                <p className="text-xs font-semibold text-slate-600">{currentTask.optimizedResume.education}</p>
+                              </section>
+
+                              {/* Key Skills */}
+                              <section>
+                                <h3 className="text-xs uppercase font-extrabold tracking-widest text-slate-900 border-b border-slate-200 pb-1.5 mb-3">Skills & Keywords</h3>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {currentTask.optimizedResume.skills.map((skill, idx) => (
+                                    <span key={idx} className="px-2 py-0.5 bg-slate-100 border border-slate-200 text-slate-600 rounded text-[10px] font-mono font-medium">
+                                      {skill}
+                                    </span>
+                                  ))}
+                                </div>
+                              </section>
+
+                            </div>
+                          </div>
+                        )}
+
+                      </div>
+
+                    </div>
+
+                  </motion.div>
+                )}
+
+              </div>
+            )}
+
+          </div>
+
+          {/* Simple Global Footer component */}
+          <footer className="w-full shrink-0 py-6 border-t border-slate-200 flex flex-col md:flex-row justify-between items-center gap-4 mt-12 bg-white px-6 md:px-10 rounded-2xl shadow-sm">
+            <div className="text-[11px] font-bold uppercase tracking-widest text-slate-400">
+              © 2026 CareerAI Executive Search. All rights reserved.
+            </div>
+            <div className="flex gap-6 text-xs text-slate-500 font-semibold">
+              <button onClick={() => triggerToast(t.termsLoading)} className="hover:text-blue-600 transition-colors">Terms of Service</button>
+              <button onClick={() => triggerToast(t.privacyCompliant)} className="hover:text-blue-600 transition-colors">Privacy Policy</button>
+              <button onClick={() => triggerToast("API " + t.systemStatus + ": " + t.systemStatusLive + " (All systems online)")} className="hover:text-blue-600 transition-colors">API Status</button>
+            </div>
+          </footer>
+
+        </main>
+
+        {/* Floating Interactive History list drawer */}
+        <AnimatePresence>
+          {showHistoryDropdown && (
+            <motion.div 
+              initial={{ opacity: 0, x: 100 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 80 }}
+              className="fixed right-0 top-16 bottom-0 w-80 bg-white border-l border-slate-200 shadow-2xl z-40 p-6 flex flex-col overflow-hidden"
+            >
+              <div className="flex justify-between items-center mb-6 pb-3 border-b border-slate-100">
+                <div className="flex items-center gap-2">
+                  <History className="w-5 h-5 text-slate-500" />
+                  <h3 className="font-extrabold text-sm text-slate-900 uppercase tracking-widest">{t.historySearch}</h3>
+                </div>
+                <button 
+                  onClick={() => setShowHistoryDrawer(false)}
+                  className="text-xs font-bold text-slate-400 hover:text-slate-600"
+                >
+                  {t.collapse}
+                </button>
+              </div>
+
+              {tasks.length === 0 ? (
+                <div className="flex-grow flex flex-col items-center justify-center text-center p-4">
+                  <AlertCircle className="w-10 h-10 text-slate-300 mb-2" />
+                  <p className="text-slate-400 text-xs font-medium">{t.noHistory}</p>
+                </div>
+              ) : (
+                <div className="flex-grow overflow-y-auto flex flex-col gap-3 pr-1">
+                  {tasks.map((task) => (
+                    <div 
+                      key={task.id}
+                      onClick={() => {
+                        setCurrentTaskId(task.id);
+                        setShowHistoryDrawer(false);
+                      }}
+                      className={`p-4 rounded-xl border transition-all text-left cursor-pointer group relative ${currentTaskId === task.id ? 'border-blue-500 bg-blue-50/50' : 'border-slate-200 hover:bg-slate-50'}`}
+                    >
+                      <button 
+                        onClick={(e) => handleDeleteTask(task.id, e)}
+                        className="absolute top-2 right-2 p-1 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+
+                      <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">{task.createdAt}</div>
+                      <h4 className="text-xs font-bold text-slate-900 truncate pr-6">{task.targetRole}</h4>
+                      <p className="text-[10px] text-slate-500 mt-1">{task.industry} | {task.location}</p>
+                      
+                      <div className="flex items-center gap-2 mt-3 pt-2.5 border-t border-slate-100">
+                        <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${task.status === 'finalized' ? 'bg-emerald-50 text-emerald-700' : 'bg-blue-50 text-blue-700'}`}>
+                          {task.status === 'researched' && t.pillResearched}
+                          {task.status === 'matching' && t.pillMatching}
+                          {task.status === 'matched' && t.pillMatched}
+                          {task.status === 'upgraded' && t.pillUpgraded}
+                          {task.status === 'finalized' && t.pillFinalized}
+                        </span>
+                        {task.matchReport && (
+                          <span className="text-[10px] font-mono text-slate-400 ml-auto">{lang === 'zh' ? '评分' : 'Score'} {task.matchReport.matchScore}</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Paywall Checkout QR Code Overlay Modal */}
+        <AnimatePresence>
+          {showQRModal && currentTask && checkoutUrl && (
+            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.98 }}
+                className="bg-white border border-slate-200 w-full max-w-sm rounded-2xl shadow-2xl p-6 relative overflow-hidden"
+              >
+                {/* Decorative payment brand strip */}
+                <div className={`absolute top-0 left-0 w-full h-1.5 transition-colors duration-300 ${paymentMethod === 'wechat' ? 'bg-emerald-500' : 'bg-sky-500'}`}></div>
+
+                <div className="text-center mb-5">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="text-[9px] font-bold px-2 py-0.5 rounded-full font-mono tracking-wider bg-emerald-50 text-emerald-700 border border-emerald-100">
+                      {lang === 'zh' ? '安全智能收银台' : 'SECURE CHECKOUT'}
+                    </span>
+                    <span className={`text-[10px] font-bold uppercase tracking-wider font-mono px-2 py-0.5 rounded ${paymentMethod === 'wechat' ? 'text-emerald-600 bg-emerald-50' : 'text-sky-600 bg-sky-50'}`}>
+                      {paymentMethod === 'wechat' ? 'WeChat Pay' : 'Alipay'}
+                    </span>
+                  </div>
+                  <h3 className="font-bold text-slate-900 text-base">{t.stripePayTitle}</h3>
+                  <p className="text-[11px] text-slate-400 mt-1.5 leading-relaxed">{t.stripePayInstructions}</p>
+                </div>
+
+                {/* Real-time Generated QR Code Box with custom brand borders */}
+                <div className={`bg-slate-50 border-2 w-48 h-48 mx-auto rounded-2xl shadow-inner flex flex-col items-center justify-center p-3 relative mb-4 transition-colors duration-300 ${paymentMethod === 'wechat' ? 'border-emerald-200 bg-emerald-50/20' : 'border-sky-200 bg-sky-50/20'}`}>
+                  <img 
+                    src={`https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(checkoutUrl)}`}
+                    alt="Checkout QR Code"
+                    className="w-40 h-40 object-contain rounded-lg shadow-sm"
+                    referrerPolicy="no-referrer"
+                  />
+                </div>
+
+                {/* Open in a new window link */}
+                <div className="text-center mb-4">
+                  <a 
+                    href={checkoutUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={`inline-flex items-center gap-1.5 text-xs font-bold underline transition-colors ${paymentMethod === 'wechat' ? 'text-emerald-600 hover:text-emerald-700' : 'text-sky-600 hover:text-sky-700'}`}
+                  >
+                    <span>{t.openInNewTab}</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </a>
+                </div>
+
+                {/* Price tag */}
+                <div className="bg-slate-50 border border-slate-100 rounded-xl p-3 mb-4 text-center text-xs font-semibold text-slate-700 flex flex-col gap-0.5">
+                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{lang === 'zh' ? '早鸟限时优惠价' : 'LIMITED TIME OFFER'}</div>
+                  <div>
+                    {t.earlyBirdPrice}：<strong className="font-extrabold text-sm text-slate-900">{t.priceVal}</strong> ({t.originalPrice} {lang === 'zh' ? '¥49.0' : '$49.0'})
+                  </div>
+                </div>
+
+                {/* Promo referral section */}
+                <div className="bg-emerald-50/70 border border-emerald-100 rounded-xl p-3.5 mb-4 text-left flex flex-col gap-1.5 shadow-sm">
+                  <div className="flex items-center gap-1.5 text-[11px] font-extrabold text-emerald-800 uppercase tracking-wider">
+                    <Gift className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>{lang === 'zh' ? '⭐ 推广限时免费通道' : '⭐ PROMO FREE ACCESS'}</span>
+                  </div>
+                  <p className="text-[10.5px] text-slate-600 leading-relaxed font-semibold">
+                    {lang === 'zh' ? (
+                      <>推广期内<strong>可免费体验一次</strong>！只需将专属邀请链接<strong>转发到微信群或社群</strong>，当有新用户通过您的推荐完成注册激活，系统将即刻自动激活并免费解锁本订单！</>
+                    ) : (
+                      <>During promotion, you can <strong>get 1 free rewrite quota</strong>! Share your invite link to groups. Once a new user registers through your link, this order will instantly activate for free!</>
+                    )}
+                  </p>
+                  <button 
+                    type="button"
+                    onClick={() => setShowShareModal(true)}
+                    className="w-full mt-1.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-xs flex items-center justify-center gap-1.5 transition-all shadow-sm"
+                  >
+                    <Share2 className="w-3.5 h-3.5" />
+                    <span>{lang === 'zh' ? '转发群聊激活免费额度' : 'Share to Get Free Access'}</span>
+                  </button>
+                </div>
+
+                {/* Status Indicator */}
+                <div className="flex items-center justify-center gap-2 mb-5 px-3 py-2 bg-slate-50 border border-slate-100 rounded-xl">
+                  <Loader2 className={`w-3.5 h-3.5 animate-spin shrink-0 ${paymentMethod === 'wechat' ? 'text-emerald-600' : 'text-sky-600'}`} />
+                  <span className="text-[11px] font-semibold text-slate-500 animate-pulse truncate">
+                    {t.paymentPending}
+                  </span>
+                </div>
+
+                {/* Action buttons */}
+                <div className="flex gap-3">
+                  <button 
+                    onClick={() => setShowQRModal(false)}
+                    className="flex-1 py-2.5 border border-slate-200 hover:bg-slate-50 text-slate-600 rounded-xl text-xs font-bold transition-all"
+                  >
+                    {t.cancelOrder}
+                  </button>
+                  <button 
+                    onClick={handleConfirmPaymentSuccess}
+                    disabled={isVerifyingPayment}
+                    className={`flex-1 py-2.5 disabled:bg-slate-400 disabled:cursor-not-allowed text-white rounded-xl text-xs font-bold transition-all shadow-md flex items-center justify-center gap-1 ${paymentMethod === 'wechat' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-sky-600 hover:bg-sky-700'}`}
+                  >
+                    {isVerifyingPayment ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Check className="w-3.5 h-3.5" />
+                    )}
+                    <span>{isVerifyingPayment ? (lang === 'zh' ? '核销中...' : 'Verifying...') : t.confirmSuccessText}</span>
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        {/* Interactive Share / Invite Link Overlay Modal */}
+        <AnimatePresence>
+          {showShareModal && (
+            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.98 }}
+                className="bg-white border border-slate-200 w-full max-w-md rounded-2xl shadow-2xl p-6 relative overflow-hidden text-slate-800"
+              >
+                <button 
+                  onClick={() => setShowShareModal(false)}
+                  className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+
+                <div className="text-center mb-5">
+                  <span className="inline-flex p-3 bg-emerald-50 rounded-full text-emerald-600 mb-3">
+                    <Gift className="w-6 h-6 animate-pulse" />
+                  </span>
+                  <h3 className="font-bold text-slate-900 text-base">
+                    {lang === 'zh' ? '📢 转发好友激活免费额度' : '📢 Share with Friends for Free Quota'}
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
+                    {lang === 'zh' 
+                      ? '将下方专属邀请函分享到微信群、社群或好友。当有新伙伴注册后，您的 1 次免费高阶重构额度将自动核销并立即生效！'
+                      : 'Copy and send the referral message below to groups or channels. Once a new friend registers, your 1 free credit activates instantly!'}
+                  </p>
+                </div>
+
+                {/* Invite Text Card */}
+                <div className="bg-slate-50 border border-slate-100 rounded-xl p-4 text-left text-xs mb-5 flex flex-col gap-2">
+                  <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
+                    <MessageSquare className="w-3.5 h-3.5 text-slate-500" />
+                    <span>{lang === 'zh' ? '专属邀请函预览' : 'INVITATION LETTER PREVIEW'}</span>
+                  </div>
+                  <div className="bg-white border border-slate-200 rounded-lg p-3 text-slate-700 leading-relaxed max-h-36 overflow-y-auto font-medium select-all">
+                    {lang === 'zh' ? (
+                      <>
+                        【CareerAI高管简历重构】我的朋友向我推荐了这款中高层管理者、技术领袖专属的简历优化神作！针对目标岗位JD一键靶向重构为STAR模型，高亮大厂高频领导力筛查词，ATS通过率提升2倍！送你一次免费体验机会，点击下方专属邀请链接，极速解锁高阶履历：
+                        <br />
+                        <span className="text-blue-600 font-semibold font-mono break-all">👉 {`${window.location.origin}/?ref=${currentUser ? currentUser.id : 'guest_promo'}`}</span>
+                      </>
+                    ) : (
+                      <>
+                        [CareerAI Executive Resume Optimizer] My friend recommended this AI resume tool tailored for executives, directors, and tech leaders. Restructures CVs into the powerful STAR framework to match high-frequency industry keywords, doubling ATS pass rates. Get 1 free credit through my unique referral link:
+                        <br />
+                        <span className="text-blue-600 font-semibold font-mono break-all">👉 {`${window.location.origin}/?ref=${currentUser ? currentUser.id : 'guest_promo'}`}</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* Simulation Sandbox Block */}
+                <div className="bg-amber-50/50 border border-amber-200/60 rounded-xl p-3.5 mb-5 text-left flex flex-col gap-1.5">
+                  <div className="flex items-center gap-1 text-[11px] font-extrabold text-amber-800 uppercase tracking-wider">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-600 shrink-0 animate-spin" />
+                    <span>{lang === 'zh' ? '⚙️ 推广测试通道 (免群转发直接测试)' : '⚙️ SANDBOX INSTANT TEST'}</span>
+                  </div>
+                  <p className="text-[10px] text-slate-500 leading-relaxed">
+                    {lang === 'zh' 
+                      ? '为了便于您与团队审查此功能，我们为您内置了【模拟新用户注册】。点击下方按钮即可一键模拟新群友通过链接访问并完成注册，立即自动激活免费额度并解锁本次重构！'
+                      : 'To help you instantly review this sharing flow, click the button below to mimic a new user registering via your link, instantly activating your free credits!'}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleReferralBypass}
+                    disabled={isVerifyingPayment}
+                    className="w-full py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-lg text-xs flex items-center justify-center gap-1.5 transition-all shadow-sm"
+                  >
+                    {isVerifyingPayment ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Check className="w-3.5 h-3.5" />
+                    )}
+                    <span>{lang === 'zh' ? '模拟新伙伴注册并激活免费额度' : 'Simulate New Register & Activate Free Credit'}</span>
+                  </button>
+                </div>
+
+                {/* Share Modal Buttons */}
+                <div className="flex gap-3">
+                  <button 
+                    onClick={() => setShowShareModal(false)}
+                    className="flex-grow py-2.5 border border-slate-200 hover:bg-slate-50 text-slate-600 rounded-xl text-xs font-bold transition-all"
+                  >
+                    {lang === 'zh' ? '返回收银台' : 'Back to Cashier'}
+                  </button>
+                  <button 
+                    onClick={handleCopyInvite}
+                    className="flex-grow py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-md flex items-center justify-center gap-1.5"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>{lang === 'zh' ? '复制邀请函' : 'Copy Invite Letter'}</span>
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        {/* Detailed Notification Dialog overlay */}
+        <AnimatePresence>
+          {activeNotification && (
+            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[120] flex items-center justify-center p-4">
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.98 }}
+                className="bg-white border border-slate-200 w-full max-w-md rounded-2xl shadow-2xl p-6 relative overflow-hidden text-slate-800"
+              >
+                <button 
+                  onClick={() => setActiveNotification(null)}
+                  className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+
+                <div className="flex items-center gap-2 mb-3">
+                  <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded font-mono ${activeNotification.type === 'promotion' ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : activeNotification.type === 'payment' ? 'bg-blue-50 text-blue-700 border border-blue-100' : 'bg-slate-100 text-slate-700 border border-slate-200'}`}>
+                    {activeNotification.type === 'promotion' ? (lang === 'zh' ? '福利活动' : 'Promo') : activeNotification.type === 'payment' ? (lang === 'zh' ? '账单状态' : 'Transaction') : (lang === 'zh' ? '系统通知' : 'System')}
+                  </span>
+                  <span className="text-[10px] text-slate-400 font-semibold font-mono">{lang === 'zh' ? activeNotification.time : activeNotification.timeEn}</span>
+                </div>
+
+                <h3 className="font-bold text-slate-900 text-base mb-3 leading-snug">
+                  {lang === 'zh' ? activeNotification.title : activeNotification.titleEn}
+                </h3>
+
+                <div className="bg-slate-50 border border-slate-100 rounded-xl p-4 text-slate-600 text-xs leading-relaxed whitespace-pre-wrap font-semibold font-sans">
+                  {lang === 'zh' ? activeNotification.content : activeNotification.contentEn}
+                </div>
+
+                <div className="mt-5 flex justify-end">
+                  <button 
+                    onClick={() => setActiveNotification(null)}
+                    className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all shadow-sm"
+                  >
+                    {lang === 'zh' ? '已阅' : 'Got it'}
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+        </div>
+        </>
+      )}
+    </div>
+  );
+}
