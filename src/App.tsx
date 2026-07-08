@@ -435,6 +435,7 @@ Visuals & Integrity
   const [showSuccessToast, setShowSuccessToast] = useState<string | null>(null);
   const [showQRModal, setShowQRModal] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [mobileWorkspaceTab, setMobileWorkspaceTab] = useState<'copilot' | 'resume'>('copilot');
   const [paymentMethod, setPaymentMethod] = useState<'wechat' | 'alipay'>('wechat');
 
   // Real payment integration states
@@ -583,40 +584,116 @@ Visuals & Integrity
     }
   }, [lang]);
 
-  // Load from LocalStorage (Isolated per User)
+  // Load from Supabase (first) or LocalStorage (fallback)
   useEffect(() => {
-    const userKey = currentUser ? `career_ai_tasks_${currentUser.id}` : "career_ai_tasks_guest";
-    const saved = localStorage.getItem(userKey);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        setTasks(parsed);
-        if (parsed.length > 0) {
-          setCurrentTaskId(parsed[0].id);
-          setActiveTab(parsed[0].status);
-        } else {
+    let active = true;
+    const loadTasks = async () => {
+      if (currentUser) {
+        try {
+          const res = await customFetch("/api/tasks");
+          if (res.ok && active) {
+            const dbTasks = await res.json();
+            if (Array.isArray(dbTasks) && dbTasks.length > 0) {
+              setTasks(dbTasks);
+              setCurrentTaskId(dbTasks[0].id);
+              setActiveTab(dbTasks[0].status);
+              
+              // Also sync cache to local storage
+              const userKey = `career_ai_tasks_${currentUser.id}`;
+              localStorage.setItem(userKey, JSON.stringify(dbTasks));
+              return;
+            }
+          }
+        } catch (err) {
+          console.error("Failed to fetch tasks from Supabase:", err);
+        }
+      }
+
+      if (!active) return;
+
+      // Fallback/guest load from local storage
+      const userKey = currentUser ? `career_ai_tasks_${currentUser.id}` : "career_ai_tasks_guest";
+      const saved = localStorage.getItem(userKey);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          setTasks(parsed);
+          if (parsed.length > 0) {
+            setCurrentTaskId(parsed[0].id);
+            setActiveTab(parsed[0].status);
+          } else {
+            setTasks([]);
+            setCurrentTaskId(null);
+            setActiveTab(null);
+          }
+        } catch (e) {
+          console.error("Failed to load tasks from local storage", e);
           setTasks([]);
           setCurrentTaskId(null);
           setActiveTab(null);
         }
-      } catch (e) {
-        console.error("Failed to load tasks from local storage", e);
+      } else {
         setTasks([]);
         setCurrentTaskId(null);
         setActiveTab(null);
       }
-    } else {
-      setTasks([]);
-      setCurrentTaskId(null);
-      setActiveTab(null);
-    }
+    };
+
+    loadTasks();
+    return () => {
+      active = false;
+    };
   }, [currentUser]);
 
-  // Save to LocalStorage (Isolated per User)
-  const saveTasks = (newTasks: TaskItem[]) => {
+  // Load notifications from Supabase, merge with default notifications
+  useEffect(() => {
+    const loadNotifications = async () => {
+      if (!currentUser) return;
+      try {
+        const res = await customFetch("/api/notifications");
+        if (res.ok) {
+          const dbNotifs = await res.json();
+          if (Array.isArray(dbNotifs) && dbNotifs.length > 0) {
+            setNotifications(prev => {
+              const merged = new Map<string, NotificationItem>();
+              // Add all from DB
+              dbNotifs.forEach((n: any) => merged.set(n.id, n));
+              // Add prev / default ones if not already present
+              prev.forEach(n => {
+                if (!merged.has(n.id)) {
+                  merged.set(n.id, n);
+                }
+              });
+              return Array.from(merged.values());
+            });
+          }
+        }
+      } catch (err) {
+        console.error("Failed to load notifications from Supabase:", err);
+      }
+    };
+    loadNotifications();
+  }, [currentUser]);
+
+  // Save to LocalStorage and Supabase
+  const saveTasks = async (newTasks: TaskItem[]) => {
     setTasks(newTasks);
     const userKey = currentUser ? `career_ai_tasks_${currentUser.id}` : "career_ai_tasks_guest";
     localStorage.setItem(userKey, JSON.stringify(newTasks));
+
+    if (currentUser) {
+      try {
+        await customFetch("/api/tasks/sync", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ tasks: newTasks })
+        });
+      } catch (e) {
+        console.error("Failed to sync tasks with Supabase:", e);
+      }
+    }
   };
 
   // V0.4: Load or generate V0.4 data when currentTask changes
@@ -774,7 +851,9 @@ Visuals & Integrity
           }
           setEditedResume(updated);
         }
-        triggerToast(lang === 'zh' ? "已成功采纳该项 AI 优化表达，并融入到当前预览简历中！" : "Successfully accepted this AI optimized suggestion and merged into preview!");
+        triggerToast(lang === 'zh' 
+          ? "已成功采纳该项 AI 优化表达！(可切换至顶部的「重构简历预览」标签查看效果)" 
+          : "Successfully accepted this AI optimized suggestion! (Switch tab above to view)");
       }
     } catch (e) {
       console.error(e);
@@ -1020,6 +1099,10 @@ Visuals & Integrity
   };
 
   const currentTask = tasks.find(t => t.id === currentTaskId) || null;
+  const activeRenderResume = currentTask ? (editedResume || currentTask.optimizedResume) : null;
+  const activeVersionType = !currentVersionId ? 'standard' :
+    currentVersionId.endsWith('executive') ? 'executive' :
+    currentVersionId.endsWith('ai_product') ? 'ai_product' : 'standard';
 
   // Sync activeTab when task or status changes
   useEffect(() => {
@@ -1410,6 +1493,13 @@ Visuals & Integrity
           type: 'payment'
         };
         setNotifications(prev => [newNotif, ...prev]);
+        if (currentUser) {
+          customFetch("/api/notifications", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(newNotif)
+          }).catch(err => console.error("Failed to save notification:", err));
+        }
         
         triggerToast(lang === 'zh' ? "🎉 推荐核销成功！已自动抵扣本次账单，免费为您进行高阶大模型简历重构！" : "🎉 Referral verified! Zero-payment discount applied, restructuring your resume now!");
         await runResumeOptimizationForTask(currentTask.id);
@@ -1442,96 +1532,17 @@ Visuals & Integrity
       });
   };
 
-  // Effect 1: Check URL search parameters on load (handles redirects from Stripe Checkout)
+  // Effect 1: Check URL search parameters on load (handles referral link redirects)
   useEffect(() => {
     const searchParams = new URLSearchParams(window.location.search);
-    const paymentStatus = searchParams.get('payment_status');
-    const sessionId = searchParams.get('session_id');
-    const taskId = searchParams.get('task_id');
     const refId = searchParams.get('ref');
 
     if (refId) {
       triggerToast(lang === 'zh' ? `🎁 欢迎！您已接受高管好友 (用户ID: ${refId}) 的专属推荐进入，体验早鸟特权！` : `🎁 Welcome! You have accepted an exclusive referral from an executive friend (ID: ${refId})!`);
-    }
-
-    if (paymentStatus === 'success' && sessionId && taskId) {
-      // Clear URL params immediately to prevent re-triggering
+      // Clear referral param from URL to keep address clean
       window.history.replaceState({}, document.title, window.location.pathname);
-
-      const doAutoVerify = async () => {
-        setLoadingStep('upgrading');
-        setLoadingProgress(15);
-        
-        try {
-          const res = await customFetch(`/api/verify-payment?session_id=${sessionId}&task_id=${taskId}`);
-          if (res.ok) {
-            const data = await res.json();
-            if (data.status === 'paid') {
-              triggerToast(lang === 'zh' ? '支付成功！正在启动高阶AI大模型进行深度重构优化...' : 'Payment verified! Restructuring your resume...');
-              await runResumeOptimizationForTask(taskId);
-            } else {
-              triggerToast(lang === 'zh' ? '支付订单尚未支付或已失效' : 'Payment was not completed or has expired.');
-            }
-          } else {
-            triggerToast(lang === 'zh' ? '系统自动核销订单异常，请手动校验' : 'Auto verification error, please verify manually.');
-          }
-        } catch (error) {
-          console.error("Redirect auto verify error:", error);
-        } finally {
-          setLoadingStep('idle');
-          setLoadingProgress(0);
-        }
-      };
-
-      doAutoVerify();
-    } else if (paymentStatus === 'cancelled') {
-      window.history.replaceState({}, document.title, window.location.pathname);
-      triggerToast(t.paymentFailedToast);
     }
-  }, [tasks]);
-
-  // Effect 2: Live poll payment verification status when QR Modal is active
-  useEffect(() => {
-    if (!showQRModal || !paymentSessionId || !currentTask) return;
-
-    let pollCount = 0;
-    const maxPolls = 100; // Check for up to 5 minutes
-
-    const checkPayment = async () => {
-      try {
-        const res = await customFetch(`/api/verify-payment?session_id=${paymentSessionId}&task_id=${currentTask.id}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.status === 'paid') {
-            clearInterval(pollingInterval);
-            setShowQRModal(false);
-            triggerToast(t.paymentSuccessToast);
-            await runResumeOptimizationForTask(currentTask.id);
-          }
-        }
-      } catch (error) {
-        console.error("Polling payment verification failed:", error);
-      }
-    };
-
-    const pollingInterval = setInterval(() => {
-      pollCount++;
-      if (pollCount >= maxPolls) {
-        clearInterval(pollingInterval);
-        triggerToast(lang === 'zh' ? '支付超时，请重新发起' : 'Payment session expired. Please restart checkout.');
-        setShowQRModal(false);
-        return;
-      }
-      checkPayment();
-    }, 3000);
-
-    // Run initial check right away
-    checkPayment();
-
-    return () => {
-      clearInterval(pollingInterval);
-    };
-  }, [showQRModal, paymentSessionId, currentTask]);
+  }, []);
 
   // Navigation tab switcher state mapping helper
   const navigateToTab = (status: TaskItem['status']) => {
@@ -1769,7 +1780,7 @@ Visuals & Integrity
       return;
     }
 
-    const resume = currentTask.optimizedResume;
+    const resume = editedResume || currentTask.optimizedResume;
     const fileName = `${resume.name}_${currentTask.targetRole}_优化版`;
 
     if (format === 'word') {
@@ -1925,10 +1936,10 @@ Visuals & Integrity
             initial={{ opacity: 0, y: -50, scale: 0.9 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -20, scale: 0.95 }}
-            className="fixed top-5 left-1/2 -translate-x-1/2 z-[100] bg-slate-900 text-white px-6 py-3 rounded-xl shadow-xl flex items-center gap-3 border border-slate-700/50"
+            className="fixed top-5 left-1/2 -translate-x-1/2 z-[100] bg-slate-900 text-white px-5 py-3 rounded-xl shadow-xl flex items-center gap-3 border border-slate-700/50 w-[calc(100vw-2rem)] max-w-md"
           >
             <Sparkles className="w-5 h-5 text-emerald-400 shrink-0 animate-pulse" />
-            <span className="text-sm font-medium">{showSuccessToast}</span>
+            <span className="text-xs sm:text-sm font-medium leading-relaxed">{showSuccessToast}</span>
           </motion.div>
         )}
       </AnimatePresence>
@@ -2126,7 +2137,7 @@ Visuals & Integrity
                     initial={{ opacity: 0, y: 10, scale: 0.95 }}
                     animate={{ opacity: 1, y: 0, scale: 1 }}
                     exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                    className="absolute right-0 mt-2 w-80 sm:w-96 bg-white border border-slate-200 rounded-2xl shadow-xl z-50 overflow-hidden"
+                    className="absolute right-[-48px] sm:right-0 mt-2 w-[calc(100vw-2rem)] max-w-sm sm:w-96 bg-white border border-slate-200 rounded-2xl shadow-xl z-50 overflow-hidden"
                   >
                     <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
                       <div className="flex items-center gap-2">
@@ -2144,6 +2155,10 @@ Visuals & Integrity
                         onClick={() => {
                           setNotifications(notifications.map(n => ({ ...n, isRead: true })));
                           triggerToast(lang === 'zh' ? '已标记所有消息为已读' : 'All marked as read');
+                          if (currentUser) {
+                            customFetch("/api/notifications/read-all", { method: "POST" })
+                              .catch(err => console.error("Failed to read all notifications in DB:", err));
+                          }
                         }}
                         className="text-[10px] font-bold text-blue-600 hover:text-blue-700 transition-colors"
                       >
@@ -2165,6 +2180,13 @@ Visuals & Integrity
                               setNotifications(notifications.map(notif => notif.id === n.id ? { ...notif, isRead: true } : notif));
                               setActiveNotification(n);
                               setShowNotificationDropdown(false);
+                              if (currentUser && !n.isRead) {
+                                customFetch("/api/notifications", {
+                                  method: "POST",
+                                  headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({ ...n, isRead: true })
+                                }).catch(err => console.error("Failed to update notification read status:", err));
+                              }
                             }}
                             className={`p-3.5 hover:bg-slate-50/80 transition-all cursor-pointer flex flex-col gap-1 text-left ${!n.isRead ? 'bg-blue-50/20' : ''}`}
                           >
@@ -2201,12 +2223,12 @@ Visuals & Integrity
                 : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
             }`}
           >
-            <ShieldAlert className="w-3.5 h-3.5" />
-            <span>专家后台</span>
+            <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
+            <span className="hidden sm:inline">专家后台</span>
           </button>
 
-          {/* Settings / Multi-Language Selector Dropdown */}
-          <div className="relative group">
+          {/* Settings / Multi-Language Selector Dropdown (Hidden on mobile as it is inside the side-drawer) */}
+          <div className="relative group hidden sm:block">
             <button className="p-2 text-slate-500 hover:bg-slate-100 rounded-full transition-colors flex items-center justify-center">
               <Settings className="w-5 h-5" />
             </button>
@@ -2305,10 +2327,10 @@ Visuals & Integrity
               animate={{ x: 0 }}
               exit={{ x: "100%" }}
               transition={{ type: "spring", bounce: 0, duration: 0.35 }}
-              className="relative w-full max-w-[320px] h-full bg-white shadow-2xl flex flex-col z-10 border-l border-slate-100 overflow-y-auto"
+              className="relative w-full max-w-[320px] h-full bg-white shadow-2xl flex flex-col z-10 border-l border-slate-100"
             >
               {/* Header inside drawer */}
-              <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+              <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50 shrink-0">
                 <div className="flex items-center gap-2">
                   <Sparkles className="w-5 h-5 text-blue-600" />
                   <span className="font-bold text-sm text-slate-900">{t.optimizerTitle}</span>
@@ -2322,7 +2344,7 @@ Visuals & Integrity
               </div>
 
               {/* Drawer Content */}
-              <div className="p-5 flex flex-col gap-6 flex-grow">
+              <div className="p-5 flex flex-col gap-6 flex-grow overflow-y-auto">
                 
                 {/* 1. Quick Language switcher */}
                 <div>
@@ -2352,7 +2374,6 @@ Visuals & Integrity
                       { tab: 'researched', label: t.jdAnalysis, icon: BarChart3, enabled: !!currentTask },
                       { tab: 'matching', label: t.uploadResume, icon: UploadCloud, enabled: !!currentTask },
                       { tab: 'matched', label: t.matchScore, icon: CheckCircle2, enabled: currentTask && currentTask.matchReport },
-                      { tab: 'upgraded', label: t.upgradePaywall, icon: Lock, enabled: currentTask && currentTask.matchReport },
                       { tab: 'finalized', label: t.finalize, icon: FileText, enabled: currentTask && currentTask.status === 'finalized' }
                     ].map((item, idx) => {
                       const Icon = item.icon;
@@ -2373,9 +2394,6 @@ Visuals & Integrity
                         >
                           <Icon className="w-4.5 h-4.5 shrink-0" />
                           <span className="text-xs font-semibold">{item.label}</span>
-                          {item.tab === 'upgraded' && currentTask && currentTask.status === 'finalized' && (
-                            <span className="ml-auto bg-emerald-100 text-emerald-700 text-[9px] font-bold px-1.5 py-0.5 rounded-full">{lang === 'zh' ? '已解锁' : 'Unlocked'}</span>
-                          )}
                         </button>
                       );
                     })}
@@ -2542,20 +2560,7 @@ Visuals & Integrity
               )}
             </button>
 
-            {/* 5. Upgrade Paywall */}
-            <button 
-              disabled={!currentTask || !currentTask.matchReport}
-              onClick={() => { if (currentTask) navigateToTab('upgraded'); }}
-              className={`w-full flex items-center gap-3.5 px-4 py-3 rounded-xl transition-all duration-200 text-left ${currentTask && (activeTab === 'upgraded') ? 'bg-blue-50 text-blue-700 font-bold shadow-sm' : currentTask && currentTask.matchReport ? 'text-slate-600 hover:bg-slate-50' : 'opacity-40 cursor-not-allowed text-slate-400'}`}
-            >
-              <Lock className="w-5 h-5 shrink-0" />
-              <span className="text-xs uppercase font-bold tracking-wider">{t.upgradePaywall}</span>
-              {currentTask && currentTask.status === 'finalized' && (
-                <span className="ml-auto text-emerald-600 text-xs font-bold">{lang === 'zh' ? '已解锁' : 'Unlocked'}</span>
-              )}
-            </button>
-
-            {/* 6. Finalize */}
+            {/* 5. Finalize */}
             <button 
               disabled={!currentTask || currentTask.status !== 'finalized'}
               onClick={() => { if (currentTask) navigateToTab('finalized'); }}
@@ -2582,7 +2587,7 @@ Visuals & Integrity
         </aside>
 
         {/* Main Fluid Container Stage */}
-        <main className="flex-1 overflow-y-auto p-6 md:p-10 flex flex-col justify-between relative bg-slate-50">
+        <main className="flex-1 overflow-y-auto p-4 md:p-10 flex flex-col justify-between relative bg-slate-50">
           
           {/* Main loader screen for API calls */}
           {loadingStep !== 'idle' && (
@@ -2622,7 +2627,7 @@ Visuals & Integrity
               className="max-w-[1200px] w-full mx-auto flex-grow flex flex-col gap-6"
             >
               {/* Header card with close */}
-              <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl text-white shadow-xl relative overflow-hidden flex justify-between items-center shrink-0">
+              <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl text-white shadow-xl relative overflow-hidden flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 shrink-0">
                 <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-600 via-indigo-500 to-emerald-400"></div>
                 <div>
                   <div className="flex items-center gap-2">
@@ -2635,7 +2640,7 @@ Visuals & Integrity
                 </div>
                 <button 
                   onClick={() => setShowAdminConsole(false)}
-                  className="px-4 py-2 border border-slate-800 hover:bg-slate-800 text-slate-300 rounded-xl text-xs font-bold transition-all shrink-0"
+                  className="px-4 py-2 border border-slate-800 hover:bg-slate-800 text-slate-300 rounded-xl text-xs font-bold transition-all shrink-0 self-start sm:self-auto"
                 >
                   关闭控制台
                 </button>
@@ -3319,6 +3324,7 @@ Visuals & Integrity
                           type="file" 
                           id="file-upload-input"
                           className="hidden" 
+                          accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
                           onChange={(e) => {
                             if (e.target.files && e.target.files[0]) {
                               parseAndSetFile(e.target.files[0]);
@@ -3552,156 +3558,19 @@ Visuals & Integrity
                       </p>
                       <button 
                         onClick={() => {
-                          const updatedTasks = tasks.map(t => {
-                            if (t.id === currentTask.id) {
-                              return { ...t, status: 'upgraded' as const };
-                            }
-                            return t;
-                          });
-                          saveTasks(updatedTasks);
-                          setActiveTab('upgraded');
+                          runResumeOptimizationForTask(currentTask.id);
                         }}
-                        className="mt-2 bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-xl text-xs font-bold transition-colors shadow-sm font-sans flex items-center gap-2 group animate-pulse"
+                        className="mt-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white px-8 py-3 rounded-xl text-xs font-bold transition-all shadow-md font-sans flex items-center gap-2 group hover:scale-[1.02] active:scale-[0.98]"
                       >
-                        <Sparkles className="w-4 h-4 text-emerald-300" />
-                        <span>解锁完整大模型简历重构</span>
+                        <Sparkles className="w-4 h-4 text-emerald-300 animate-spin" />
+                        <span>一键启动大模型高管简历深度重构</span>
                       </button>
                     </div>
 
                   </motion.div>
                 )}
 
-                {activeTab === 'upgraded' && (
-                  
-                  /* TAB 5: Checkout Order Upgrade Stage */
-                  <motion.div 
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="grid grid-cols-1 md:grid-cols-12 gap-8 items-start py-4"
-                  >
-                    
-                    {/* Left: Value proposition list */}
-                    <div className="md:col-span-7 flex flex-col gap-6">
-                      <div className="space-y-3">
-                        <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100/50 px-3 py-1 rounded border border-emerald-200 inline-block uppercase tracking-wider font-mono">EXECUTIVE AI UPGRADE</span>
-                        <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight leading-tight">
-                          {t.checkoutTitle}
-                        </h2>
-                        <p className="text-sm text-slate-500 leading-relaxed mt-2">
-                          {t.paywallIntro}
-                        </p>
-                      </div>
 
-                      <div className="flex flex-col gap-4 mt-2">
-                        {[
-                          { title: t.paywallPoint1Title, detail: t.paywallPoint1Desc },
-                          { title: t.paywallPoint2Title, detail: t.paywallPoint2Desc },
-                          { title: t.paywallPoint3Title, detail: t.paywallPoint3Desc },
-                          { title: t.paywallPoint4Title, detail: t.paywallPoint4Desc }
-                        ].map((item, idx) => (
-                          <div key={idx} className="flex gap-4 p-4 bg-white border border-slate-200 rounded-xl hover:shadow-md transition-all">
-                            <Check className="w-5 h-5 text-blue-600 shrink-0 mt-0.5" />
-                            <div>
-                              <h4 className="text-xs font-bold text-slate-800 leading-none">{item.title}</h4>
-                              <p className="text-[11px] text-slate-500 leading-relaxed mt-2">{item.detail}</p>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-
-                      {/* Social proof trust label */}
-                      <div className="flex items-center gap-3 mt-4 pt-5 border-t border-slate-200">
-                        <div className="flex -space-x-2.5 font-mono">
-                          {[
-                            "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=100&h=100",
-                            "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=100&h=100",
-                            "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&q=80&w=100&h=100"
-                          ].map((url, i) => (
-                            <img key={i} src={url} className="w-8 h-8 rounded-full border-2 border-white object-cover" alt="Executive Alumni" referrerPolicy="no-referrer" />
-                          ))}
-                        </div>
-                        <span className="text-[11px] text-slate-500 font-medium">
-                          {t.industrySuccessRate}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Right: Checkout pricing & methods component */}
-                    <div className="md:col-span-5 relative">
-                      <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-lg border-t-4 border-t-blue-600 sticky top-24">
-                        <h3 className="font-bold text-slate-900 text-xs uppercase tracking-wider mb-4 font-sans">
-                          {lang === 'zh' ? '订单明细 (Order Summary)' : 'Order Summary'}
-                        </h3>
-                        
-                        <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl mb-6 flex justify-between items-start">
-                          <div className="flex-1 pr-2">
-                            <h4 className="text-xs font-bold text-slate-800 leading-relaxed">
-                              {lang === 'zh' ? '单次 AI 高管简历靶向优化包' : 'AI Executive Resume Targeted Optimization Pack'}
-                            </h4>
-                            <span className="text-[9px] font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded inline-block mt-2 font-sans">
-                              {lang === 'zh' ? '早鸟特惠' : 'EARLY BIRD DISCOUNT'}
-                            </span>
-                          </div>
-                          <div className="text-right shrink-0">
-                            <span className="text-2xl font-extrabold text-slate-900 font-mono">¥29.9</span>
-                            <span className="text-[10px] text-slate-400 font-bold line-through block mt-1 font-mono">¥49.00</span>
-                          </div>
-                        </div>
-
-                        <div className="flex flex-col gap-3 mb-6">
-                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">{t.selectPayment}</label>
-                          
-                          <button 
-                            onClick={() => setPaymentMethod('wechat')}
-                            className={`w-full flex items-center justify-between p-4 border rounded-xl cursor-pointer text-left transition-all ${paymentMethod === 'wechat' ? 'border-blue-600 bg-blue-50/50' : 'border-slate-200 hover:bg-slate-50'}`}
-                          >
-                            <div className="flex items-center gap-3">
-                              <span className="w-5 h-5 rounded-full bg-emerald-500 flex items-center justify-center text-white text-[10px] font-bold">{lang === 'zh' ? '微信' : 'WX'}</span>
-                              <span className="text-xs font-bold text-slate-800">{t.wechatPay}</span>
-                            </div>
-                            <div className={`w-4.5 h-4.5 rounded-full border flex items-center justify-center ${paymentMethod === 'wechat' ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-300 bg-white'}`}>
-                              {paymentMethod === 'wechat' && <Check className="w-3 h-3" />}
-                            </div>
-                          </button>
-
-                          <button 
-                            onClick={() => setPaymentMethod('alipay')}
-                            className={`w-full flex items-center justify-between p-4 border rounded-xl cursor-pointer text-left transition-all ${paymentMethod === 'alipay' ? 'border-blue-600 bg-blue-50/50' : 'border-slate-200 hover:bg-slate-50'}`}
-                          >
-                            <div className="flex items-center gap-3">
-                              <span className="w-5 h-5 rounded-full bg-sky-500 flex items-center justify-center text-white text-[10px] font-bold">{lang === 'zh' ? '宝' : 'Ali'}</span>
-                              <span className="text-xs font-bold text-slate-800">{t.alipay}</span>
-                            </div>
-                            <div className={`w-4.5 h-4.5 rounded-full border flex items-center justify-center ${paymentMethod === 'alipay' ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-300 bg-white'}`}>
-                              {paymentMethod === 'alipay' && <Check className="w-3 h-3" />}
-                            </div>
-                          </button>
-                        </div>
-
-                        {/* Order button trigger */}
-                        <button 
-                          onClick={handlePaymentSubmit}
-                          disabled={isCreatingSession}
-                          className={`w-full py-3.5 rounded-xl text-xs font-bold transition-all shadow-md flex items-center justify-center gap-2 group ${isCreatingSession ? 'bg-slate-400 cursor-not-allowed text-slate-100' : 'bg-blue-600 hover:bg-blue-700 text-white'}`}
-                        >
-                          {isCreatingSession ? (
-                            <Loader2 className="w-4 h-4 animate-spin shrink-0" />
-                          ) : (
-                            <CreditCard className="w-4 h-4 shrink-0" />
-                          )}
-                          <span>{isCreatingSession ? (lang === 'zh' ? '正在加载安全收银台...' : 'Opening secure checkout...') : t.payAndGenerate}</span>
-                          {!isCreatingSession && <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />}
-                        </button>
-
-                        <div className="flex items-center justify-center gap-2 mt-4 text-[10px] text-slate-400 font-bold uppercase tracking-wider">
-                          <Lock className="w-3.5 h-3.5" />
-                          <span>Secure, SSL Encrypted checkout</span>
-                        </div>
-                      </div>
-                    </div>
-
-                  </motion.div>
-                )}
 
                 {activeTab === 'finalized' && currentTask.optimizedResume && (
                   
@@ -3744,7 +3613,7 @@ Visuals & Integrity
                           ) : (
                             <button 
                               onClick={() => {
-                                setEditedResume(JSON.parse(JSON.stringify(currentTask.optimizedResume)));
+                                setEditedResume(JSON.parse(JSON.stringify(activeRenderResume)));
                                 setIsEditing(true);
                               }}
                               className="px-5 py-2.5 border border-blue-600 hover:bg-blue-50 text-blue-700 rounded-xl text-xs font-bold transition-colors shadow-sm flex items-center gap-2"
@@ -3789,11 +3658,39 @@ Visuals & Integrity
                       </div>
                     </div>
 
+                    {/* Mobile Workspace Tab Switcher (Only visible on lg:hidden) */}
+                    <div className="flex lg:hidden bg-slate-100 p-1.5 rounded-2xl border border-slate-200/60 gap-1.5 shadow-xs mb-4 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setMobileWorkspaceTab('copilot')}
+                        className={`flex-1 py-2.5 text-xs font-extrabold rounded-xl transition-all flex items-center justify-center gap-2 ${
+                          mobileWorkspaceTab === 'copilot'
+                            ? 'bg-blue-600 text-white shadow-md shadow-blue-100'
+                            : 'text-slate-600 hover:text-slate-900 bg-white/50 hover:bg-white'
+                        }`}
+                      >
+                        <Sparkles className="w-4 h-4 shrink-0" />
+                        <span>改写研判助手 (左栏)</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMobileWorkspaceTab('resume')}
+                        className={`flex-1 py-2.5 text-xs font-extrabold rounded-xl transition-all flex items-center justify-center gap-2 ${
+                          mobileWorkspaceTab === 'resume'
+                            ? 'bg-blue-600 text-white shadow-md shadow-blue-100'
+                            : 'text-slate-600 hover:text-slate-900 bg-white/50 hover:bg-white'
+                        }`}
+                      >
+                        <FileText className="w-4 h-4 shrink-0" />
+                        <span>重构简历预览 (右栏)</span>
+                      </button>
+                    </div>
+
                     {/* Dual Pane Layout wrapper */}
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:h-[700px] h-auto items-stretch">
                       
                       {/* Left Pane: V0.4 Interactive Copilot Panel & Original Resume */}
-                      <div className="col-span-1 lg:col-span-4 bg-slate-50 border border-slate-200 rounded-2xl flex flex-col shadow-sm overflow-hidden h-[500px] lg:h-full min-h-0">
+                      <div className={`col-span-1 lg:col-span-4 bg-slate-50 border border-slate-200 rounded-2xl flex flex-col shadow-sm overflow-hidden h-[500px] lg:h-full min-h-0 ${mobileWorkspaceTab === 'copilot' ? 'flex' : 'hidden lg:flex'}`}>
                         {/* Sub-tab selection bar */}
                         <div className="px-2 py-1.5 bg-slate-100/80 border-b border-slate-200 flex gap-1 shrink-0">
                           <button
@@ -3806,9 +3703,9 @@ Visuals & Integrity
                           >
                             <Sparkles className="w-3.5 h-3.5 text-blue-500 shrink-0" />
                             <span className="shrink-0">改写建议对比</span>
-                            {rewriteSuggestions.length > 0 && (
+                            {rewriteSuggestions.filter(s => !s.versionType || s.versionType === activeVersionType).length > 0 && (
                               <span className="bg-blue-100 text-blue-700 text-[9px] px-1.5 py-0.2 rounded-full font-extrabold shrink-0">
-                                {rewriteSuggestions.length}
+                                {rewriteSuggestions.filter(s => !s.versionType || s.versionType === activeVersionType).length}
                               </span>
                             )}
                           </button>
@@ -3830,7 +3727,15 @@ Visuals & Integrity
                           <div className="flex-grow overflow-y-auto min-h-0 h-0 p-4 flex flex-col gap-3.5">
                             <div className="bg-blue-50/50 border border-blue-100/50 p-3 rounded-xl shrink-0">
                               <p className="text-[10px] text-blue-700 font-semibold leading-relaxed">
-                                💡 <b>AI 精准采纳助手：</b> 针对您的高管意向职位，AI 生成了以下高价值表达改写。点击采纳，它们将实时更新应用到右侧简历中。
+                                💡 <b>AI 精准采纳助手 ({
+                                  activeVersionType === 'executive' ? '高管冲刺专属建议' :
+                                  activeVersionType === 'ai_product' ? 'AI 产品业务负责人专属建议' :
+                                  '标准投递建议'
+                                })：</b> 针对您当前的<b>【{
+                                  activeVersionType === 'executive' ? '高管冲刺版' :
+                                  activeVersionType === 'ai_product' ? 'AI产品负责人版' :
+                                  '标准投递版'
+                                }】</b>简历，AI 精准定制了以下差异化改写方案。点击即可一键采纳融入右侧预览！
                               </p>
                             </div>
 
@@ -3839,12 +3744,12 @@ Visuals & Integrity
                                 <div className="w-8 h-8 rounded-full border-2 border-blue-500 border-t-transparent animate-spin" />
                                 <span className="text-[10px] font-bold uppercase tracking-widest font-mono">AI 正在调和改写对比...</span>
                               </div>
-                            ) : rewriteSuggestions.length === 0 ? (
+                            ) : rewriteSuggestions.filter(s => !s.versionType || s.versionType === activeVersionType).length === 0 ? (
                               <div className="text-center py-12 text-xs text-slate-400">
-                                暂无改写建议。
+                                暂无该版本的改写建议。
                               </div>
                             ) : (
-                              rewriteSuggestions.map((sugg) => (
+                              rewriteSuggestions.filter(s => !s.versionType || s.versionType === activeVersionType).map((sugg) => (
                                 <div 
                                   key={sugg.id} 
                                   className={`shrink-0 border rounded-xl overflow-hidden bg-white shadow-xs transition-all ${
@@ -3963,7 +3868,7 @@ Visuals & Integrity
                       </div>
 
                       {/* Right Pane: AI-Optimized resume layout */}
-                      <div className="col-span-1 lg:col-span-8 bg-white border-2 border-blue-500/20 rounded-2xl flex flex-col shadow-lg overflow-hidden relative h-[600px] lg:h-full min-h-0">
+                      <div className={`col-span-1 lg:col-span-8 bg-white border-2 border-blue-500/20 rounded-2xl flex flex-col shadow-lg overflow-hidden relative h-[600px] lg:h-full min-h-0 ${mobileWorkspaceTab === 'resume' ? 'flex' : 'hidden lg:flex'}`}>
                         {/* Decorative AI Glow strip */}
                         <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-600 via-indigo-500 to-emerald-400 z-10"></div>
                         
@@ -4332,97 +4237,99 @@ Visuals & Integrity
                           
                           /* Premium high-end PDF resume rendered view */
                           <div className="flex-grow overflow-y-auto min-h-0 h-0 p-8 bg-white selection:bg-blue-100 selection:text-blue-900 leading-relaxed font-sans text-slate-800">
-                            <div className="max-w-[720px] mx-auto">
-                              
-                              {/* Resume Header */}
-                              <header className="border-b-2 border-blue-600 pb-5 mb-6 text-left">
-                                <h1 className="text-3xl font-extrabold text-slate-900 leading-tight">
-                                  {currentTask.optimizedResume.name}
-                                </h1>
-                                <p className="text-blue-600 font-bold text-sm uppercase tracking-wider mt-1">{currentTask.optimizedResume.title}</p>
-                                <div className="flex flex-wrap gap-x-4 gap-y-1.5 mt-3 text-xs text-slate-500 font-semibold font-mono">
-                                  <span>{currentTask.optimizedResume.email}</span>
-                                  <span>•</span>
-                                  <span>{currentTask.optimizedResume.location}</span>
-                                  {currentTask.optimizedResume.linkedin && (
-                                    <>
-                                      <span>•</span>
-                                      <span>{currentTask.optimizedResume.linkedin}</span>
-                                    </>
-                                  )}
-                                </div>
-                              </header>
-
-                              {/* Executive Summary */}
-                              <section className="mb-6">
-                                <h3 className="text-xs uppercase font-extrabold tracking-widest text-slate-900 border-b border-slate-200 pb-1.5 mb-3">Professional Summary</h3>
-                                <p className="text-xs text-slate-600 leading-relaxed text-justify">
-                                  {currentTask.optimizedResume.summary}
-                                </p>
-                              </section>
-
-                              {/* Core Capabilities */}
-                              <section className="mb-6">
-                                <h3 className="text-xs uppercase font-extrabold tracking-widest text-slate-900 border-b border-slate-200 pb-1.5 mb-3">Core Capabilities</h3>
-                                <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs font-semibold text-slate-700">
-                                  {currentTask.optimizedResume.coreCapabilities.map((cap, idx) => (
-                                    <div key={idx} className="flex gap-2 items-center">
-                                      <span className="w-1.5 h-1.5 rounded-full bg-blue-600"></span>
-                                      <span>{cap}</span>
-                                    </div>
-                                  ))}
-                                </div>
-                              </section>
-
-                              {/* Work Experience */}
-                              <section className="mb-6">
-                                <h2 className="text-xs font-bold uppercase tracking-wider text-slate-900 border-b border-slate-200 pb-1.5 mb-4">Work Experience ({t.workExperienceLabel})</h2>
+                            {activeRenderResume && (
+                              <div className="max-w-[720px] mx-auto">
                                 
-                                <div className="flex flex-col gap-5">
-                                  {currentTask.optimizedResume.experience.map((exp, idx) => (
-                                    <div key={idx} className="relative group">
-                                      <div className="flex justify-between items-baseline mb-2">
-                                        <h4 className="text-xs font-extrabold text-slate-800">
-                                          {exp.company} <span className="font-normal text-slate-400 mx-1.5">|</span> <span className="text-slate-600 text-[11px]">{exp.role}</span>
-                                        </h4>
-                                        <span className="text-[10px] font-mono font-bold text-slate-400">{exp.duration}</span>
+                                {/* Resume Header */}
+                                <header className="border-b-2 border-blue-600 pb-5 mb-6 text-left">
+                                  <h1 className="text-3xl font-extrabold text-slate-900 leading-tight">
+                                    {activeRenderResume.name}
+                                  </h1>
+                                  <p className="text-blue-600 font-bold text-sm uppercase tracking-wider mt-1">{activeRenderResume.title}</p>
+                                  <div className="flex flex-wrap gap-x-4 gap-y-1.5 mt-3 text-xs text-slate-500 font-semibold font-mono">
+                                    <span>{activeRenderResume.email}</span>
+                                    <span>•</span>
+                                    <span>{activeRenderResume.location}</span>
+                                    {activeRenderResume.linkedin && (
+                                      <>
+                                        <span>•</span>
+                                        <span>{activeRenderResume.linkedin}</span>
+                                      </>
+                                    )}
+                                  </div>
+                                </header>
+
+                                {/* Executive Summary */}
+                                <section className="mb-6">
+                                  <h3 className="text-xs uppercase font-extrabold tracking-widest text-slate-900 border-b border-slate-200 pb-1.5 mb-3">Professional Summary</h3>
+                                  <p className="text-xs text-slate-600 leading-relaxed text-justify">
+                                    {activeRenderResume.summary}
+                                  </p>
+                                </section>
+
+                                {/* Core Capabilities */}
+                                <section className="mb-6">
+                                  <h3 className="text-xs uppercase font-extrabold tracking-widest text-slate-900 border-b border-slate-200 pb-1.5 mb-3">Core Capabilities</h3>
+                                  <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs font-semibold text-slate-700">
+                                    {activeRenderResume.coreCapabilities.map((cap, idx) => (
+                                      <div key={idx} className="flex gap-2 items-center">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-blue-600"></span>
+                                        <span>{cap}</span>
                                       </div>
-                                      <ul className="list-disc pl-4 space-y-2 text-xs text-slate-600">
-                                        {exp.bullets.map((bullet, i) => {
-                                          // Highlight metrics or placeholder tags in optimized resume
-                                          const highlighted = bullet.replace(
-                                            /(【建议补充：[^】]+】)/g,
-                                            `<span class="bg-rose-50 border border-rose-200 text-rose-700 font-bold px-1.5 py-0.5 rounded text-[10px] uppercase font-mono tracking-wider">$1</span>`
-                                          );
-                                          return (
-                                            <li key={i} dangerouslySetInnerHTML={{ __html: highlighted }} />
-                                          );
-                                        })}
-                                      </ul>
-                                    </div>
-                                  ))}
-                                </div>
-                              </section>
+                                    ))}
+                                  </div>
+                                </section>
 
-                              {/* Education */}
-                              <section className="mb-6">
-                                <h3 className="text-xs uppercase font-extrabold tracking-widest text-slate-900 border-b border-slate-200 pb-1.5 mb-3">Education</h3>
-                                <p className="text-xs font-semibold text-slate-600">{currentTask.optimizedResume.education}</p>
-                              </section>
+                                {/* Work Experience */}
+                                <section className="mb-6">
+                                  <h2 className="text-xs font-bold uppercase tracking-wider text-slate-900 border-b border-slate-200 pb-1.5 mb-4">Work Experience ({t.workExperienceLabel})</h2>
+                                  
+                                  <div className="flex flex-col gap-5">
+                                    {activeRenderResume.experience.map((exp, idx) => (
+                                      <div key={idx} className="relative group">
+                                        <div className="flex justify-between items-baseline mb-2">
+                                          <h4 className="text-xs font-extrabold text-slate-800">
+                                            {exp.company} <span className="font-normal text-slate-400 mx-1.5">|</span> <span className="text-slate-600 text-[11px]">{exp.role}</span>
+                                          </h4>
+                                          <span className="text-[10px] font-mono font-bold text-slate-400">{exp.duration}</span>
+                                        </div>
+                                        <ul className="list-disc pl-4 space-y-2 text-xs text-slate-600">
+                                          {exp.bullets.map((bullet, i) => {
+                                            // Highlight metrics or placeholder tags in optimized resume
+                                            const highlighted = bullet.replace(
+                                              /(【建议补充：[^】]+】)/g,
+                                              `<span class="bg-rose-50 border border-rose-200 text-rose-700 font-bold px-1.5 py-0.5 rounded text-[10px] uppercase font-mono tracking-wider">$1</span>`
+                                            );
+                                            return (
+                                              <li key={i} dangerouslySetInnerHTML={{ __html: highlighted }} />
+                                            );
+                                          })}
+                                        </ul>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </section>
 
-                              {/* Key Skills */}
-                              <section>
-                                <h3 className="text-xs uppercase font-extrabold tracking-widest text-slate-900 border-b border-slate-200 pb-1.5 mb-3">Skills & Keywords</h3>
-                                <div className="flex flex-wrap gap-1.5">
-                                  {currentTask.optimizedResume.skills.map((skill, idx) => (
-                                    <span key={idx} className="px-2 py-0.5 bg-slate-100 border border-slate-200 text-slate-600 rounded text-[10px] font-mono font-medium">
-                                      {skill}
-                                    </span>
-                                  ))}
-                                </div>
-                              </section>
+                                {/* Education */}
+                                <section className="mb-6">
+                                  <h3 className="text-xs uppercase font-extrabold tracking-widest text-slate-900 border-b border-slate-200 pb-1.5 mb-3">Education</h3>
+                                  <p className="text-xs font-semibold text-slate-600">{activeRenderResume.education}</p>
+                                </section>
 
-                            </div>
+                                {/* Key Skills */}
+                                <section>
+                                  <h3 className="text-xs uppercase font-extrabold tracking-widest text-slate-900 border-b border-slate-200 pb-1.5 mb-3">Skills & Keywords</h3>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {activeRenderResume.skills.map((skill, idx) => (
+                                      <span key={idx} className="px-2 py-0.5 bg-slate-100 border border-slate-200 text-slate-600 rounded text-[10px] font-mono font-medium">
+                                        {skill}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </section>
+
+                              </div>
+                            )}
                           </div>
                         )}
 

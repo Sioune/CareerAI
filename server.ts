@@ -8,13 +8,55 @@ import dotenv from "dotenv";
 import mammoth from "mammoth";
 import { createRequire } from "module";
 import PDFDocument from "pdfkit";
-import Stripe from "stripe";
 import puppeteer from "puppeteer";
 import AdmZip from "adm-zip";
-import { db } from "./src/db/index.ts";
+import { db, eq, and } from "./src/db/index.ts";
 import { users, resumeVersions, rewriteSuggestions, clarificationQuestions, userFeedbacks, eventLogs } from "./src/db/schema.ts";
-import { eq, and } from "drizzle-orm";
 import { supabase } from "./src/lib/supabase.ts";
+
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("Unhandled Rejection at:", promise, "reason:", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught Exception thrown:", err);
+});
+
+async function executeWithRetry<T>(queryFn: () => Promise<T>, retries = 4, baseDelay = 300): Promise<T> {
+  let lastError: any;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      return await queryFn();
+    } catch (err: any) {
+      lastError = err;
+      const errMsg = [
+        err?.message,
+        String(err),
+        err?.cause?.message,
+        err?.cause ? String(err.cause) : "",
+      ].filter(Boolean).join(" | ");
+      
+      const isConnError = 
+        errMsg.includes("terminated unexpectedly") || 
+        errMsg.includes("Connection") ||
+        errMsg.includes("closed") ||
+        errMsg.includes("timeout") ||
+        errMsg.includes("broken pipe") ||
+        errMsg.includes("SQL pool client") ||
+        err?.code === "57P01" || // admin shutdown
+        err?.code === "ECONNRESET";
+      
+      if (isConnError && attempt < retries) {
+        const backoffDelay = baseDelay * attempt;
+        console.warn(`Database query failed on attempt ${attempt} due to connection error. Retrying in ${backoffDelay}ms... Error: ${errMsg}`);
+        await new Promise(resolve => setTimeout(resolve, backoffDelay));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastError;
+}
 
 async function getDbUserFromHeader(authHeader?: string) {
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -31,13 +73,13 @@ async function getDbUserFromHeader(authHeader?: string) {
     const uid = user.id;
     const email = user.email || "";
     
-    // Get or create user in database
-    const existing = await db.select().from(users).where(eq(users.uid, uid));
+    // Get or create user in database with automatic query retry on connection dropout
+    const existing = await executeWithRetry(() => db.select().from(users).where(eq(users.uid, uid))) as any;
     if (existing.length > 0) {
       return existing[0];
     }
     
-    const result = await db.insert(users).values({ uid, email }).returning();
+    const result = await executeWithRetry(() => db.insert(users).values({ uid, email }).returning()) as any;
     return result[0];
   } catch (err) {
     console.error("Failed to get DB user from token:", err);
@@ -50,19 +92,6 @@ const requireFn = typeof require !== "undefined" ? require : createRequire(impor
 const pdf = requireFn("pdf-parse");
 
 dotenv.config();
-
-// Initialize Stripe safely
-const stripeKey = process.env.STRIPE_SECRET_KEY;
-let stripeClient: Stripe | null = null;
-
-if (stripeKey) {
-  stripeClient = new Stripe(stripeKey, {
-    apiVersion: "2025-01-27" as any,
-  });
-  console.log("Stripe Client initialized successfully with Secret Key.");
-} else {
-  console.warn("WARNING: STRIPE_SECRET_KEY is not defined. Payments will run in Sandbox Simulation mode.");
-}
 
 // Initialize Gemini client safely
 const apiKey = process.env.GEMINI_API_KEY;
@@ -134,8 +163,13 @@ async function startServer() {
         const result = await mammoth.extractRawText({ buffer });
         extractedText = result.value;
       } else if (lowerName.endsWith(".pdf")) {
-        const data = await pdf(buffer);
-        extractedText = data.text;
+        const parser = new pdf.PDFParse({ data: buffer });
+        const result = await parser.getText();
+        extractedText = result.text || "";
+        await parser.destroy();
+        if (!extractedText.trim()) {
+          throw new Error("PDF文件中未提取到有效文本内容。如果此文件是扫描件或图片PDF，建议您直接将简历文本复制并粘贴到下方的文本框中。");
+        }
       } else {
         extractedText = buffer.toString("utf-8");
       }
@@ -753,96 +787,6 @@ async function startServer() {
         res.status(500).json({ error: `导出 PDF 失败: ${error.message || error}` });
       }
     }
-  });
-
-  // In-memory store for active WeChat/Alipay sessions
-  const activePaymentSessions = new Map<string, {
-    id: string;
-    taskId: string;
-    paymentMethod: 'wechat' | 'alipay';
-    status: 'pending' | 'paid';
-    createdAt: number;
-  }>();
-
-  // API Route: Create real WeChat/Alipay Session for Payment
-  app.post("/api/create-checkout-session", async (req, res) => {
-    const { taskId, targetRole, paymentMethod, lang } = req.body;
-
-    if (!taskId) {
-      return res.status(400).json({ error: "taskId is required" });
-    }
-
-    const hostOrigin = req.headers.referer || req.headers.origin || "http://localhost:3000";
-    const cleanOrigin = hostOrigin.split("?")[0];
-
-    // Generate simulated payment session
-    const mockSessionId = "mock_pay_" + Math.random().toString(36).substr(2, 9);
-    
-    // Create a mock QR payload URL. If scanned/opened in a new tab, it simulates successful payment directly.
-    const mockRedirectUrl = `${cleanOrigin}?payment_status=success&session_id=${mockSessionId}&task_id=${taskId}`;
-
-    activePaymentSessions.set(mockSessionId, {
-      id: mockSessionId,
-      taskId: taskId,
-      paymentMethod: paymentMethod || 'wechat',
-      status: 'pending',
-      createdAt: Date.now()
-    });
-
-    console.log(`WeChat/Alipay simulated payment session created: ${mockSessionId} for task ${taskId}`);
-    return res.json({ 
-      url: mockRedirectUrl, 
-      sessionId: mockSessionId, 
-      isSandbox: true,
-      paymentMethod: paymentMethod || 'wechat'
-    });
-  });
-
-  // API Route: Verify Payment Status
-  app.get("/api/verify-payment", async (req, res) => {
-    const { session_id, task_id } = req.query;
-
-    if (!session_id || typeof session_id !== "string") {
-      return res.status(400).json({ error: "session_id is required" });
-    }
-
-    const session = activePaymentSessions.get(session_id);
-    if (!session) {
-      console.log(`Session ${session_id} not found, treating as sandbox paid fallback.`);
-      return res.json({ status: "paid", isSandbox: true, taskId: task_id });
-    }
-
-    // Auto-complete payment after 8 seconds of creation for extremely realistic feedback
-    const elapsed = Date.now() - session.createdAt;
-    if (elapsed > 8000 && session.status === 'pending') {
-      session.status = 'paid';
-      console.log(`WeChat/Alipay Session ${session_id} auto-completed (paid).`);
-    }
-
-    return res.json({ 
-      status: session.status, 
-      isSandbox: true, 
-      taskId: session.taskId,
-      paymentMethod: session.paymentMethod
-    });
-  });
-
-  // API Route: Manually confirm payment success (Instant verification)
-  app.post("/api/confirm-payment", async (req, res) => {
-    const { session_id } = req.body;
-
-    if (!session_id || typeof session_id !== "string") {
-      return res.status(400).json({ error: "session_id is required" });
-    }
-
-    const session = activePaymentSessions.get(session_id);
-    if (session) {
-      session.status = 'paid';
-      console.log(`WeChat/Alipay Session ${session_id} manually confirmed as paid.`);
-      return res.json({ success: true, status: "paid" });
-    }
-
-    return res.json({ success: true, status: "paid" });
   });
 
   // ==========================================
@@ -1588,7 +1532,11 @@ async function startServer() {
     try {
       let suggestions: any[] = [];
       if (aiClient) {
-        const prompt = `你是中文高阶简历优化写作专家。请基于目标岗位要求与候选人的简历，生成 3 到 5 个关键经历的“改写前后对比”卡片。
+        const prompt = `你是中文高阶简历优化写作专家。请基于目标岗位要求与候选人的简历，针对候选人的三个专属优化方向分别生成 1 到 2 个针对性的“改写前后对比”卡片：
+        1. 标准投递方向 (standard)
+        2. 高管冲刺方向 (executive)
+        3. AI产品负责人方向 (ai_product)
+        
         目标岗位: ${targetRole}
         市场研判: ${JSON.stringify(report)}
         用户补充信息: ${JSON.stringify(answers || [])}
@@ -1610,6 +1558,7 @@ async function startServer() {
           - suggestionReason: 优化理由与表达升级逻辑
           - missingInfo: 建议补充的数据点 (string[])
           - status: 'pending'
+          - versionType: 对应的版本方向（"standard" | "executive" | "ai_product"）
         
         输出格式为 JSON Array。`;
         
@@ -1633,9 +1582,10 @@ async function startServer() {
                     type: Type.ARRAY,
                     items: { type: Type.STRING }
                   },
-                  status: { type: Type.STRING }
+                  status: { type: Type.STRING },
+                  versionType: { type: Type.STRING }
                 },
-                required: ["id", "sectionType", "originalText", "issueSummary", "rewrittenText", "suggestionReason", "status"]
+                required: ["id", "sectionType", "originalText", "issueSummary", "rewrittenText", "suggestionReason", "status", "versionType"]
               }
             }
           }
@@ -2252,6 +2202,192 @@ async function startServer() {
     return res.json({ success: true });
   });
 
+  // Persistent user tasks/history endpoints
+  app.get("/api/tasks", async (req, res) => {
+    const dbUser = await getDbUserFromHeader(req.headers.authorization);
+    if (!dbUser) {
+      return res.json([]);
+    }
+    try {
+      const records = await db.select().from(eventLogs).where(and(eq(eventLogs.userId, dbUser.id), eq(eventLogs.eventType, "task")));
+      const tasks = records.map(r => {
+        try {
+          return JSON.parse(r.metaData || "{}");
+        } catch {
+          return null;
+        }
+      }).filter(Boolean);
+      return res.json(tasks);
+    } catch (err) {
+      console.error("Failed to fetch tasks from Supabase:", err);
+      return res.status(500).json({ error: "Failed to fetch tasks" });
+    }
+  });
+
+  app.post("/api/tasks", async (req, res) => {
+    const dbUser = await getDbUserFromHeader(req.headers.authorization);
+    if (!dbUser) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const task = req.body;
+    if (!task || !task.id) {
+      return res.status(400).json({ error: "Invalid task" });
+    }
+    try {
+      // Delete existing log with same task id if exists
+      const records = await db.select().from(eventLogs).where(and(eq(eventLogs.userId, dbUser.id), eq(eventLogs.eventType, "task")));
+      for (const r of records) {
+        try {
+          const t = JSON.parse(r.metaData || "{}");
+          if (t && t.id === task.id) {
+            await db.delete(eventLogs).where(eq(eventLogs.id, r.id));
+          }
+        } catch {}
+      }
+      // Insert new log
+      await db.insert(eventLogs).values({
+        userId: dbUser.id,
+        eventType: "task",
+        metaData: JSON.stringify(task)
+      });
+      return res.json({ success: true });
+    } catch (err) {
+      console.error("Failed to save task to Supabase:", err);
+      return res.status(500).json({ error: "Failed to save task" });
+    }
+  });
+
+  app.delete("/api/tasks/:id", async (req, res) => {
+    const { id } = req.params;
+    const dbUser = await getDbUserFromHeader(req.headers.authorization);
+    if (!dbUser) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    try {
+      const records = await db.select().from(eventLogs).where(and(eq(eventLogs.userId, dbUser.id), eq(eventLogs.eventType, "task")));
+      for (const r of records) {
+        try {
+          const t = JSON.parse(r.metaData || "{}");
+          if (t && t.id === id) {
+            await db.delete(eventLogs).where(eq(eventLogs.id, r.id));
+          }
+        } catch {}
+      }
+      return res.json({ success: true });
+    } catch (err) {
+      console.error("Failed to delete task from Supabase:", err);
+      return res.status(500).json({ error: "Failed to delete task" });
+    }
+  });
+
+  app.post("/api/tasks/sync", async (req, res) => {
+    const dbUser = await getDbUserFromHeader(req.headers.authorization);
+    if (!dbUser) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const { tasks } = req.body;
+    if (!Array.isArray(tasks)) {
+      return res.status(400).json({ error: "Invalid tasks array" });
+    }
+    try {
+      // Delete all existing tasks for this user
+      await db.delete(eventLogs).where(and(eq(eventLogs.userId, dbUser.id), eq(eventLogs.eventType, "task")));
+      
+      // Bulk insert new tasks
+      for (const t of tasks) {
+        if (t && t.id) {
+          await db.insert(eventLogs).values({
+            userId: dbUser.id,
+            eventType: "task",
+            metaData: JSON.stringify(t)
+          });
+        }
+      }
+      return res.json({ success: true });
+    } catch (err) {
+      console.error("Failed to sync tasks to Supabase:", err);
+      return res.status(500).json({ error: "Failed to sync tasks" });
+    }
+  });
+
+  // Persistent notifications endpoints
+  app.get("/api/notifications", async (req, res) => {
+    const dbUser = await getDbUserFromHeader(req.headers.authorization);
+    if (!dbUser) {
+      return res.json([]);
+    }
+    try {
+      const records = await db.select().from(eventLogs).where(and(eq(eventLogs.userId, dbUser.id), eq(eventLogs.eventType, "notification")));
+      const notifications = records.map(r => {
+        try {
+          return { ...JSON.parse(r.metaData || "{}"), dbLogId: r.id };
+        } catch {
+          return null;
+        }
+      }).filter(Boolean);
+      return res.json(notifications);
+    } catch (err) {
+      console.error("Failed to fetch notifications from Supabase:", err);
+      return res.status(500).json({ error: "Failed to fetch notifications" });
+    }
+  });
+
+  app.post("/api/notifications", async (req, res) => {
+    const dbUser = await getDbUserFromHeader(req.headers.authorization);
+    if (!dbUser) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const notif = req.body;
+    if (!notif || !notif.id) {
+      return res.status(400).json({ error: "Invalid notification" });
+    }
+    try {
+      // Delete existing notification log if exists
+      const records = await db.select().from(eventLogs).where(and(eq(eventLogs.userId, dbUser.id), eq(eventLogs.eventType, "notification")));
+      for (const r of records) {
+        try {
+          const n = JSON.parse(r.metaData || "{}");
+          if (n && n.id === notif.id) {
+            await db.delete(eventLogs).where(eq(eventLogs.id, r.id));
+          }
+        } catch {}
+      }
+      // Insert new notification
+      await db.insert(eventLogs).values({
+        userId: dbUser.id,
+        eventType: "notification",
+        metaData: JSON.stringify(notif)
+      });
+      return res.json({ success: true });
+    } catch (err) {
+      console.error("Failed to save notification to Supabase:", err);
+      return res.status(500).json({ error: "Failed to save notification" });
+    }
+  });
+
+  app.post("/api/notifications/read-all", async (req, res) => {
+    const dbUser = await getDbUserFromHeader(req.headers.authorization);
+    if (!dbUser) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    try {
+      const records = await db.select().from(eventLogs).where(and(eq(eventLogs.userId, dbUser.id), eq(eventLogs.eventType, "notification")));
+      for (const r of records) {
+        try {
+          const n = JSON.parse(r.metaData || "{}");
+          if (n && !n.isRead) {
+            n.isRead = true;
+            await db.update(eventLogs).set({ metaData: JSON.stringify(n) }).where(eq(eventLogs.id, r.id));
+          }
+        } catch {}
+      }
+      return res.json({ success: true });
+    } catch (err) {
+      console.error("Failed to mark all notifications as read in Supabase:", err);
+      return res.status(500).json({ error: "Failed to update notifications" });
+    }
+  });
+
   app.get("/api/admin/feedback-summary", async (req, res) => {
     // Collect all feedbacks from memory cache
     const all: any[] = [];
@@ -2322,7 +2458,7 @@ async function startServer() {
       { stage: "岗位画像研判 (JD Analysis)", count: jdAnalyzed, percentage: Math.round((jdAnalyzed / fileUploads) * 100) },
       { stage: "契合评估生成 (Report Gen)", count: reportsGenerated, percentage: Math.round((reportsGenerated / fileUploads) * 100) },
       { stage: "简历智能追问 (Smart Q&A)", count: qaCompleted, percentage: Math.round((qaCompleted / fileUploads) * 100) },
-      { stage: "微信/支付宝付费 (Payment)", count: paymentCompleted, percentage: Math.round((paymentCompleted / fileUploads) * 100) },
+      { stage: "高级简历重构 (Executive Upgrade)", count: paymentCompleted, percentage: Math.round((paymentCompleted / fileUploads) * 100) },
       { stage: "完整履历导出 (Package Export)", count: exportsCompleted, percentage: Math.round((exportsCompleted / fileUploads) * 100) }
     ]);
   });
@@ -2386,47 +2522,44 @@ function getSimulatedReport(targetRole: string, industry?: string, location?: st
     sampleOverview: {
       count: 28,
       roles: [
-        { name: "AI 产品负责人", count: 9 },
-        { name: "大模型产品总监", count: 7 },
-        { name: "AI 业务负责人", count: 5 },
-        { name: "AI 解决方案总监", count: 4 },
-        { name: "其他相关高阶岗位", count: 3 }
+        { name: "AI产品总监", count: 12 },
+        { name: "AI产品负责人", count: 10 },
+        { name: "大模型产品经理", count: 6 }
       ],
       cities: [
-        { name: "北京", count: 11 },
+        { name: "北京", count: 14 },
         { name: "上海", count: 8 },
-        { name: "深圳", count: 5 },
-        { name: "杭州", count: 4 }
+        { name: "深圳", count: 4 },
+        { name: "杭州", count: 2 }
       ],
       sources: [
-        { name: "公司官网 / 官方招聘页", count: 12 },
-        { name: "公开招聘页面", count: 10 },
-        { name: "搜索引擎索引结果", count: 6 }
+        { name: "官方招聘页", count: 16 },
+        { name: "公开社交平台", count: 12 }
       ]
     },
     conclusions: [
       {
         id: "c1",
-        title: "大模型应用落地经验是该岗位的高频要求",
-        frequency: 64,
-        category: "技术应用",
-        detail: "核心结论：大模型落地经验与高冲击力产品方案是高频刚需。",
-        suggestion: "你的简历中应明确体现是否做过 AI 产品落地、客户场景验证、模型能力产品化。",
+        title: "大语言模型及垂直应用落地开发经验",
+        frequency: 96,
+        category: "大模型应用",
+        detail: "核心招聘几乎全部提到了对LLM/Prompt/Agent等落地应用的强诉求。",
+        suggestion: "优化简历中的项目细节，高亮主导LLM/Agent的应用重构或微调细节。",
         evidences: [
-          { id: "e1", companyType: "某头部大厂 AI 部门", text: "要求负责大模型产品从需求定义到上线落地", summary: "负责大模型产品从需求定义到上线落地", type: "官方招聘页" },
-          { id: "e2", companyType: "某 SaaS 独角兽", text: "要求有企业级大模型应用场景设计经验", summary: "有企业级大模型应用场景设计经验", type: "公开招聘页面" },
-          { id: "e3", companyType: "某科技上市公司", text: "要求熟悉 RAG、Agent、Prompt Engineering 等应用方向", summary: "熟悉 RAG、Agent、Prompt Engineering 等应用方向", type: "搜索引擎索引结果" }
+          { id: "e1", companyType: "某头部科技大厂", text: "主导大模型（LLM）垂直应用与智能代理（Agent）架构研发", summary: "主导LLM应用与Agent体系架构", type: "官方招聘页" },
+          { id: "e2", companyType: "某知名 AI 独角兽", text: "具有主流大模型微调、RAG 混合检索及 Prompt 深度调优实操经验", summary: "拥有主流LLM、RAG与Prompt实操调优", type: "公开招聘页面" },
+          { id: "e3", companyType: "某知名科技独角兽", text: "规划 AIGC 落地场景并打通多场景商业变现闭环", summary: "规划 AIGC 商业化并主导场景闭环", type: "搜索引擎索引结果" }
         ]
       },
       {
         id: "c2",
-        title: "跨职能多维团队管理与敏捷迭代把控",
-        frequency: 82,
-        category: "团队管理",
-        detail: "要求候选人具备同时协调算法研究员、模型工程 and 业务团队的优秀领导才能。",
-        suggestion: "简历的工作历练中，突出领导多角色跨专业班底规模，阐明工作敏捷模型迭代流程。",
+        title: "高频跨职能与算法研发团队组织领导力",
+        frequency: 84,
+        category: "团队领导力",
+        detail: "高级或核心总监岗位均高频提及了对算法工程师、数据科学人员及多角色开发班底的领导要求。",
+        suggestion: "升级简历中“和研发沟通需求”等词汇，换成“领导跨算法与工程的敏捷团队、打通闭环研发周期”。",
         evidences: [
-          { id: "e4", companyType: "某 AIGC 初创企业", text: "主导由算法工程与产品开发组成的跨国跨团队架构", summary: "主导跨职能算法工程、前后端协同研发班底", type: "官方招聘页" },
+          { id: "e4", companyType: "某知名跨国企业", text: "需要有效组织算法工程师、工程研发团队 and 前后端进行业务攻关", summary: "领导算法工程、前后端协同研发班底", type: "官方招聘页" },
           { id: "e5", companyType: "某前沿科技独角兽", text: "带领 15 人以上核心产品技术团队极速迭代", summary: "带领 15+ 人产品与技术核心研发团队", type: "公开招聘页面" },
           { id: "e6", companyType: "某跨国软件集团", text: "要求建立核心研发交付机制并提升模型迭代人效", summary: "建立模型演变全生命周期并管理人效收益", type: "官方招聘页" }
         ]
@@ -2446,6 +2579,88 @@ function getSimulatedReport(targetRole: string, industry?: string, location?: st
       }
     ]
   };
+}
+
+function getSimulatedRewriteSuggestions(targetRole: string, resumeText: string, userAnswers: any[]) {
+  const q1Ans = userAnswers?.find((a: any) => a.id === 'q1')?.userAnswer || '';
+  const q2Ans = userAnswers?.find((a: any) => a.id === 'q2')?.userAnswer || '';
+  const q3Ans = userAnswers?.find((a: any) => a.id === 'q3')?.userAnswer || '';
+  
+  let teamSizeText = q3Ans.includes("15人") ? "管理 15 人以上跨职能算法与研发团队" : q3Ans.includes("5-15人") ? "管理 10 人左右中型跨职能算法与研发团队" : "作为核心架构 Owner 主导多角色协同";
+  let resultText = q2Ans.includes("有明确数据") ? "拉动核心产品线营收大幅增长并促成标杆客户签约" : "建立模型敏捷发布体系并缩短产品迭代周期";
+  let aiProjectText = q1Ans.includes("没有相关") ? "规划高冲击力 AIGC 工具落地" : "主导生成式 AI / 大语言模型 (LLM) 场景应用创新与端到端敏捷开发落地";
+
+  return [
+    // Standard version suggestions
+    {
+      id: "std_s1",
+      versionType: "standard",
+      sectionType: "工作经历",
+      originalText: "负责公司 AI 产品功能设计，和研发沟通需求，推动上线。",
+      issueSummary: "表达偏执行层，缺乏突出产品全生命周期的系统方法论与核心数据指标。",
+      rewrittenText: `主导公司 ${targetRole} 核心功能矩阵的敏捷交付与生命周期管理，主导核心模块的产品定义与多角色团队协同；通过建立标准化需求评审与上线追踪机制，缩短产品迭代周期达 20%，成功实现核心业务平稳运行【建议补充：例如“服务头部客户达 10 家，日常处理并发量超万级”】。`,
+      suggestionReason: "突出执行与落地、敏捷交付的扎实产品经理功底，契合标准投递所需的稳定与落地能力。",
+      missingInfo: ["服务头部客户数量", "系统日常最大并发量"],
+      status: "pending"
+    },
+    {
+      id: "std_s2",
+      versionType: "standard",
+      sectionType: "核心能力",
+      originalText: "精通产品设计，懂算法，会写代码，英语沟通好。",
+      issueSummary: "能力罗列单薄，缺乏体系化的专业产品技能维度。",
+      rewrittenText: `【需求定义与产品规划】精通高复杂业务流的需求拆解、PRD 撰写与交互设计；\n【敏捷交付与项目协作】熟练掌握 Scrum 敏捷开发流程，具备卓越的跨团队沟通与进度控制能力；\n【数据驱动与分析】掌握 SQL、A/B 测试等数据分析技能，善于通过指标波动反哺产品优化。`,
+      suggestionReason: "使用系统化的产品能力结构，展示扎实的产品经理核心素质，完全对齐招聘需求。",
+      missingInfo: [],
+      status: "pending"
+    },
+    // Executive version suggestions
+    {
+      id: "exec_s1",
+      versionType: "executive",
+      sectionType: "工作经历",
+      originalText: "负责公司 AI 产品功能设计，和研发沟通需求，推动上线。",
+      issueSummary: "缺乏经营、财务 ROI、高管视角与组织效能治理逻辑。",
+      rewrittenText: `主导公司 ${targetRole} 及配套产业生态的商业化闭环与整体经营指标，直接向决策层汇报；通过治理组织效能和优化生产要素分配，将研发交付 ROI 提升 25%，并主导实现了跨业务板块的资源整合与亿元级项目商业落地。`,
+      suggestionReason: "将重心从功能执行提升至经营管理、组织效能和 ROI 控制，体现高管的核心治理方法论。",
+      missingInfo: ["跨职能部门的具体管理规模", "具体主导的大型项目商业金额规模"],
+      status: "pending"
+    },
+    {
+      id: "exec_s2",
+      versionType: "executive",
+      sectionType: "个人简介",
+      originalText: "多年产品经理经验，做过不少 AI 功能，懂技术，求职 AI 产品总监岗位。",
+      issueSummary: "没有体现出高管级战略定力与大规模团队领导力的复合型人设。",
+      rewrittenText: `资深高管级技术产品专家，具备 10 年以上跨职能大型部门治理、战略规划与组织效能重构方法论。拥有主导过亿元级产业落地及高管战略决策汇报的成熟实操经历，擅长通过数字化手段实现公司级经营 ROI 全面倍增。`,
+      suggestionReason: "重塑高管级的统帅气质，突出战略领导力、财务思维与公司级组织架构重构的战略高度。",
+      missingInfo: ["最高汇报级别 (如汇报给集团 CEO/董事会)"],
+      status: "pending"
+    },
+    // AI Product version suggestions
+    {
+      id: "ai_s1",
+      versionType: "ai_product",
+      sectionType: "工作经历",
+      originalText: "负责公司 AI 产品功能设计，和研发沟通需求，推动上线。",
+      issueSummary: "未突出前沿大模型 (LLM)、Prompt、RAG 等 AI 技术应用与商业落地的核心竞争力。",
+      rewrittenText: `主导公司 ${targetRole} AIGC 核心产品线从 0 到 1 架构规划与落地，主导生成式 AI / 大语言模型 (LLM) 场景应用创新，成功引入先进 RAG 及多智能体 (Agent) 协作系统；${teamSizeText}，打通数据飞轮、模型微调与端到端敏捷开发，显著提升模型回答准确率至 95%。`,
+      suggestionReason: "对齐前沿大模型热点，强调 AI 技术的产品化落地与技术壁垒，完全突出 AI 领军人物的特色。",
+      missingInfo: ["具体使用或微调过的基座大模型名称", "模型落地后的实际业务提效比例"],
+      status: "pending"
+    },
+    {
+      id: "ai_s2",
+      versionType: "ai_product",
+      sectionType: "核心能力",
+      originalText: "精通产品设计，懂算法，会写代码，英语沟通好。",
+      issueSummary: "完全没有触及 AI 产品经理核心的技术与算法方法论。",
+      rewrittenText: `【前沿 AI 商业架构】精通大语言模型应用、多智能体协同及 RAG 端到端系统全生命周期产品设计方法论；\n【算法与工程理解】熟悉主流 LLM 微调（Fine-tuning）、Prompt 工程与向量数据库，能与算法团队进行高深度技术对话；\n【AI 业务飞轮构建】擅长构建“用户反馈 - 数据收集 - 模型迭代 - 体验升级”的闭环数据飞轮，驱动产品商业化指数级增长。`,
+      suggestionReason: "凸显硬核 AI 产品经理的知识体系，包含 RAG、Prompt、Fine-tuning、数据飞轮等行业高壁垒关键词。",
+      missingInfo: [],
+      status: "pending"
+    }
+  ];
 }
 
 function getSimulatedClarificationQuestions(targetRole: string, resumeText: string) {
@@ -2515,48 +2730,6 @@ function getSimulatedClarificationQuestions(targetRole: string, resumeText: stri
   ];
 }
 
-function getSimulatedRewriteSuggestions(targetRole: string, resumeText: string, userAnswers: any[]) {
-  const q1Ans = userAnswers?.find((a: any) => a.id === 'q1')?.userAnswer || '';
-  const q2Ans = userAnswers?.find((a: any) => a.id === 'q2')?.userAnswer || '';
-  const q3Ans = userAnswers?.find((a: any) => a.id === 'q3')?.userAnswer || '';
-  
-  let teamSizeText = q3Ans.includes("15人") ? "管理 15 人以上跨职能算法与研发团队" : q3Ans.includes("5-15人") ? "管理 10 人左右中型跨职能算法与研发团队" : "作为核心架构 Owner 主导多角色协同";
-  let resultText = q2Ans.includes("有明确数据") ? "拉动核心产品线营收大幅增长并促成标杆客户签约" : "建立模型敏捷发布体系并缩短产品迭代周期";
-  let aiProjectText = q1Ans.includes("没有相关") ? "规划高冲击力 AIGC 工具落地" : "主导生成式 AI / 大语言模型 (LLM) 场景应用创新与端到端敏捷开发落地";
-
-  return [
-    {
-      id: "s1",
-      sectionType: "工作经历",
-      originalText: "负责公司 AI 产品功能设计，和研发沟通需求，推动上线。",
-      issueSummary: "表达偏执行层，缺乏负责人或高管视角；未突出大模型等热点 AI 技术应用，缺少量化商业 ROI 与协同深度。",
-      rewrittenText: `主导公司 ${targetRole} 核心产品线从 0 到 1 架构规划与商业闭环，${aiProjectText}，引入先进 of RAG 及 Agent 协作链条并推动落地；${teamSizeText}，建立敏捷模型迭代生命周期，有效缩短发布间隔达 30%，实现 ${resultText}【建议补充：例如“拉动单季业务收入突破 200 万元，新增签约大客户 5 家”】。`,
-      suggestionReason: "升级动词为'主导'、'架构规划'，强化中高层核心管理者的掌控力和战略决策属性；结合大模型、RAG 热点对齐 JD 要求，并抛出补充真实量化数据的抓手。",
-      missingInfo: ["单季业务收入增长数", "新增签约大客户数量"],
-      status: "pending"
-    },
-    {
-      id: "s2",
-      sectionType: "个人简介",
-      originalText: "多年产品经理经验，做过不少 AI 功能，懂技术，求职 AI 产品总监岗位。",
-      issueSummary: "用词过于松散日常，无法体现高级 AI 人才的全局技术底蕴与前瞻性商业眼光。",
-      rewrittenText: `资深 AI 领域核心产品架构专家，深耕人工智能及 LLM 模型研发落地 5 年以上，具备推动大模型、Agent 多智能体在多维度业务场景深度融合 the success records; familiar with key architectures of mainstream LLMs, prompt engineering and RAG, possessing mature cross-functional algorithm/R&D team leadership.`,
-      suggestionReason: "建立‘资深核心产品架构专家’与‘大模型应用领头人’的高端人设，突出核心技术敏感度与高层汇报协同能力，完全对齐大厂总监级招聘口味。",
-      missingInfo: ["最高汇报级别 (例如汇报给集团 VP/CEO)"],
-      status: "pending"
-    },
-    {
-      id: "s3",
-      sectionType: "核心能力",
-      originalText: "精通产品设计，懂算法，会写代码，英语沟通好。",
-      issueSummary: "核心能力仅在单薄罗列通用执行层技能，毫无总监/负责人级别的架构美感与商业深度。",
-      rewrittenText: `【前沿 AI 商业架构】精通大语言模型应用、多智能体协同及 RAG 端到端系统全生命周期产品设计方法论；\n【跨职能高能级管理】具备 ${teamSizeText}、协调多角色敏捷协作并持续拉动组织人效与产能的卓越领导力；\n【战略演进与汇报】拥有高频直接向高层决策者汇报、制定前瞻商业策略与精准控制 ROI 指标的经营智慧。`,
-      suggestionReason: "采用模块化中高层能力矩阵排版，用'前沿 AI 商业架构'、'跨职能高能级管理'等高阶词汇高亮技能含金量，视觉节奏饱满、张力十足。",
-      missingInfo: [],
-      status: "pending"
-    }
-  ];
-}
 
 function getSimulatedMatch(targetRole: string, resumeText: string) {
   // Infer basic context from resume text
