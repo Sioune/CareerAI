@@ -1,6 +1,7 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import { execSync } from "child_process";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
@@ -10,6 +11,15 @@ import { createRequire } from "module";
 import PDFDocument from "pdfkit";
 import puppeteer from "puppeteer";
 import AdmZip from "adm-zip";
+
+function getChromiumPath(): string {
+  if (process.env.CHROMIUM_PATH) return process.env.CHROMIUM_PATH;
+  try {
+    return execSync("which chromium || which chromium-browser || which google-chrome", { encoding: "utf8" }).trim();
+  } catch {
+    return "/usr/bin/chromium";
+  }
+}
 import { db, eq, and } from "./src/db/index.ts";
 import { users, resumeVersions, rewriteSuggestions, clarificationQuestions, userFeedbacks, eventLogs } from "./src/db/schema.ts";
 import { supabase } from "./src/lib/supabase.ts";
@@ -748,6 +758,7 @@ async function startServer() {
 
       // Launch headless browser using Puppeteer
       const browser = await puppeteer.launch({
+        executablePath: getChromiumPath(),
         args: [
           "--no-sandbox",
           "--disable-setuid-sandbox",
@@ -1269,6 +1280,7 @@ async function startServer() {
 
   async function generatePdfBufferFromHtml(html: string): Promise<Buffer> {
     const browser = await puppeteer.launch({
+      executablePath: getChromiumPath(),
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
