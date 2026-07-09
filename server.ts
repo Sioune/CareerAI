@@ -2861,6 +2861,11 @@ ${originalText}
     console.log("Starting production environment serving compiled static assets from dist/...");
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
+      // Return 404 for file-like paths (paths with a file extension) that were
+      // not found by express.static — prevents HTML soft-404s for crawlers.
+      if (/\.[a-zA-Z0-9]+$/.test(req.path)) {
+        return res.status(404).end();
+      }
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

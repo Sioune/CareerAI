@@ -1,0 +1,23 @@
+# CareerAI — Executive Resume Optimizer
+
+## Summary
+CareerAI is a bilingual (Chinese/English) AI-powered resume analysis and rewriting platform designed for senior managers, technical leaders, and executives. It analyzes job descriptions, scores resume-to-JD alignment, and produces executive-grade resume rewrites with leadership vocabulary upgrades.
+
+## Key Capabilities
+- Job description (JD) parsing and target role profiling
+- AI-driven resume-to-JD matching score and gap analysis
+- C-level vocabulary and leadership statement reconstruction
+- Export to PDF, DOCX, and ZIP formats
+- Secure data handling: uploaded resumes are desensitized and never used for model training
+
+## Intended Audience
+Senior professionals, directors, VPs, general managers, and C-suite executives seeking AI-assisted resume optimization for high-stakes career transitions.
+
+## Language
+Primary: Simplified Chinese (zh-CN). Interface also available in English.
+
+## Canonical URL
+https://ais-pre-jajkn2exl3isrxxhme6g2u-267389115360.us-west2.run.app/
+
+## Contact / Attribution
+CareerAI Solutions — https://ais-pre-jajkn2exl3isrxxhme6g2u-267389115360.us-west2.run.app/
