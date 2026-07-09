@@ -2496,10 +2496,10 @@ Visuals & Integrity
                     {t.premiumSupport}
                   </button>
                   <div className="flex justify-between px-2 text-[10px] text-slate-500 font-bold uppercase tracking-wider">
-                    <button onClick={() => { setShowHelpCenter(true); setMobileMenuOpen(false); }} className="hover:text-blue-600 transition-colors flex items-center gap-1">
+                    <a href="/help" onClick={() => setMobileMenuOpen(false)} className="hover:text-blue-600 transition-colors flex items-center gap-1">
                       <HelpCircle className="w-3 h-3" />{t.helpCenter}
-                    </button>
-                    <button onClick={() => { triggerToast(t.privacyMsg); setMobileMenuOpen(false); }} className="hover:text-blue-600 transition-colors">{t.privacy}</button>
+                    </a>
+                    <a href="/privacy" onClick={() => setMobileMenuOpen(false)} className="hover:text-blue-600 transition-colors">{t.privacy}</a>
                   </div>
                 </div>
 
@@ -2593,10 +2593,10 @@ Visuals & Integrity
               {t.premiumSupport}
             </button>
             <div className="flex justify-between px-2 text-[10px] text-slate-500 font-bold uppercase tracking-wider">
-              <button onClick={() => setShowHelpCenter(true)} className="hover:text-blue-600 transition-colors flex items-center gap-1">
+              <a href="/help" className="hover:text-blue-600 transition-colors flex items-center gap-1">
                 <HelpCircle className="w-3 h-3" />{t.helpCenter}
-              </button>
-              <button onClick={() => triggerToast(t.privacyMsg)} className="hover:text-blue-600 transition-colors">{t.privacy}</button>
+              </a>
+              <a href="/privacy" className="hover:text-blue-600 transition-colors">{t.privacy}</a>
             </div>
           </div>
         </aside>
@@ -2862,7 +2862,7 @@ Visuals & Integrity
 
                 {/* Trending Roles Section */}
                 <div className="flex flex-col sm:flex-row items-center justify-center gap-3 text-slate-500 text-sm mb-16">
-                  <span className="font-bold text-xs uppercase tracking-wider text-slate-400 shrink-0">{t.trendingRoles}:</span>
+                  <h2 className="font-bold text-xs uppercase tracking-wider text-slate-400 shrink-0">{t.trendingRoles}:</h2>
                   <div className="flex flex-wrap gap-2 justify-center font-bold">
                     {["VP of AI Engineering", "Chief Data Officer", "Head of Generative AI"].map((role, idx) => (
                       <button 
@@ -2881,14 +2881,14 @@ Visuals & Integrity
 
                 {/* Bento Grid: How It Works */}
                 <div className="w-full max-w-4xl mt-6">
-                  <h3 className="font-bold text-lg text-slate-900 text-center mb-8 uppercase tracking-widest text-slate-400">{t.optimizationProcess}</h3>
+                  <h2 className="font-bold text-lg text-slate-900 text-center mb-8 uppercase tracking-widest text-slate-400">{t.optimizationProcess}</h2>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                     
                     <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm flex flex-col items-center text-center">
                       <div className="w-12 h-12 bg-blue-50 rounded-xl flex items-center justify-center text-blue-600 mb-4 font-bold">
                         <Search className="w-6 h-6" />
                       </div>
-                      <h4 className="font-bold text-slate-900 mb-2">{t.process1Title}</h4>
+                      <h3 className="font-bold text-slate-900 mb-2">{t.process1Title}</h3>
                       <p className="text-slate-500 text-xs leading-relaxed">{t.process1Desc}</p>
                     </div>
 
@@ -2896,7 +2896,7 @@ Visuals & Integrity
                       <div className="w-12 h-12 bg-blue-50 rounded-xl flex items-center justify-center text-blue-600 mb-4 font-bold">
                         <BarChart3 className="w-6 h-6" />
                       </div>
-                      <h4 className="font-bold text-slate-900 mb-2">{t.process2Title}</h4>
+                      <h3 className="font-bold text-slate-900 mb-2">{t.process2Title}</h3>
                       <p className="text-slate-500 text-xs leading-relaxed">{t.process2Desc}</p>
                     </div>
 
@@ -2904,7 +2904,7 @@ Visuals & Integrity
                       <div className="w-12 h-12 bg-blue-50 rounded-xl flex items-center justify-center text-blue-600 mb-4 font-bold">
                         <FileText className="w-6 h-6" />
                       </div>
-                      <h4 className="font-bold text-slate-900 mb-2">{t.process3Title}</h4>
+                      <h3 className="font-bold text-slate-900 mb-2">{t.process3Title}</h3>
                       <p className="text-slate-500 text-xs leading-relaxed">{t.process3Desc}</p>
                     </div>
 
@@ -4429,8 +4429,8 @@ Visuals & Integrity
               © 2026 CareerAI Executive Search. All rights reserved.
             </div>
             <div className="flex gap-6 text-xs text-slate-500 font-semibold">
-              <button onClick={() => triggerToast(t.termsLoading)} className="hover:text-blue-600 transition-colors">Terms of Service</button>
-              <button onClick={() => triggerToast(t.privacyCompliant)} className="hover:text-blue-600 transition-colors">Privacy Policy</button>
+              <a href="/terms" className="hover:text-blue-600 transition-colors">Terms of Service</a>
+              <a href="/privacy" className="hover:text-blue-600 transition-colors">Privacy Policy</a>
               <button onClick={() => triggerToast("API " + t.systemStatus + ": " + t.systemStatusLive + " (All systems online)")} className="hover:text-blue-600 transition-colors">API Status</button>
             </div>
           </footer>

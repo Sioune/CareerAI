@@ -2680,6 +2680,171 @@ ${originalText}
     ]);
   });
 
+  // Static trust/legal pages — must be registered before Vite middleware
+  // so that crawlers reach real HTML without executing JavaScript.
+  function trustPage(title: string, body: string): string {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${title} — CareerAI</title>
+  <meta name="description" content="${title} for CareerAI Executive Resume Optimizer." />
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;background:#f8fafc;color:#1e293b;line-height:1.7}
+    header{background:#fff;border-bottom:1px solid #e2e8f0;padding:1rem 2rem;display:flex;align-items:center;gap:1rem}
+    header a{text-decoration:none;color:#1e293b;font-weight:700;font-size:1.1rem}
+    header span{color:#3b82f6;font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;background:#eff6ff;padding:.2rem .6rem;border-radius:9999px}
+    main{max-width:760px;margin:3rem auto;padding:0 1.5rem 4rem}
+    h1{font-size:2rem;font-weight:800;margin-bottom:.5rem}
+    h2{font-size:1.25rem;font-weight:700;margin:2rem 0 .5rem}
+    p,li{color:#475569;margin-bottom:.75rem}
+    ul{padding-left:1.5rem;margin-bottom:.75rem}
+    .meta{color:#94a3b8;font-size:.85rem;margin-bottom:2rem}
+    footer{text-align:center;padding:2rem;font-size:.8rem;color:#94a3b8;border-top:1px solid #e2e8f0;margin-top:4rem}
+    footer a{color:#3b82f6;text-decoration:none;margin:0 .5rem}
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/">CareerAI</a>
+    <span>Executive Resume Optimizer</span>
+  </header>
+  <main>
+    ${body}
+  </main>
+  <footer>
+    © 2026 CareerAI Executive Search. All rights reserved. &nbsp;
+    <a href="/terms">Terms of Service</a> ·
+    <a href="/privacy">Privacy Policy</a> ·
+    <a href="/help">Help Center</a>
+  </footer>
+</body>
+</html>`;
+  }
+
+  app.get('/terms', (_req, res) => {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(trustPage('Terms of Service', `
+      <h1>Terms of Service</h1>
+      <p class="meta">Last updated: July 2026</p>
+
+      <h2>1. Acceptance of Terms</h2>
+      <p>By accessing or using CareerAI ("the Service"), you agree to be bound by these Terms of Service. If you do not agree, please do not use the Service.</p>
+
+      <h2>2. Description of Service</h2>
+      <p>CareerAI is an AI-powered executive resume analysis and optimization platform. The Service analyses uploaded resumes against target job roles and produces structured fit reports, smart Q&amp;A, and professionally rewritten resume documents.</p>
+
+      <h2>3. User Accounts</h2>
+      <p>You are responsible for maintaining the confidentiality of your account credentials and for all activity that occurs under your account. You must provide accurate and complete registration information.</p>
+
+      <h2>4. Acceptable Use</h2>
+      <p>You may not use the Service to:</p>
+      <ul>
+        <li>Upload content that violates any applicable law or third-party rights.</li>
+        <li>Attempt to reverse-engineer or circumvent any security measure.</li>
+        <li>Transmit malicious code or interfere with the Service's operation.</li>
+        <li>Misrepresent your identity or professional credentials.</li>
+      </ul>
+
+      <h2>5. Intellectual Property</h2>
+      <p>You retain ownership of all resume content you upload. You grant CareerAI a limited, non-exclusive licence to process that content solely to provide the Service. CareerAI's platform, AI models, and output templates remain our exclusive property.</p>
+
+      <h2>6. Disclaimer of Warranties</h2>
+      <p>The Service is provided "as is" without warranties of any kind. CareerAI does not guarantee that analysis results will lead to employment outcomes. Resume scores and suggestions are AI-generated guidance, not professional legal or career advice.</p>
+
+      <h2>7. Limitation of Liability</h2>
+      <p>To the maximum extent permitted by law, CareerAI shall not be liable for any indirect, incidental, or consequential damages arising from your use of the Service.</p>
+
+      <h2>8. Termination</h2>
+      <p>We reserve the right to suspend or terminate your access if you violate these Terms or engage in conduct that harms other users or the integrity of the platform.</p>
+
+      <h2>9. Changes to Terms</h2>
+      <p>We may update these Terms from time to time. Continued use of the Service after changes are posted constitutes acceptance of the updated Terms.</p>
+
+      <h2>10. Contact</h2>
+      <p>For questions about these Terms, please visit our <a href="/help">Help Center</a> or contact us through the platform.</p>
+    `));
+  });
+
+  app.get('/privacy', (_req, res) => {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(trustPage('Privacy Policy', `
+      <h1>Privacy Policy</h1>
+      <p class="meta">Last updated: July 2026 · GDPR &amp; PIPL Compliant</p>
+
+      <h2>1. Data We Collect</h2>
+      <p>When you use CareerAI we may collect:</p>
+      <ul>
+        <li><strong>Resume content</strong> — the file you upload for analysis.</li>
+        <li><strong>Account information</strong> — email address and password hash used for authentication.</li>
+        <li><strong>Usage data</strong> — anonymised logs of features accessed, used for product improvement only.</li>
+      </ul>
+
+      <h2>2. How We Use Your Data</h2>
+      <p>Your resume is processed exclusively to generate the fit report and rewrite outputs you request. We do <strong>not</strong> use your resume or personal information to train any AI model, and we do not sell your data to third parties.</p>
+
+      <h2>3. Data Desensitisation</h2>
+      <p>Before any resume content is passed to AI processing pipelines, our system automatically redacts phone numbers, email addresses, and national identification numbers to minimise exposure of personally identifiable information (PII).</p>
+
+      <h2>4. Data Retention</h2>
+      <p>Resume files and generated reports are retained for up to 90 days to allow you to access your history. You may request deletion of your data at any time through your account settings or by contacting us via the Help Center.</p>
+
+      <h2>5. Security</h2>
+      <p>All data is transmitted over TLS-encrypted connections. Stored data is protected with access controls and encryption at rest. We conduct regular security reviews of our infrastructure.</p>
+
+      <h2>6. Your Rights (GDPR / PIPL)</h2>
+      <p>Depending on your jurisdiction you have the right to access, correct, port, or erase your personal data. To exercise these rights, please contact us through the <a href="/help">Help Center</a>.</p>
+
+      <h2>7. Cookies</h2>
+      <p>We use essential session cookies required for authentication. We do not use tracking cookies or third-party advertising cookies.</p>
+
+      <h2>8. Changes to This Policy</h2>
+      <p>We will notify registered users of material changes to this policy by email or in-app notification at least 14 days before they take effect.</p>
+
+      <h2>9. Contact</h2>
+      <p>For privacy enquiries, please use the <a href="/help">Help Center</a>. For formal data subject requests, include "Data Subject Request" in your message subject.</p>
+    `));
+  });
+
+  app.get('/help', (_req, res) => {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(trustPage('Help Center', `
+      <h1>Help Center</h1>
+      <p class="meta">Answers to common questions about CareerAI</p>
+
+      <h2>Getting Started</h2>
+      <p>CareerAI analyses your resume against a target executive role and produces a detailed fit report, smart follow-up questions, and a professionally rewritten resume draft.</p>
+      <ul>
+        <li><strong>Supported formats:</strong> PDF and DOCX files up to 10 MB.</li>
+        <li><strong>Languages:</strong> The platform fully supports both English and Simplified Chinese (中文).</li>
+        <li><strong>Best results:</strong> Upload a current resume and specify a precise target role title (e.g., "VP of AI Engineering" or "Chief Data Officer").</li>
+      </ul>
+
+      <h2>Resume Upload &amp; Analysis</h2>
+      <p>After uploading your resume and selecting a target role, the AI will:</p>
+      <ul>
+        <li>Score your fit across key competency dimensions.</li>
+        <li>Identify mandatory requirements and skill gaps.</li>
+        <li>Generate targeted clarification questions to improve accuracy.</li>
+        <li>Produce an executive-level rewritten resume tailored to the role.</li>
+      </ul>
+
+      <h2>Export &amp; Download</h2>
+      <p>Completed resumes and reports can be exported as PDF, DOCX, or a ZIP archive containing all deliverables. Export buttons are available once your rewrite is complete.</p>
+
+      <h2>Privacy &amp; Data Security</h2>
+      <p>Your resume data is desensitised before AI processing — phone numbers and email addresses are automatically redacted. Your data is never used to train AI models. See our <a href="/privacy">Privacy Policy</a> for full details.</p>
+
+      <h2>Account &amp; Billing</h2>
+      <p>Free-tier users can perform one full analysis per session. Premium accounts unlock unlimited analyses, priority processing, and multi-format export. Visit your account settings to manage your subscription.</p>
+
+      <h2>Still Need Help?</h2>
+      <p>If you cannot find an answer here, use the in-app support button or reach out through your account dashboard. We aim to respond within one business day.</p>
+    `));
+  });
+
   // Vite development server / production builds handler
   const distPath = path.join(process.cwd(), 'dist');
   const hasDist = fs.existsSync(path.join(distPath, 'index.html'));
