@@ -551,10 +551,8 @@ async function startServer() {
 <head>
   <meta charset="utf-8">
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
-    
     body {
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "WenQuanYi Zen Hei", sans-serif;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "WenQuanYi Zen Hei", "Noto Sans CJK SC", Arial, sans-serif;
       color: #1e293b;
       line-height: 1.5;
       margin: 0;
@@ -816,7 +814,7 @@ async function startServer() {
       });
 
       const page = await browser.newPage();
-      await page.setContent(html, { waitUntil: "networkidle0" as any });
+      await page.setContent(html, { waitUntil: "domcontentloaded" as any });
 
       // Generate high-fidelity A4 PDF with perfect margin and native footers
       const pdfBuffer = await page.pdf({
@@ -870,10 +868,8 @@ async function startServer() {
 <head>
   <meta charset="utf-8">
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
-    
     body {
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "WenQuanYi Zen Hei", sans-serif;
+      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "WenQuanYi Zen Hei", "Noto Sans CJK SC", Arial, sans-serif;
       color: #1e293b;
       line-height: 1.5;
       margin: 0;
@@ -1339,7 +1335,7 @@ async function startServer() {
 
     try {
       const page = await browser.newPage();
-      await page.setContent(html, { waitUntil: "networkidle0" as any });
+      await page.setContent(html, { waitUntil: "domcontentloaded" as any });
       const pdfBuffer = await page.pdf({
         format: 'A4',
         margin: {
@@ -2237,31 +2233,69 @@ ${originalText}
 
   app.post("/api/resume-reports/:report_id/export/package", async (req, res) => {
     const { report_id } = req.params;
-    const { resume, targetRole, report, matchReport } = req.body;
+    const { resume, versions, targetRole, report, matchReport } = req.body;
     
     try {
       const zip = new AdmZip();
       
-      const activeResume = resume || getSimulatedResume(targetRole || "AI产品负责人", "");
       const activeReport = report || getSimulatedReport(targetRole || "AI产品负责人");
       const activeMatch = matchReport || getSimulatedMatch(targetRole || "AI产品负责人", "");
-      
-      // 1. Compile resume PDF
-      const resumePdf = await generateResumePdfBuffer(activeResume, targetRole);
-      zip.addFile("1. 优化版中文简历.pdf", resumePdf);
-      
-      // 2. Compile resume DOC (Word)
-      const resumeDoc = Buffer.from(generateWordHtmlString(activeResume), "utf-8");
-      zip.addFile("2. 优化版中文简历.doc", resumeDoc);
-      
-      // 3. Compile Job Research Report PDF
+
+      // Resolve all three resume versions to export
+      // Priority: versions array from request → cache → fallback to single resume
+      const versionLabelMap: Record<string, string> = {
+        standard:   "标准投递版",
+        executive:  "高管冲刺版",
+        ai_product: "AI产品负责人版"
+      };
+
+      let resumeVersionsToExport: Array<{ label: string; content: any }> = [];
+
+      if (versions && Array.isArray(versions) && versions.length > 0) {
+        resumeVersionsToExport = versions.map((v: any) => ({
+          label: versionLabelMap[v.versionType] || v.versionName || v.versionType,
+          content: v.content
+        }));
+      } else {
+        // Try cache fallback
+        const cached = resumeVersionsCache.get(report_id);
+        if (cached && cached.length > 0) {
+          resumeVersionsToExport = cached.map((v: any) => ({
+            label: versionLabelMap[v.versionType] || v.versionName || v.versionType,
+            content: v.content
+          }));
+        } else {
+          // Final fallback: single resume
+          const fallback = resume || getSimulatedResume(targetRole || "AI产品负责人", "");
+          resumeVersionsToExport = [{ label: "优化版", content: fallback }];
+        }
+      }
+
+      // Generate PDF + DOC for each resume version
+      let fileIndex = 1;
+      for (const ver of resumeVersionsToExport) {
+        const verContent = ver.content;
+        const label = ver.label;
+
+        const pdf = await generateResumePdfBuffer(verContent, targetRole);
+        zip.addFile(`${fileIndex}. 简历_${label}.pdf`, pdf);
+        fileIndex++;
+
+        const docHtml = generateWordHtmlString(verContent);
+        zip.addFile(`${fileIndex}. 简历_${label}.doc`, Buffer.from(docHtml, "utf-8"));
+        fileIndex++;
+      }
+
+      // Job research report PDF
       const reportPdf = await generateJobResearchPdfBuffer(activeReport, targetRole);
-      zip.addFile("3. 目标岗位画像报告.pdf", reportPdf);
-      
-      // 4. Compile Match Report PDF
-      const matchPdf = await generateMatchReportPdfBuffer(activeMatch, activeResume, targetRole);
-      zip.addFile("4. 简历匹配与优化建议报告.pdf", matchPdf);
-      
+      zip.addFile(`${fileIndex}. 目标岗位画像报告.pdf`, reportPdf);
+      fileIndex++;
+
+      // Match report PDF (use first version resume for context)
+      const firstResume = resumeVersionsToExport[0]?.content || getSimulatedResume(targetRole || "AI产品负责人", "");
+      const matchPdf = await generateMatchReportPdfBuffer(activeMatch, firstResume, targetRole);
+      zip.addFile(`${fileIndex}. 简历匹配与优化建议报告.pdf`, matchPdf);
+
       const zipBuffer = zip.toBuffer();
       const filename = `AI高阶岗位优化包_${targetRole || "optimized"}.zip`;
       

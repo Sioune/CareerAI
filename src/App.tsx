@@ -1749,6 +1749,7 @@ Visuals & Integrity
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           resume: editedResume || currentTask.optimizedResume,
+          versions: resumeVersions.length > 0 ? resumeVersions : undefined,
           targetRole: currentTask.targetRole,
           report: currentTask.report,
           matchReport: currentTask.matchReport
