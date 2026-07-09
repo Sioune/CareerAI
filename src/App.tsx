@@ -43,7 +43,6 @@ import {
   OptimizedResume, 
   TaskItem 
 } from "./types";
-import { supabase } from "./lib/supabase";
 import { customFetch } from "./lib/custom-fetch";
 
 // Standard pre-loaded executive resume for quick user testing (Chinese)
@@ -517,37 +516,15 @@ Visuals & Integrity
   const [adminFeedbacks, setAdminFeedbacks] = useState<any[]>([]);
   const [isLoadingAdmin, setIsLoadingAdmin] = useState(false);
 
-  // Supabase Auth Observer & Sync
+  // Restore session from localStorage token on mount
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (session?.user) {
-        const userSession = {
-          id: session.user.id,
-          username: session.user.user_metadata?.full_name || session.user.email || "Supabase User"
-        };
-        localStorage.setItem("career_ai_current_user", JSON.stringify(userSession));
-        setCurrentUser(userSession);
-        
-        // Sync user profile to Cloud SQL
-        try {
-          await customFetch('/api/sync-user', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            }
-          });
-        } catch (syncErr) {
-          console.error("Auto-sync profile failed:", syncErr);
-        }
-      } else {
-        localStorage.removeItem("career_ai_current_user");
-        setCurrentUser(null);
-      }
-    });
-
-    return () => {
-      subscription.unsubscribe();
-    };
+    const token = localStorage.getItem("career_ai_token");
+    const saved = localStorage.getItem("career_ai_current_user");
+    if (!token || !saved) {
+      localStorage.removeItem("career_ai_token");
+      localStorage.removeItem("career_ai_current_user");
+      setCurrentUser(null);
+    }
   }, []);
 
   // Dynamic SEO and GEO Localization Synchronizer
@@ -1025,73 +1002,38 @@ Visuals & Integrity
       return;
     }
 
-    // Map username to a valid email format if they entered a username
-    const email = authUsername.includes('@') ? authUsername.trim() : `${authUsername.trim()}@career-ai.local`;
+    const endpoint = authMode === 'register' ? '/api/auth/register' : '/api/auth/login';
 
-    if (authMode === 'register') {
-      try {
-        const { data, error } = await supabase.auth.signUp({
-          email,
-          password: authPassword,
-          options: {
-            data: {
-              full_name: authUsername.trim()
-            }
-          }
-        });
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: authUsername.trim(), password: authPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '请求失败');
 
-        if (error) {
-          throw error;
-        }
-
-        const userSession = {
-          id: data.user?.id || 'guest',
-          username: authUsername.trim()
-        };
-        localStorage.setItem("career_ai_current_user", JSON.stringify(userSession));
-        setCurrentUser(userSession);
-        
-        setAuthUsername('');
-        setAuthPassword('');
-        triggerToast(lang === 'zh' ? '注册成功，尊享云端数据库已实时激活！' : 'Registration successful, cloud workspace enabled!');
-      } catch (err: any) {
-        console.error("Supabase sign-up failed:", err);
-        triggerToast(lang === 'zh' ? `注册失败: ${err.message}` : `Registration failed: ${err.message}`);
-      }
-    } else {
-      try {
-        const { data, error } = await supabase.auth.signInWithPassword({
-          email,
-          password: authPassword
-        });
-
-        if (error) {
-          throw error;
-        }
-
-        const userSession = {
-          id: data.user?.id || 'guest',
-          username: data.user?.user_metadata?.full_name || authUsername.trim()
-        };
-        localStorage.setItem("career_ai_current_user", JSON.stringify(userSession));
-        setCurrentUser(userSession);
-        
-        setAuthUsername('');
-        setAuthPassword('');
-        triggerToast(lang === 'zh' ? '登录成功！已加载您的专属高管求职工作台。' : 'Login successful! Loaded your private executive workspace.');
-      } catch (err: any) {
-        console.error("Supabase sign-in failed:", err);
-        triggerToast(lang === 'zh' ? `登录失败: ${err.message}` : `Login failed: ${err.message}`);
-      }
+      localStorage.setItem("career_ai_token", data.token);
+      localStorage.setItem("career_ai_current_user", JSON.stringify(data.user));
+      setCurrentUser(data.user);
+      setAuthUsername('');
+      setAuthPassword('');
+      triggerToast(
+        authMode === 'register'
+          ? (lang === 'zh' ? '注册成功，高管工作台已激活！' : 'Registration successful, workspace enabled!')
+          : (lang === 'zh' ? '登录成功！已加载您的专属高管求职工作台。' : 'Login successful! Loaded your private executive workspace.')
+      );
+    } catch (err: any) {
+      triggerToast(
+        authMode === 'register'
+          ? (lang === 'zh' ? `注册失败: ${err.message}` : `Registration failed: ${err.message}`)
+          : (lang === 'zh' ? `登录失败: ${err.message}` : `Login failed: ${err.message}`)
+      );
     }
   };
 
-  const handleLogout = async () => {
-    try {
-      await supabase.auth.signOut();
-    } catch (e) {
-      console.error("Supabase signOut failed:", e);
-    }
+  const handleLogout = () => {
+    localStorage.removeItem("career_ai_token");
     localStorage.removeItem("career_ai_current_user");
     setCurrentUser(null);
     setShowUserDropdown(false);
@@ -2033,33 +1975,20 @@ Visuals & Integrity
                 <div className="h-[1px] bg-slate-100 flex-1"></div>
               </div>
 
-              {/* Premium Google Sign-In Button */}
-              <button 
+              {/* Disabled Google Sign-In (OAuth not configured) */}
+              <button
                 type="button"
-                onClick={async () => {
-                  try {
-                    const { data, error } = await supabase.auth.signInWithOAuth({
-                      provider: 'google',
-                      options: {
-                        redirectTo: window.location.origin
-                      }
-                    });
-                    if (error) throw error;
-                    triggerToast(lang === 'zh' ? '正在前往谷歌安全登录...' : 'Redirecting to secure Google login...');
-                  } catch (err: any) {
-                    console.error("Supabase Auth Error:", err);
-                    triggerToast(lang === 'zh' ? `登录失败: ${err.message}` : `Auth Failed: ${err.message}`);
-                  }
-                }}
-                className="w-full py-3 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-xl text-xs font-bold transition-all shadow-sm hover:shadow flex items-center justify-center gap-2 border-dashed border-amber-300 hover:border-amber-400"
+                disabled
+                title={lang === 'zh' ? '谷歌登录暂不可用' : 'Google login not available'}
+                className="w-full py-3 bg-slate-50 border border-dashed border-slate-200 text-slate-400 rounded-xl text-xs font-bold cursor-not-allowed flex items-center justify-center gap-2"
               >
-                <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
+                <svg className="w-4 h-4 shrink-0 opacity-40" viewBox="0 0 24 24">
                   <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v3.92h6.61c-.29 1.5-.14 3.01-1 4.02v3.34h1.61c5.15-4.74 5.15-11.77 5.15-11.77z"/>
                   <path fill="#34A853" d="M12 24c3.24 0 5.97-1.08 7.96-2.91l-3.34-2.59c-1.07.72-2.42 1.16-3.92 1.16-3.01 0-5.57-2.03-6.48-4.79H1.54v3.34C4.34 22.84 8.5 24 12 24z"/>
                   <path fill="#FBBC05" d="M5.52 14.87c-.47-.72-.47-1.55-.47-2.27s0-1.55.47-2.27V6.99H1.54C0 10.02 0 13.98 1.54 17.01l3.98-2.14z"/>
                   <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.43-3.43C17.96 1.19 15.24 0 12 0 8.5 0 4.34 2.16 1.54 6.99l3.98 3.09c.91-2.76 3.47-4.79 6.48-4.79z"/>
                 </svg>
-                {lang === 'zh' ? '谷歌云端账户登录 (实时同步)' : 'Sign in with Google (Live Sync)'}
+                {lang === 'zh' ? '谷歌账户登录 (暂不可用)' : 'Sign in with Google (Unavailable)'}
               </button>
 
               <div className="text-center mt-2 pt-4 border-t border-slate-100">

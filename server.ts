@@ -20,9 +20,12 @@ function getChromiumPath(): string {
     return "/usr/bin/chromium";
   }
 }
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
 import { db, eq, and } from "./src/db/index.ts";
 import { users, resumeVersions, rewriteSuggestions, clarificationQuestions, userFeedbacks, eventLogs } from "./src/db/schema.ts";
-import { supabase } from "./src/lib/supabase.ts";
+
+const JWT_SECRET = process.env.JWT_SECRET || "careerai-local-dev-secret-change-in-prod";
 
 process.on("unhandledRejection", (reason, promise) => {
   console.error("Unhandled Rejection at:", promise, "reason:", reason);
@@ -74,25 +77,12 @@ async function getDbUserFromHeader(authHeader?: string) {
   }
   const token = authHeader.split("Bearer ")[1];
   try {
-    const { data: { user }, error } = await supabase.auth.getUser(token);
-    if (error || !user) {
-      console.error("Supabase auth verification failed:", error);
-      return null;
-    }
-    
-    const uid = user.id;
-    const email = user.email || "";
-    
-    // Get or create user in database with automatic query retry on connection dropout
-    const existing = await executeWithRetry(() => db.select().from(users).where(eq(users.uid, uid))) as any;
-    if (existing.length > 0) {
-      return existing[0];
-    }
-    
-    const result = await executeWithRetry(() => db.insert(users).values({ uid, email }).returning()) as any;
-    return result[0];
+    const payload = jwt.verify(token, JWT_SECRET) as { uid: string; email: string };
+    const existing = await executeWithRetry(() => db.select().from(users).where(eq(users.uid, payload.uid))) as any;
+    if (existing.length > 0) return existing[0];
+    return null;
   } catch (err) {
-    console.error("Failed to get DB user from token:", err);
+    console.error("JWT verification failed:", err);
     return null;
   }
 }
@@ -141,13 +131,71 @@ async function startServer() {
     res.json({ status: "ok", aiEnabled: !!aiClient });
   });
 
-  // API Route: Sync user with Cloud SQL
+  // API Route: Register
+  app.post("/api/auth/register", async (req, res) => {
+    try {
+      const { username, password } = req.body;
+      if (!username?.trim() || !password?.trim()) {
+        return res.status(400).json({ error: "用户名和密码不能为空" });
+      }
+      const uid = username.trim().toLowerCase();
+      const email = uid.includes("@") ? uid : `${uid}@career-ai.local`;
+
+      const existing = await db.select().from(users).where(eq(users.uid, uid)) as any[];
+      if (existing.length > 0) {
+        return res.status(409).json({ error: "用户名已存在，请直接登录" });
+      }
+
+      const passwordHash = await bcrypt.hash(password, 10);
+      const result = await db.insert(users).values({ uid, email, passwordHash } as any) as any[];
+      const newUser = Array.isArray(result) ? result[0] : result;
+
+      const token = jwt.sign({ uid, email }, JWT_SECRET, { expiresIn: "30d" });
+      return res.json({ success: true, token, user: { id: String(uid), username: username.trim() } });
+    } catch (err: any) {
+      console.error("Registration error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // API Route: Login
+  app.post("/api/auth/login", async (req, res) => {
+    try {
+      const { username, password } = req.body;
+      if (!username?.trim() || !password?.trim()) {
+        return res.status(400).json({ error: "用户名和密码不能为空" });
+      }
+      const uid = username.trim().toLowerCase();
+
+      const rows = await db.select().from(users).where(eq(users.uid, uid)) as any[];
+      if (rows.length === 0) {
+        return res.status(401).json({ error: "用户不存在，请先注册" });
+      }
+      const user = rows[0];
+      if (!user.passwordHash) {
+        return res.status(401).json({ error: "账户数据异常，请重新注册" });
+      }
+
+      const valid = await bcrypt.compare(password, user.passwordHash);
+      if (!valid) {
+        return res.status(401).json({ error: "密码错误，请重试" });
+      }
+
+      const token = jwt.sign({ uid: user.uid, email: user.email }, JWT_SECRET, { expiresIn: "30d" });
+      return res.json({ success: true, token, user: { id: String(user.uid), username: username.trim() } });
+    } catch (err: any) {
+      console.error("Login error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // API Route: Sync user (kept for compatibility, now uses JWT)
   app.post("/api/sync-user", async (req, res) => {
     try {
       const authHeader = req.headers.authorization;
       const dbUser = await getDbUserFromHeader(authHeader);
       if (!dbUser) {
-        return res.status(401).json({ error: "Invalid or missing Supabase token" });
+        return res.status(401).json({ error: "Invalid or missing auth token" });
       }
       return res.json({ success: true, user: dbUser });
     } catch (err: any) {

@@ -33,6 +33,7 @@ const fieldToCol: Record<string, string> = {
   id:            "id",
   uid:           "uid",
   email:         "email",
+  passwordHash:  "password_hash",
   userId:        "user_id",
   reportId:      "report_id",
   versions:      "versions",
@@ -46,19 +47,20 @@ const fieldToCol: Record<string, string> = {
 };
 
 const colToField: Record<string, string> = {
-  id:            "id",
-  uid:           "uid",
-  email:         "email",
-  user_id:       "userId",
-  report_id:     "reportId",
-  versions:      "versions",
-  suggestions:   "suggestions",
-  questions:     "questions",
-  rating:        "rating",
-  feedback_text: "feedbackText",
-  event_type:    "eventType",
-  meta_data:     "metaData",
-  created_at:    "createdAt",
+  id:             "id",
+  uid:            "uid",
+  email:          "email",
+  password_hash:  "passwordHash",
+  user_id:        "userId",
+  report_id:      "reportId",
+  versions:       "versions",
+  suggestions:    "suggestions",
+  questions:      "questions",
+  rating:         "rating",
+  feedback_text:  "feedbackText",
+  event_type:     "eventType",
+  meta_data:      "metaData",
+  created_at:     "createdAt",
 };
 
 function colName(fieldObj: any): string {
