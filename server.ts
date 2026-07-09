@@ -20,6 +20,41 @@ function getChromiumPath(): string {
     return "/usr/bin/chromium";
   }
 }
+
+let cjkFontBase64 = "";
+const CJK_FONT_CACHE = "/tmp/noto-sans-sc-regular.woff2";
+
+async function initCjkFont(): Promise<void> {
+  try {
+    if (fs.existsSync(CJK_FONT_CACHE)) {
+      cjkFontBase64 = fs.readFileSync(CJK_FONT_CACHE).toString("base64");
+      console.log("[PDF] CJK font loaded from disk cache, bytes:", fs.statSync(CJK_FONT_CACHE).size);
+      return;
+    }
+    const url = "https://cdn.jsdelivr.net/npm/@fontsource/noto-sans-sc@5.1.0/files/noto-sans-sc-chinese-simplified-400-normal.woff2";
+    console.log("[PDF] Downloading CJK font from CDN...");
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const buf = Buffer.from(await resp.arrayBuffer());
+    fs.writeFileSync(CJK_FONT_CACHE, buf);
+    cjkFontBase64 = buf.toString("base64");
+    console.log("[PDF] CJK font downloaded and cached, bytes:", buf.length);
+  } catch (e) {
+    console.warn("[PDF] Failed to load CJK font, Chinese text may not render in PDFs:", e);
+  }
+}
+
+function getCjkFontFaceStyle(): string {
+  if (!cjkFontBase64) return "";
+  return `@font-face {
+    font-family: 'NotoSansSC';
+    src: url('data:font/woff2;base64,${cjkFontBase64}') format('woff2');
+    font-weight: 400;
+    font-style: normal;
+  }`;
+}
+
+const CJK_FONT_FAMILY = "'NotoSansSC', \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", \"Noto Sans CJK SC\", Arial, sans-serif";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { db, eq, and } from "./src/db/index.ts";
@@ -123,6 +158,8 @@ function logCleanGeminiError(action: string, err: any) {
 async function startServer() {
   const app = express();
   const PORT = parseInt(process.env.PORT || "5000", 10);
+
+  initCjkFont().catch(() => {});
 
   app.use(express.json({ limit: "10mb" }));
 
@@ -551,8 +588,9 @@ async function startServer() {
 <head>
   <meta charset="utf-8">
   <style>
+    ${getCjkFontFaceStyle()}
     body {
-      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "WenQuanYi Zen Hei", "Noto Sans CJK SC", Arial, sans-serif;
+      font-family: ${CJK_FONT_FAMILY};
       color: #1e293b;
       line-height: 1.5;
       margin: 0;
@@ -868,8 +906,9 @@ async function startServer() {
 <head>
   <meta charset="utf-8">
   <style>
+    ${getCjkFontFaceStyle()}
     body {
-      font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "WenQuanYi Zen Hei", "Noto Sans CJK SC", Arial, sans-serif;
+      font-family: ${CJK_FONT_FAMILY};
       color: #1e293b;
       line-height: 1.5;
       margin: 0;
@@ -1182,7 +1221,8 @@ async function startServer() {
       <head>
         <meta charset="utf-8">
         <style>
-          body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; color: #1e293b; padding: 40px; line-height: 1.6; background-color: #ffffff; }
+          ${getCjkFontFaceStyle()}
+          body { font-family: ${CJK_FONT_FAMILY}; color: #1e293b; padding: 40px; line-height: 1.6; background-color: #ffffff; }
           .header { border-bottom: 3px solid #3b82f6; padding-bottom: 15px; margin-bottom: 30px; }
           .title { font-size: 24px; font-weight: 800; color: #0f172a; margin: 0; }
           .meta { font-size: 13px; color: #64748b; margin-top: 5px; }
@@ -1256,7 +1296,8 @@ async function startServer() {
       <head>
         <meta charset="utf-8">
         <style>
-          body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; color: #1e293b; padding: 40px; line-height: 1.6; background-color: #ffffff; }
+          ${getCjkFontFaceStyle()}
+          body { font-family: ${CJK_FONT_FAMILY}; color: #1e293b; padding: 40px; line-height: 1.6; background-color: #ffffff; }
           .header { border-bottom: 3px solid #10b981; padding-bottom: 15px; margin-bottom: 30px; }
           .title { font-size: 24px; font-weight: 800; color: #0f172a; margin: 0; }
           .meta { font-size: 13px; color: #64748b; margin-top: 5px; }
