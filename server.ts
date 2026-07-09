@@ -2263,15 +2263,12 @@ ${originalText}
       zip.addFile("4. 简历匹配与优化建议报告.pdf", matchPdf);
       
       const zipBuffer = zip.toBuffer();
-      const fileId = `file_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+      const filename = `AI高阶岗位优化包_${targetRole || "optimized"}.zip`;
       
-      exportedFilesCache.set(fileId, {
-        buffer: zipBuffer,
-        mimeType: "application/zip",
-        filename: `AI高阶岗位优化包_${targetRole || "optimized"}.zip`
-      });
-      
-      return res.json({ file_id: fileId });
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+      res.setHeader("Content-Length", zipBuffer.length);
+      return res.send(zipBuffer);
     } catch (e: any) {
       console.error("ZIP packaging failed:", e);
       return res.status(500).json({ error: `ZIP packaging failed: ${e.message}` });

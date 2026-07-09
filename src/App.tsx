@@ -476,6 +476,7 @@ Visuals & Integrity
   const [isEditing, setIsEditing] = useState(false);
   const [editedResume, setEditedResume] = useState<OptimizedResume | null>(null);
   const [isAccurateChecked, setIsAccurateChecked] = useState(false);
+  const [isExportingPackage, setIsExportingPackage] = useState(false);
 
   // Loading States
   const [loadingStep, setLoadingStep] = useState<'idle' | 'research' | 'matching' | 'upgrading'>('idle');
@@ -1738,12 +1739,9 @@ Visuals & Integrity
       return;
     }
     if (!currentTask) return;
-    
-    setLoadingStep('upgrading');
-    setLoadingProgress(20);
-    const interval = setInterval(() => {
-      setLoadingProgress(prev => (prev >= 90 ? prev : prev + 10));
-    }, 250);
+
+    setIsExportingPackage(true);
+    triggerToast(lang === 'zh' ? '📦 正在打包求职大礼包，请稍候...' : '📦 Compiling your career package, please wait...');
 
     try {
       const response = await customFetch(`/api/resume-reports/${currentTask.id}/export/package`, {
@@ -1757,26 +1755,25 @@ Visuals & Integrity
         })
       });
 
-      clearInterval(interval);
-      setLoadingProgress(100);
+      if (!response.ok) throw new Error(`Export failed: ${response.status}`);
 
-      if (response.ok) {
-        const data = await response.json();
-        if (data.file_id) {
-          window.open(`/api/exported-files/${data.file_id}/download`, '_blank');
-          triggerToast(lang === 'zh' ? '🎉 高管求职大礼包打包成功，开始下载！' : '🎉 Package compiled successfully, starting download!');
-        } else {
-          throw new Error("Missing file_id");
-        }
-      } else {
-        throw new Error("Export package failed");
-      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      const role = currentTask.targetRole || "optimized";
+      link.download = `AI高阶岗位优化包_${role}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      triggerToast(lang === 'zh' ? '🎉 高管求职大礼包打包成功，开始下载！' : '🎉 Package compiled successfully, starting download!');
     } catch (e) {
       console.error(e);
-      triggerToast(lang === 'zh' ? '打包导出失败，已触发本地极速打包备份生成！' : 'Export package failed, triggered local packaging backup.');
+      triggerToast(lang === 'zh' ? '❌ 打包导出失败，请稍后重试。' : '❌ Export failed, please try again.');
     } finally {
-      setLoadingStep('idle');
-      setLoadingProgress(0);
+      setIsExportingPackage(false);
     }
   };
 
@@ -3575,10 +3572,15 @@ Visuals & Integrity
                                 </button>
                                 <button 
                                   onClick={handleExportFullPackage}
-                                  className="w-full text-left px-4 py-2.5 text-xs text-blue-700 hover:bg-blue-50 font-extrabold border-t border-slate-100 flex items-center gap-1.5"
+                                  disabled={isExportingPackage}
+                                  className="w-full text-left px-4 py-2.5 text-xs text-blue-700 hover:bg-blue-50 font-extrabold border-t border-slate-100 flex items-center gap-1.5 disabled:opacity-60 disabled:cursor-not-allowed"
                                 >
-                                  <Sparkles className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-                                  <span>专属求职大礼包 (.zip)</span>
+                                  {isExportingPackage ? (
+                                    <span className="w-3.5 h-3.5 rounded-full border-2 border-blue-500 border-t-transparent animate-spin shrink-0" />
+                                  ) : (
+                                    <Sparkles className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                                  )}
+                                  <span>{isExportingPackage ? '打包中...' : '专属求职大礼包 (.zip)'}</span>
                                 </button>
                               </div>
                             </div>
