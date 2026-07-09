@@ -1774,6 +1774,89 @@ async function startServer() {
     });
   });
 
+  app.post("/api/rewrite-suggestions/:suggestion_id/regenerate", async (req, res) => {
+    const { suggestion_id } = req.params;
+    const { originalText, targetRole } = req.body;
+
+    if (!originalText) {
+      return res.status(400).json({ error: "originalText is required" });
+    }
+
+    // Helper: generate new rewrittenText via Gemini or fallback
+    let newRewrittenText: string | null = null;
+
+    if (aiClient) {
+      try {
+        const prompt = `你是中文高阶简历优化写作专家。请对以下简历原文片段进行一次全新的高冲击力改写，生成不同于上次的全新版本。
+目标岗位: ${targetRole || "不限"}
+原始文本:
+${originalText}
+
+要求：
+1. 使用 STAR/SAR 框架，突出成果与量化价值。
+2. 若无具体数字，使用【建议补充：例如"xxx"】占位，绝不虚构数据。
+3. 使用高阶管理语言，避免平白叙述。
+4. 只返回改写后的纯文本字符串，不要包含任何解释或额外字段。`;
+
+        const response = await aiClient.models.generateContent({
+          model: "gemini-3.5-flash",
+          contents: prompt,
+        });
+        if (response.text) {
+          newRewrittenText = response.text.trim();
+        }
+      } catch (err: any) {
+        logCleanGeminiError("regenerate-rewrite", err);
+      }
+    }
+
+    // Fallback: simple high-impact transformation
+    if (!newRewrittenText) {
+      const verbs = ["主导", "推动", "构建", "优化", "赋能", "统筹"];
+      const verb = verbs[Math.floor(Math.random() * verbs.length)];
+      newRewrittenText = `${verb}${originalText.slice(0, 30)}，实现核心业务目标达成【建议补充：例如"提升效率 xxx%，降低成本 xxx 万元"】。`;
+    }
+
+    // Update in DB
+    const dbUser = await getDbUserFromHeader(req.headers.authorization);
+    if (dbUser) {
+      try {
+        const dbRecords = await db.select().from(rewriteSuggestions).where(eq(rewriteSuggestions.userId, dbUser.id));
+        for (const record of dbRecords) {
+          const list = JSON.parse(record.suggestions);
+          const idx = list.findIndex((item: any) => item.id === suggestion_id);
+          if (idx !== -1) {
+            list[idx].rewrittenText = newRewrittenText;
+            list[idx].status = 'pending';
+            await db.update(rewriteSuggestions)
+              .set({ suggestions: JSON.stringify(list) })
+              .where(eq(rewriteSuggestions.id, record.id));
+            return res.json({ success: true, updated: list[idx] });
+          }
+        }
+      } catch (dbErr) {
+        console.error("Failed to update regenerated rewrite in DB:", dbErr);
+      }
+    }
+
+    // Update in cache
+    for (const [reportId, list] of rewriteSuggestionsCache.entries()) {
+      const idx = list.findIndex((item: any) => item.id === suggestion_id);
+      if (idx !== -1) {
+        list[idx].rewrittenText = newRewrittenText;
+        list[idx].status = 'pending';
+        rewriteSuggestionsCache.set(reportId, list);
+        return res.json({ success: true, updated: list[idx] });
+      }
+    }
+
+    // Not found in DB or cache — return the new text anyway so UI still updates
+    return res.json({
+      success: true,
+      updated: { id: suggestion_id, rewrittenText: newRewrittenText, status: 'pending' }
+    });
+  });
+
   app.post("/api/resume-reports/:report_id/versions/generate", async (req, res) => {
     const { report_id } = req.params;
     const { targetRole, resumeText, baselineResume } = req.body;
