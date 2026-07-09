@@ -40,10 +40,14 @@
     <meta name="twitter:description" content="AI-driven resume optimization workspace for directors, executives, and technical leaders. Restructures CVs into impact-focused executive achievements." />
     <meta name="twitter:image" content="https://images.unsplash.com/photo-1454165804606-c3d57bc86b40?auto=format&fit=crop&w=1200&q=80" />
 
-    <!-- Google Fonts -->
+    <!-- Favicon -->
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon.svg" sizes="any" />
+
+    <!-- Google Fonts (single consolidated request, no duplicate CSS @import) -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
 
     <!-- Schema.org JSON-LD Structured Data (GEO / AI Crawler friendly) -->
     <script type="application/ld+json">
@@ -78,7 +82,75 @@
     </script>
   </head>
   <body class="bg-slate-50 antialiased selection:bg-blue-600/10 selection:text-blue-600">
-    <div id="root"></div>
+    <div id="root">
+      <!-- Static prerender for crawlers (replaced by React on load) -->
+      <div style="font-family:Inter,ui-sans-serif,system-ui,sans-serif;max-width:960px;margin:0 auto;padding:2rem 1.5rem;color:#1e293b;">
+        <header style="display:flex;align-items:center;gap:1rem;margin-bottom:3rem;">
+          <div style="background:#2563eb;color:#fff;font-weight:700;font-size:1.25rem;padding:0.5rem 1rem;border-radius:8px;">CareerAI</div>
+          <span style="color:#64748b;font-size:0.875rem;">V0.4 PRO · 高管简历优化器</span>
+        </header>
+        <main>
+          <h1 style="font-size:2.5rem;font-weight:800;line-height:1.2;margin-bottom:1rem;color:#0f172a;">
+            解锁您的下一个 AI 高阶领袖角色
+          </h1>
+          <h2 style="font-size:1.25rem;font-weight:600;color:#2563eb;margin-bottom:1.5rem;">
+            Executive Resume Optimizer — Unlock Your Next AI Leadership Role
+          </h2>
+          <p style="font-size:1.1rem;color:#475569;max-width:720px;line-height:1.7;margin-bottom:2rem;">
+            CareerAI 专为中高层管理者、技术领袖及高管打造的AI智能简历优化器。基于前沿大模型深度分析岗位画像，精准计算简历匹配度评分，并提供100%对齐真实用人需求的简历结构重构与领导力语言靶向升级，助您斩获下一个高薪AI角色。
+          </p>
+          <p style="font-size:1rem;color:#64748b;max-width:680px;line-height:1.7;margin-bottom:2.5rem;">
+            AI-driven resume optimization for directors, VPs, and C-suite executives. Input your target role, and CareerAI intelligently retrieves real executive job descriptions, computes a deep match-score matrix, and rewrites your resume into impact-focused executive achievements — 100% aligned to real hiring demand.
+          </p>
+
+          <section style="margin-bottom:3rem;">
+            <h2 style="font-size:1.5rem;font-weight:700;margin-bottom:1.25rem;color:#0f172a;">核心功能 · Core Features</h2>
+            <ul style="list-style:none;padding:0;margin:0;display:grid;gap:1rem;">
+              <li style="padding:1.25rem;border:1px solid #e2e8f0;border-radius:12px;background:#f8fafc;">
+                <strong style="color:#2563eb;">岗位画像智能分析 · JD Intelligence</strong>
+                <p style="margin:0.5rem 0 0;color:#475569;">自动联网检索头部企业真实岗位需求，提炼高频技能图谱与强制门槛项，为您呈现完整市场竞争态势。Automatically retrieves real executive JDs from top-tier companies, extracting high-frequency skills and mandatory requirements.</p>
+              </li>
+              <li style="padding:1.25rem;border:1px solid #e2e8f0;border-radius:12px;background:#f8fafc;">
+                <strong style="color:#2563eb;">简历匹配度研判评分 · Match Score Matrix</strong>
+                <p style="margin:0.5rem 0 0;color:#475569;">多维度量化评估您的简历与目标岗位的匹配程度，给出可操作的差距分析与优先优化建议。Multi-dimensional scoring that quantifies resume-to-JD fit and surfaces actionable gap analysis.</p>
+              </li>
+              <li style="padding:1.25rem;border:1px solid #e2e8f0;border-radius:12px;background:#f8fafc;">
+                <strong style="color:#2563eb;">高管语言 AI 重构 · AI Executive Rewrite</strong>
+                <p style="margin:0.5rem 0 0;color:#475569;">将经历描述升级为高管STAR格式，融入领导力语言、商业交付成果与量化数据，全面强化竞争力。Elevates experience bullets into STAR-format executive achievements with leadership vocabulary and quantified business impact.</p>
+              </li>
+              <li style="padding:1.25rem;border:1px solid #e2e8f0;border-radius:12px;background:#f8fafc;">
+                <strong style="color:#2563eb;">多格式导出 · Export PDF / DOCX</strong>
+                <p style="margin:0.5rem 0 0;color:#475569;">优化后的简历支持一键导出为 PDF、DOCX 或 ZIP 压缩包，随时投递目标岗位。Export your optimized resume as PDF, DOCX, or ZIP — ready to submit immediately.</p>
+              </li>
+            </ul>
+          </section>
+
+          <section style="margin-bottom:3rem;">
+            <h2 style="font-size:1.5rem;font-weight:700;margin-bottom:1.25rem;color:#0f172a;">热门目标岗位 · Trending Executive Roles</h2>
+            <ul style="list-style:none;padding:0;margin:0;display:flex;flex-wrap:wrap;gap:0.75rem;">
+              <li style="padding:0.5rem 1rem;background:#eff6ff;color:#2563eb;border-radius:9999px;font-size:0.875rem;font-weight:500;">VP of AI Engineering</li>
+              <li style="padding:0.5rem 1rem;background:#eff6ff;color:#2563eb;border-radius:9999px;font-size:0.875rem;font-weight:500;">Chief Data Officer</li>
+              <li style="padding:0.5rem 1rem;background:#eff6ff;color:#2563eb;border-radius:9999px;font-size:0.875rem;font-weight:500;">Head of Generative AI</li>
+              <li style="padding:0.5rem 1rem;background:#eff6ff;color:#2563eb;border-radius:9999px;font-size:0.875rem;font-weight:500;">AI Product Director · AI产品总监</li>
+              <li style="padding:0.5rem 1rem;background:#eff6ff;color:#2563eb;border-radius:9999px;font-size:0.875rem;font-weight:500;">CTO · 首席技术官</li>
+              <li style="padding:0.5rem 1rem;background:#eff6ff;color:#2563eb;border-radius:9999px;font-size:0.875rem;font-weight:500;">Director of Machine Learning</li>
+              <li style="padding:0.5rem 1rem;background:#eff6ff;color:#2563eb;border-radius:9999px;font-size:0.875rem;font-weight:500;">技术VP · VP of Engineering</li>
+            </ul>
+          </section>
+
+          <section style="margin-bottom:3rem;">
+            <h2 style="font-size:1.5rem;font-weight:700;margin-bottom:1.25rem;color:#0f172a;">数据隐私保障 · Privacy &amp; Data Security</h2>
+            <p style="color:#475569;line-height:1.7;">
+              所有上传简历将进行手机号/邮箱脱敏处理，且数据绝对不参与任何基础模型训练。您的职业信息仅用于本次优化，完成后安全销毁。
+              All uploaded resumes are desensitized (phone/email redacted) and are never used for AI model training. Your career data is used solely for your optimization session and securely discarded afterward.
+            </p>
+          </section>
+        </main>
+        <footer style="border-top:1px solid #e2e8f0;padding-top:1.5rem;color:#94a3b8;font-size:0.8rem;">
+          © 2026 CareerAI Solutions · 高管简历优化器 · Executive Resume Optimizer
+        </footer>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
