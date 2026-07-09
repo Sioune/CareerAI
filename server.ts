@@ -137,7 +137,7 @@ async function startServer() {
       const authHeader = req.headers.authorization;
       const dbUser = await getDbUserFromHeader(authHeader);
       if (!dbUser) {
-        return res.status(401).json({ error: "Invalid or missing Firebase token" });
+        return res.status(401).json({ error: "Invalid or missing Supabase token" });
       }
       return res.json({ success: true, user: dbUser });
     } catch (err: any) {

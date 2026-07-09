@@ -3,7 +3,7 @@ import { integer, pgTable, serial, text, timestamp, boolean } from 'drizzle-orm/
 
 export const users = pgTable('users', {
   id: serial('id').primaryKey(),
-  uid: text('uid').notNull().unique(), // Firebase Auth UID
+  uid: text('uid').notNull().unique(), // Supabase Auth UID
   email: text('email').notNull(),
   createdAt: timestamp('created_at').defaultNow(),
 });
