@@ -2496,9 +2496,9 @@ Visuals & Integrity
                     {t.premiumSupport}
                   </button>
                   <div className="flex justify-between px-2 text-[10px] text-slate-500 font-bold uppercase tracking-wider">
-                    <a href="/help" onClick={() => setMobileMenuOpen(false)} className="hover:text-blue-600 transition-colors flex items-center gap-1">
+                    <button onClick={() => { setShowHelpCenter(true); setMobileMenuOpen(false); }} className="hover:text-blue-600 transition-colors flex items-center gap-1">
                       <HelpCircle className="w-3 h-3" />{t.helpCenter}
-                    </a>
+                    </button>
                     <a href="/privacy" onClick={() => setMobileMenuOpen(false)} className="hover:text-blue-600 transition-colors">{t.privacy}</a>
                   </div>
                 </div>
@@ -2593,9 +2593,9 @@ Visuals & Integrity
               {t.premiumSupport}
             </button>
             <div className="flex justify-between px-2 text-[10px] text-slate-500 font-bold uppercase tracking-wider">
-              <a href="/help" className="hover:text-blue-600 transition-colors flex items-center gap-1">
+              <button onClick={() => setShowHelpCenter(true)} className="hover:text-blue-600 transition-colors flex items-center gap-1">
                 <HelpCircle className="w-3 h-3" />{t.helpCenter}
-              </a>
+              </button>
               <a href="/privacy" className="hover:text-blue-600 transition-colors">{t.privacy}</a>
             </div>
           </div>
