@@ -795,47 +795,50 @@ Visuals & Integrity
     }
   };
 
-  // Helper: apply suggestion text into a resume object (shared by accept and undo)
-  const applyTextToResume = (base: any, sectionType: string, fromText: string, toText: string): any => {
-    const updated = { ...base };
-    if (sectionType === '工作经历' || sectionType === '项目经历') {
-      let matched = false;
-      updated.experience = updated.experience.map((exp: any) => {
-        const hasBullet = exp.bullets.some((b: string) => b === fromText || b.includes(fromText.substring(0, Math.min(15, fromText.length))));
-        if (hasBullet) {
-          matched = true;
-          return {
-            ...exp,
-            bullets: exp.bullets.map((b: string) =>
-              (b === fromText || b.includes(fromText.substring(0, Math.min(15, fromText.length)))) ? toText : b
-            )
-          };
-        }
-        return exp;
-      });
-      if (!matched && toText !== fromText && updated.experience.length > 0) {
-        updated.experience = updated.experience.map((exp: any, idx: number) =>
-          idx === 0 ? { ...exp, bullets: [toText, ...exp.bullets.filter((b: string) => b !== fromText)] } : exp
-        );
-      }
-    } else if (sectionType === '个人简介') {
-      if (base.summary === fromText || !fromText) {
-        updated.summary = toText;
-      }
-    } else if (sectionType === '核心能力') {
-      const newLines = toText.split("\n").map((l: string) => l.replace(/^【[^】]+】/, "").trim()).filter(Boolean);
-      const oldLines = fromText.split("\n").map((l: string) => l.replace(/^【[^】]+】/, "").trim()).filter(Boolean);
-      if (toText !== fromText) {
-        const filtered = (base.coreCapabilities || []).filter((c: string) => !oldLines.includes(c));
-        updated.coreCapabilities = [...filtered, ...newLines];
-      }
-    }
-    return updated;
-  };
-
+  // Accept a suggestion: capture a snapshot of the current section, then unconditionally replace it
   const handleAcceptRewrite = async (suggestionId: string) => {
     const sugg = rewriteSuggestions.find(s => s.id === suggestionId);
     if (!sugg || !editedResume) return;
+
+    // Snapshot the CURRENT section state so undo can restore exactly what was shown
+    let snapshotBeforeAccept: any = null;
+    if (sugg.sectionType === '个人简介') {
+      snapshotBeforeAccept = { summary: editedResume.summary };
+    } else if (sugg.sectionType === '核心能力') {
+      snapshotBeforeAccept = { coreCapabilities: [...(editedResume.coreCapabilities || [])] };
+    } else {
+      snapshotBeforeAccept = { originalBullet: sugg.originalText };
+    }
+
+    // Unconditionally apply the rewrite to the section
+    const updated = { ...editedResume };
+    if (sugg.sectionType === '个人简介') {
+      updated.summary = sugg.rewrittenText;
+    } else if (sugg.sectionType === '核心能力') {
+      updated.coreCapabilities = sugg.rewrittenText
+        .split("\n")
+        .map((l: string) => l.replace(/^【[^】]+】/, "").trim())
+        .filter(Boolean);
+    } else if (sugg.sectionType === '工作经历' || sugg.sectionType === '项目经历') {
+      const matchKey = sugg.originalText.substring(0, Math.min(15, sugg.originalText.length));
+      let matched = false;
+      updated.experience = (editedResume.experience || []).map((exp: any) => {
+        const idx = exp.bullets.findIndex((b: string) => b === sugg.originalText || (matchKey && b.includes(matchKey)));
+        if (idx !== -1) {
+          matched = true;
+          const bullets = [...exp.bullets];
+          bullets[idx] = sugg.rewrittenText;
+          return { ...exp, bullets };
+        }
+        return exp;
+      });
+      if (!matched && updated.experience.length > 0) {
+        updated.experience = updated.experience.map((exp: any, i: number) =>
+          i === 0 ? { ...exp, bullets: [sugg.rewrittenText, ...exp.bullets] } : exp
+        );
+      }
+    }
+
     try {
       const res = await customFetch(`/api/rewrite-suggestions/${suggestionId}/status`, {
         method: 'PATCH',
@@ -843,22 +846,52 @@ Visuals & Integrity
         body: JSON.stringify({ status: 'accepted' })
       });
       if (res.ok) {
-        setRewriteSuggestions(prev => prev.map(item => item.id === suggestionId ? { ...item, status: 'accepted' } : item));
-        const updated = applyTextToResume(editedResume, sugg.sectionType, sugg.originalText, sugg.rewrittenText);
+        setRewriteSuggestions(prev => prev.map(item =>
+          item.id === suggestionId ? { ...item, status: 'accepted', snapshotBeforeAccept } : item
+        ));
         setEditedResume(updated);
         await persistVersionContent(updated);
-        triggerToast(lang === 'zh'
-          ? "✅ 已采纳并即时更新简历！"
-          : "✅ Accepted and resume updated instantly!");
+        triggerToast(lang === 'zh' ? "✅ 已采纳并即时更新简历！" : "✅ Accepted and resume updated instantly!");
       }
     } catch (e) {
       console.error(e);
     }
   };
 
+  // Undo an accepted suggestion: restore the section to the snapshot taken before accept
   const handleUndoRewrite = async (suggestionId: string) => {
     const sugg = rewriteSuggestions.find(s => s.id === suggestionId);
     if (!sugg || !editedResume) return;
+
+    const snap = (sugg as any).snapshotBeforeAccept;
+    const reverted = { ...editedResume };
+
+    if (sugg.sectionType === '个人简介') {
+      reverted.summary = snap?.summary ?? sugg.originalText;
+    } else if (sugg.sectionType === '核心能力') {
+      reverted.coreCapabilities = snap?.coreCapabilities
+        ?? sugg.originalText.split("\n").map((l: string) => l.replace(/^【[^】]+】/, "").trim()).filter(Boolean);
+    } else if (sugg.sectionType === '工作经历' || sugg.sectionType === '项目经历') {
+      const originalBullet = snap?.originalBullet ?? sugg.originalText;
+      const matchKey = sugg.rewrittenText.substring(0, Math.min(15, sugg.rewrittenText.length));
+      let matched = false;
+      reverted.experience = (editedResume.experience || []).map((exp: any) => {
+        const idx = exp.bullets.findIndex((b: string) => b === sugg.rewrittenText || (matchKey && b.includes(matchKey)));
+        if (idx !== -1) {
+          matched = true;
+          const bullets = [...exp.bullets];
+          bullets[idx] = originalBullet;
+          return { ...exp, bullets };
+        }
+        return exp;
+      });
+      if (!matched) {
+        reverted.experience = reverted.experience.map((exp: any, i: number) =>
+          i === 0 ? { ...exp, bullets: exp.bullets.filter((b: string) => b !== sugg.rewrittenText) } : exp
+        );
+      }
+    }
+
     try {
       const res = await customFetch(`/api/rewrite-suggestions/${suggestionId}/status`, {
         method: 'PATCH',
@@ -866,13 +899,12 @@ Visuals & Integrity
         body: JSON.stringify({ status: 'pending' })
       });
       if (res.ok) {
-        setRewriteSuggestions(prev => prev.map(item => item.id === suggestionId ? { ...item, status: 'pending' } : item));
-        const reverted = applyTextToResume(editedResume, sugg.sectionType, sugg.rewrittenText, sugg.originalText);
+        setRewriteSuggestions(prev => prev.map(item =>
+          item.id === suggestionId ? { ...item, status: 'pending', snapshotBeforeAccept: undefined } : item
+        ));
         setEditedResume(reverted);
         await persistVersionContent(reverted);
-        triggerToast(lang === 'zh'
-          ? "↩️ 已撤销该建议，简历已同步恢复！"
-          : "↩️ Suggestion undone, resume reverted!");
+        triggerToast(lang === 'zh' ? "↩️ 已撤销该建议，简历已同步恢复！" : "↩️ Suggestion undone, resume reverted!");
       }
     } catch (e) {
       console.error(e);

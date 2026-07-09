@@ -705,8 +705,6 @@ async function startServer() {
     /* Work Experience List */
     .experience-item {
       margin-bottom: 14px;
-      page-break-inside: avoid;
-      break-inside: avoid;
     }
     
     .experience-header {
@@ -714,6 +712,10 @@ async function startServer() {
       justify-content: space-between;
       align-items: baseline;
       margin-bottom: 4px;
+      page-break-inside: avoid;
+      break-inside: avoid;
+      page-break-after: avoid;
+      break-after: avoid;
     }
     
     .company-role {
@@ -961,8 +963,6 @@ async function startServer() {
     /* Section Structure */
     .section {
       margin-bottom: 16px;
-      page-break-inside: avoid;
-      break-inside: avoid;
     }
     
     .section-title {
@@ -1013,8 +1013,6 @@ async function startServer() {
     /* Work Experience List */
     .experience-item {
       margin-bottom: 14px;
-      page-break-inside: avoid;
-      break-inside: avoid;
     }
     
     .experience-header {
@@ -1022,6 +1020,10 @@ async function startServer() {
       justify-content: space-between;
       align-items: baseline;
       margin-bottom: 4px;
+      page-break-inside: avoid;
+      break-inside: avoid;
+      page-break-after: avoid;
+      break-after: avoid;
     }
     
     .company-role {
