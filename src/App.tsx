@@ -44,6 +44,7 @@ import {
   TaskItem 
 } from "./types";
 import { customFetch } from "./lib/custom-fetch";
+import HelpCenter from "./HelpCenter";
 
 // Standard pre-loaded executive resume for quick user testing (Chinese)
 const SAMPLE_RESUME_ZH = `张建国 | 资深产品经理
@@ -510,6 +511,9 @@ Visuals & Integrity
   const [feedbackText, setFeedbackText] = useState("");
   const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
   const [feedbackMetrics, setFeedbackMetrics] = useState<string[]>([]);
+
+  // Help Center
+  const [showHelpCenter, setShowHelpCenter] = useState(false);
 
   // V0.4 Admin Dashboard Mode
   const [showAdminConsole, setShowAdminConsole] = useState(false);
@@ -2111,6 +2115,13 @@ Visuals & Integrity
               <span className="bg-slate-200 text-slate-700 text-xs px-2 py-0.5 rounded-full font-bold">{tasks.length}</span>
             )}
           </button>
+          <button
+            onClick={() => setShowHelpCenter(true)}
+            className="h-full flex items-center gap-1.5 text-sm font-semibold text-slate-500 hover:text-blue-600 transition-colors"
+          >
+            <HelpCircle className="w-4 h-4" />
+            {t.helpCenter}
+          </button>
         </nav>
 
         {/* Right Status Actions */}
@@ -2485,7 +2496,9 @@ Visuals & Integrity
                     {t.premiumSupport}
                   </button>
                   <div className="flex justify-between px-2 text-[10px] text-slate-500 font-bold uppercase tracking-wider">
-                    <button onClick={() => { triggerToast(t.helpMsg); setMobileMenuOpen(false); }} className="hover:text-blue-600 transition-colors">{t.helpCenter}</button>
+                    <button onClick={() => { setShowHelpCenter(true); setMobileMenuOpen(false); }} className="hover:text-blue-600 transition-colors flex items-center gap-1">
+                      <HelpCircle className="w-3 h-3" />{t.helpCenter}
+                    </button>
                     <button onClick={() => { triggerToast(t.privacyMsg); setMobileMenuOpen(false); }} className="hover:text-blue-600 transition-colors">{t.privacy}</button>
                   </div>
                 </div>
@@ -2580,7 +2593,9 @@ Visuals & Integrity
               {t.premiumSupport}
             </button>
             <div className="flex justify-between px-2 text-[10px] text-slate-500 font-bold uppercase tracking-wider">
-              <button onClick={() => triggerToast(t.helpMsg)} className="hover:text-blue-600 transition-colors">{t.helpCenter}</button>
+              <button onClick={() => setShowHelpCenter(true)} className="hover:text-blue-600 transition-colors flex items-center gap-1">
+                <HelpCircle className="w-3 h-3" />{t.helpCenter}
+              </button>
               <button onClick={() => triggerToast(t.privacyMsg)} className="hover:text-blue-600 transition-colors">{t.privacy}</button>
             </div>
           </div>
@@ -4848,6 +4863,11 @@ Visuals & Integrity
         </AnimatePresence>
         </div>
         </>
+      )}
+
+      {/* Help Center Modal */}
+      {showHelpCenter && (
+        <HelpCenter onClose={() => setShowHelpCenter(false)} lang={lang} />
       )}
     </div>
   );
