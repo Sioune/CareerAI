@@ -122,7 +122,7 @@ function logCleanGeminiError(action: string, err: any) {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = parseInt(process.env.PORT || "5000", 10);
 
   app.use(express.json({ limit: "10mb" }));
 
@@ -2471,7 +2471,7 @@ async function startServer() {
   if (!isProd) {
     console.log("Starting development environment with Vite middleware...");
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, allowedHosts: true as const },
       appType: "spa",
     });
     app.use(vite.middlewares);
