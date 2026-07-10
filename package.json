@@ -17,6 +17,7 @@
     "@types/bcryptjs": "^2.4.6",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/pdfkit": "^0.17.6",
+    "@types/speakeasy": "^2.0.10",
     "@vitejs/plugin-react": "^5.0.4",
     "adm-zip": "^0.5.18",
     "bcryptjs": "^3.0.3",
@@ -31,9 +32,11 @@
     "pdfkit": "^0.19.1",
     "pg": "^8.22.0",
     "puppeteer": "^25.3.0",
+    "qrcode": "^1.5.4",
     "qrcode.react": "^4.2.0",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
+    "speakeasy": "^2.0.0",
     "vite": "^6.2.3"
   },
   "devDependencies": {

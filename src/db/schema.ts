@@ -130,6 +130,119 @@ export const costEvents = pgTable('cost_events', {
   createdAt: timestamp('created_at').defaultNow(),
 });
 
+export const adminMfa = pgTable('admin_mfa', {
+  id: serial('id').primaryKey(),
+  adminId: integer('admin_id').references(() => admins.id, { onDelete: 'cascade' }).notNull().unique(),
+  secret: text('secret').notNull(),
+  enabled: boolean('enabled').notNull().default(false),
+  backupCodes: text('backup_codes'), // JSON array of hashed codes
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const siteConfigs = pgTable('site_configs', {
+  id: serial('id').primaryKey(),
+  key: text('key').notNull(), // e.g. 'brand', 'homepage_copy', 'announcement', 'legal_privacy', 'legal_terms', 'feature_flags'
+  version: integer('version').notNull().default(1),
+  status: text('status').notNull().default('draft'), // draft | published | archived
+  value: text('value').notNull(), // JSON
+  editedByAdmin: text('edited_by_admin'),
+  publishedByAdmin: text('published_by_admin'),
+  publishedAt: timestamp('published_at'),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const aiProviders = pgTable('ai_providers', {
+  id: serial('id').primaryKey(),
+  name: text('name').notNull().unique(), // e.g. 'gemini'
+  displayName: text('display_name').notNull(),
+  apiKeyEnvVar: text('api_key_env_var').notNull(), // reference only, never store raw secret
+  enabled: boolean('enabled').notNull().default(true),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const aiModels = pgTable('ai_models', {
+  id: serial('id').primaryKey(),
+  providerId: integer('provider_id').references(() => aiProviders.id, { onDelete: 'cascade' }).notNull(),
+  modelName: text('model_name').notNull(), // e.g. 'gemini-2.5-flash'
+  operation: text('operation').notNull(), // clarification-questions | rewrite-suggestions | regenerate-rewrite | resume-versions
+  priceInputPerMillion: integer('price_input_per_million').notNull().default(0), // cents per 1M input tokens
+  priceOutputPerMillion: integer('price_output_per_million').notNull().default(0), // cents per 1M output tokens
+  isDefault: boolean('is_default').notNull().default(false),
+  enabled: boolean('enabled').notNull().default(true),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const promptVersions = pgTable('prompt_versions', {
+  id: serial('id').primaryKey(),
+  operation: text('operation').notNull(), // clarification-questions | rewrite-suggestions | regenerate-rewrite | resume-versions
+  version: integer('version').notNull().default(1),
+  status: text('status').notNull().default('draft'), // draft | published | archived
+  content: text('content').notNull(),
+  editedByAdmin: text('edited_by_admin'),
+  publishedByAdmin: text('published_by_admin'),
+  publishedAt: timestamp('published_at'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const supportTickets = pgTable('support_tickets', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }),
+  uid: text('uid'),
+  subject: text('subject').notNull(),
+  message: text('message').notNull(),
+  status: text('status').notNull().default('open'), // open | in_progress | resolved | closed
+  priority: text('priority').notNull().default('normal'), // low | normal | high | urgent
+  assignedToAdmin: text('assigned_to_admin'),
+  relatedOrderNo: text('related_order_no'),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const ticketReplies = pgTable('ticket_replies', {
+  id: serial('id').primaryKey(),
+  ticketId: integer('ticket_id').references(() => supportTickets.id, { onDelete: 'cascade' }).notNull(),
+  authorType: text('author_type').notNull(), // admin | user
+  authorName: text('author_name').notNull(),
+  message: text('message').notNull(),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const notifications = pgTable('notifications', {
+  id: serial('id').primaryKey(),
+  title: text('title').notNull(),
+  body: text('body').notNull(),
+  audience: text('audience').notNull().default('all'), // all | uid
+  targetUid: text('target_uid'),
+  channel: text('channel').notNull().default('in_app'), // in_app | email(P1 stub)
+  createdByAdmin: text('created_by_admin'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const riskFlags = pgTable('risk_flags', {
+  id: serial('id').primaryKey(),
+  uid: text('uid').notNull(),
+  ruleType: text('rule_type').notNull(), // rapid_signup | payment_velocity | refund_abuse | manual
+  severity: text('severity').notNull().default('low'), // low | medium | high
+  detail: text('detail'),
+  status: text('status').notNull().default('open'), // open | reviewed | dismissed
+  reviewedByAdmin: text('reviewed_by_admin'),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const revenueAllocations = pgTable('revenue_allocations', {
+  id: serial('id').primaryKey(),
+  paymentId: integer('payment_id').references(() => payments.id, { onDelete: 'cascade' }).notNull(),
+  taskId: text('task_id'),
+  grossAmount: integer('gross_amount').notNull(), // cents
+  allocatedAmount: integer('allocated_amount').notNull(), // cents allocated to this task
+  allocationMethod: text('allocation_method').notNull().default('single_100'), // single_100 | equal_split
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
   resumeVersions: many(resumeVersions),

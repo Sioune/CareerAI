@@ -1,5 +1,8 @@
 import pg from "pg";
-import { users, resumeVersions, rewriteSuggestions, clarificationQuestions, userFeedbacks, eventLogs, payments, admins, refunds, auditLogs, costEvents } from "./schema.ts";
+import {
+  users, resumeVersions, rewriteSuggestions, clarificationQuestions, userFeedbacks, eventLogs, payments, admins, refunds, auditLogs, costEvents,
+  adminMfa, siteConfigs, aiProviders, aiModels, promptVersions, supportTickets, ticketReplies, notifications, riskFlags, revenueAllocations,
+} from "./schema.ts";
 
 const { Pool } = pg;
 
@@ -29,6 +32,16 @@ const tableMap = new Map<any, string>([
   [refunds,                 "refunds"],
   [auditLogs,               "audit_logs"],
   [costEvents,              "cost_events"],
+  [adminMfa,                "admin_mfa"],
+  [siteConfigs,             "site_configs"],
+  [aiProviders,             "ai_providers"],
+  [aiModels,                "ai_models"],
+  [promptVersions,          "prompt_versions"],
+  [supportTickets,          "support_tickets"],
+  [ticketReplies,           "ticket_replies"],
+  [notifications,           "notifications"],
+  [riskFlags,               "risk_flags"],
+  [revenueAllocations,      "revenue_allocations"],
 ]);
 
 // ─── Column name helpers ──────────────────────────────────────────────────────
@@ -84,6 +97,54 @@ const fieldToCol: Record<string, string> = {
   tokensIn:         "tokens_in",
   tokensOut:        "tokens_out",
   costCents:        "cost_cents",
+
+  secret:            "secret",
+  enabled:           "enabled",
+  backupCodes:       "backup_codes",
+
+  key:               "key",
+  version:           "version",
+  value:             "value",
+  editedByAdmin:     "edited_by_admin",
+  publishedByAdmin:  "published_by_admin",
+  publishedAt:       "published_at",
+
+  name:              "name",
+  displayName:       "display_name",
+  apiKeyEnvVar:      "api_key_env_var",
+
+  providerId:            "provider_id",
+  modelName:             "model_name",
+  priceInputPerMillion:  "price_input_per_million",
+  priceOutputPerMillion: "price_output_per_million",
+  isDefault:             "is_default",
+
+  content:           "content",
+
+  subject:           "subject",
+  message:           "message",
+  priority:          "priority",
+  assignedToAdmin:   "assigned_to_admin",
+  relatedOrderNo:    "related_order_no",
+
+  ticketId:          "ticket_id",
+  authorType:        "author_type",
+  authorName:        "author_name",
+
+  title:             "title",
+  body:              "body",
+  audience:          "audience",
+  targetUid:         "target_uid",
+  channel:           "channel",
+  createdByAdmin:    "created_by_admin",
+
+  ruleType:          "rule_type",
+  severity:          "severity",
+  reviewedByAdmin:   "reviewed_by_admin",
+
+  grossAmount:       "gross_amount",
+  allocatedAmount:   "allocated_amount",
+  allocationMethod:  "allocation_method",
 };
 
 const colToField: Record<string, string> = {
@@ -135,6 +196,54 @@ const colToField: Record<string, string> = {
   tokens_in:           "tokensIn",
   tokens_out:          "tokensOut",
   cost_cents:          "costCents",
+
+  secret:              "secret",
+  enabled:             "enabled",
+  backup_codes:        "backupCodes",
+
+  key:                 "key",
+  version:             "version",
+  value:               "value",
+  edited_by_admin:     "editedByAdmin",
+  published_by_admin:  "publishedByAdmin",
+  published_at:        "publishedAt",
+
+  name:                "name",
+  display_name:        "displayName",
+  api_key_env_var:     "apiKeyEnvVar",
+
+  provider_id:             "providerId",
+  model_name:              "modelName",
+  price_input_per_million: "priceInputPerMillion",
+  price_output_per_million:"priceOutputPerMillion",
+  is_default:              "isDefault",
+
+  content:             "content",
+
+  subject:             "subject",
+  message:             "message",
+  priority:            "priority",
+  assigned_to_admin:   "assignedToAdmin",
+  related_order_no:    "relatedOrderNo",
+
+  ticket_id:           "ticketId",
+  author_type:         "authorType",
+  author_name:         "authorName",
+
+  title:               "title",
+  body:                "body",
+  audience:            "audience",
+  target_uid:          "targetUid",
+  channel:             "channel",
+  created_by_admin:    "createdByAdmin",
+
+  rule_type:           "ruleType",
+  severity:            "severity",
+  reviewed_by_admin:   "reviewedByAdmin",
+
+  gross_amount:        "grossAmount",
+  allocated_amount:    "allocatedAmount",
+  allocation_method:   "allocationMethod",
 };
 
 function colName(fieldObj: any): string {

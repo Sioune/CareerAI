@@ -58,8 +58,13 @@ const CJK_FONT_FAMILY = "'NotoSansSC', \"PingFang SC\", \"Hiragino Sans GB\", \"
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { db, eq, and } from "./src/db/index.ts";
-import { users, resumeVersions, rewriteSuggestions, clarificationQuestions, userFeedbacks, eventLogs, payments, admins, refunds, auditLogs, costEvents } from "./src/db/schema.ts";
+import {
+  users, resumeVersions, rewriteSuggestions, clarificationQuestions, userFeedbacks, eventLogs, payments, admins, refunds, auditLogs, costEvents,
+  adminMfa, siteConfigs, aiProviders, aiModels, promptVersions, supportTickets, ticketReplies, notifications, riskFlags, revenueAllocations,
+} from "./src/db/schema.ts";
 import { createPaymentOrder, queryPaymentStatus, createRefund, isPaymentConfigured } from "./src/lib/payment-client.ts";
+import speakeasy from "speakeasy";
+import QRCode from "qrcode";
 
 const JWT_SECRET = process.env.JWT_SECRET || "careerai-local-dev-secret-change-in-prod";
 
@@ -605,6 +610,9 @@ async function startServer() {
               updatedAt: new Date(),
             } as any)
             .where(eq(payments.businessOrderNo, businessOrderNo));
+          if (live.status === 2 && order.status !== 2 && order.userId) {
+            evaluateRiskRules(order.userId).catch(() => {});
+          }
         }
         return res.json({ status: live.status, statusName: live.statusName, paidAt: live.paidAt });
       } catch (queryErr: any) {
@@ -648,6 +656,9 @@ async function startServer() {
             updatedAt: new Date(),
           } as any)
           .where(eq(payments.businessOrderNo, businessOrderNo));
+        if (status === 2 && order.status !== 2 && order.userId) {
+          evaluateRiskRules(order.userId).catch(() => {});
+        }
       }
 
       return res.status(200).send();
@@ -2986,7 +2997,7 @@ ${originalText}
   // API Route: Admin login
   app.post("/api/admin/login", async (req, res) => {
     try {
-      const { username, password } = req.body;
+      const { username, password, mfaCode } = req.body;
       if (!username?.trim() || !password?.trim()) {
         return res.status(400).json({ error: "用户名和密码不能为空" });
       }
@@ -2995,9 +3006,28 @@ ${originalText}
       if (!admin) return res.status(401).json({ error: "用户名或密码错误" });
       const valid = await bcrypt.compare(password, admin.passwordHash);
       if (!valid) return res.status(401).json({ error: "用户名或密码错误" });
+
+      const mfaRows = await db.select().from(adminMfa).where(eq(adminMfa.adminId, admin.id)) as any[];
+      const mfa = mfaRows[0];
+      if (mfa?.enabled) {
+        if (!mfaCode) {
+          return res.status(401).json({ error: "需要动态验证码", mfaRequired: true });
+        }
+        const backupCodes: string[] = mfa.backupCodes ? JSON.parse(mfa.backupCodes) : [];
+        const isBackup = backupCodes.some((h) => bcrypt.compareSync(String(mfaCode).trim(), h));
+        const isTotp = speakeasy.totp.verify({ secret: mfa.secret, encoding: "base32", token: String(mfaCode).trim(), window: 1 });
+        if (!isTotp && !isBackup) {
+          return res.status(401).json({ error: "验证码不正确", mfaRequired: true });
+        }
+        if (isBackup) {
+          const remaining = backupCodes.filter((h) => !bcrypt.compareSync(String(mfaCode).trim(), h));
+          await db.update(adminMfa).set({ backupCodes: JSON.stringify(remaining), updatedAt: new Date() } as any).where(eq(adminMfa.id, mfa.id));
+        }
+      }
+
       const token = jwt.sign({ adminId: admin.id, username: admin.username, isAdmin: true }, JWT_SECRET, { expiresIn: "12h" });
       await logAudit(admin, "login", "admin", String(admin.id));
-      return res.json({ token, admin: { id: admin.id, username: admin.username, role: admin.role } });
+      return res.json({ token, admin: { id: admin.id, username: admin.username, role: admin.role, mfaEnabled: !!mfa?.enabled } });
     } catch (err: any) {
       console.error("Admin login error:", err);
       return res.status(500).json({ error: err.message });
@@ -3005,7 +3035,60 @@ ${originalText}
   });
 
   app.get("/api/admin/me", requireAdmin, async (req: any, res) => {
-    return res.json({ id: req.admin.id, username: req.admin.username, role: req.admin.role });
+    const mfaRows = await db.select().from(adminMfa).where(eq(adminMfa.adminId, req.admin.id)) as any[];
+    return res.json({ id: req.admin.id, username: req.admin.username, role: req.admin.role, mfaEnabled: !!mfaRows[0]?.enabled });
+  });
+
+  // ---- MFA setup ----
+  app.post("/api/admin/mfa/setup", requireAdmin, async (req: any, res) => {
+    try {
+      const secret = speakeasy.generateSecret({ length: 20 }).base32;
+      const existing = await db.select().from(adminMfa).where(eq(adminMfa.adminId, req.admin.id)) as any[];
+      if (existing[0]) {
+        await db.update(adminMfa).set({ secret, enabled: false, backupCodes: null, updatedAt: new Date() } as any).where(eq(adminMfa.id, existing[0].id));
+      } else {
+        await db.insert(adminMfa).values({ adminId: req.admin.id, secret, enabled: false } as any);
+      }
+      const otpauth = speakeasy.otpauthURL({ secret, encoding: "base32", label: req.admin.username, issuer: "CareerAI Admin" });
+      const qrDataUrl = await QRCode.toDataURL(otpauth);
+      return res.json({ secret, qrDataUrl });
+    } catch (err: any) {
+      console.error("MFA setup error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/admin/mfa/verify", requireAdmin, async (req: any, res) => {
+    try {
+      const { code } = req.body;
+      const rows = await db.select().from(adminMfa).where(eq(adminMfa.adminId, req.admin.id)) as any[];
+      const mfa = rows[0];
+      if (!mfa) return res.status(400).json({ error: "请先初始化MFA" });
+      if (!speakeasy.totp.verify({ secret: mfa.secret, encoding: "base32", token: String(code || "").trim(), window: 1 })) {
+        return res.status(400).json({ error: "验证码不正确" });
+      }
+      const backupCodesPlain = Array.from({ length: 8 }, () => Math.random().toString(36).slice(2, 8).toUpperCase());
+      const backupCodesHashed = backupCodesPlain.map((c) => bcrypt.hashSync(c, 10));
+      await db.update(adminMfa).set({ enabled: true, backupCodes: JSON.stringify(backupCodesHashed), updatedAt: new Date() } as any).where(eq(adminMfa.id, mfa.id));
+      await logAudit(req.admin, "mfa_enabled", "admin", String(req.admin.id));
+      return res.json({ success: true, backupCodes: backupCodesPlain });
+    } catch (err: any) {
+      console.error("MFA verify error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/admin/mfa/disable", requireAdmin, async (req: any, res) => {
+    try {
+      const rows = await db.select().from(adminMfa).where(eq(adminMfa.adminId, req.admin.id)) as any[];
+      if (rows[0]) {
+        await db.update(adminMfa).set({ enabled: false, updatedAt: new Date() } as any).where(eq(adminMfa.id, rows[0].id));
+      }
+      await logAudit(req.admin, "mfa_disabled", "admin", String(req.admin.id));
+      return res.json({ success: true });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
   });
 
   // API Route: Business overview / dashboard
@@ -3290,6 +3373,7 @@ ${originalText}
       }
 
       await logAudit(req.admin, "refund_approved", "payment", order.businessOrderNo, { refundId: refund.id, amount: refund.amount, refundOrderNo: refundResult.refundOrderNo });
+      if (order.userId) evaluateRiskRules(order.userId).catch(() => {});
       return res.json({ success: true, gatewayResult: refundResult });
     } catch (err: any) {
       console.error("Admin refund approve error:", err);
@@ -3543,6 +3627,357 @@ ${originalText}
       return res.status(500).json({ error: err.message });
     }
   });
+
+  // ===================== Site Config / CMS (versioned, publish/rollback) =====================
+  app.get("/api/admin/config", requireAdmin, async (req, res) => {
+    try {
+      const all = await db.select().from(siteConfigs) as any[];
+      const key = req.query.key as string | undefined;
+      const filtered = key ? all.filter((c) => c.key === key) : all;
+      filtered.sort((a, b) => a.key.localeCompare(b.key) || b.version - a.version);
+      return res.json({ configs: filtered });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/admin/config", requireAdmin, requireRole("operations"), async (req: any, res) => {
+    try {
+      const { key, value } = req.body;
+      if (!key?.trim() || value === undefined) return res.status(400).json({ error: "key 和 value 不能为空" });
+      const existing = await db.select().from(siteConfigs).where(eq(siteConfigs.key, key.trim())) as any[];
+      const nextVersion = existing.length ? Math.max(...existing.map((c: any) => c.version)) + 1 : 1;
+      const inserted = await db.insert(siteConfigs).values({
+        key: key.trim(),
+        version: nextVersion,
+        status: "draft",
+        value: typeof value === "string" ? value : JSON.stringify(value),
+        editedByAdmin: req.admin.username,
+      } as any) as any[];
+      await logAudit(req.admin, "config_draft_saved", "site_config", key, { version: nextVersion });
+      return res.json({ success: true, config: inserted[0] });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/admin/config/:id/publish", requireAdmin, requireRole("operations"), async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const rows = await db.select().from(siteConfigs).where(eq(siteConfigs.id, Number(id))) as any[];
+      const cfg = rows[0];
+      if (!cfg) return res.status(404).json({ error: "配置不存在" });
+      const siblings = (await db.select().from(siteConfigs).where(eq(siteConfigs.key, cfg.key))) as any[];
+      for (const s of siblings) {
+        if (s.status === "published" && s.id !== cfg.id) {
+          await db.update(siteConfigs).set({ status: "archived", updatedAt: new Date() } as any).where(eq(siteConfigs.id, s.id));
+        }
+      }
+      await db.update(siteConfigs).set({ status: "published", publishedByAdmin: req.admin.username, publishedAt: new Date(), updatedAt: new Date() } as any).where(eq(siteConfigs.id, cfg.id));
+      await logAudit(req.admin, "config_published", "site_config", cfg.key, { version: cfg.version });
+      return res.json({ success: true });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/config/public/:key", async (req, res) => {
+    try {
+      const rows = await db.select().from(siteConfigs).where(eq(siteConfigs.key, req.params.key)) as any[];
+      const published = rows.filter((c: any) => c.status === "published").sort((a: any, b: any) => b.version - a.version)[0];
+      if (!published) return res.status(404).json({ error: "未发布该配置" });
+      return res.json({ key: published.key, version: published.version, value: JSON.parse(published.value) });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ===================== AI Providers / Models / Prompt Versions =====================
+  app.get("/api/admin/ai/providers", requireAdmin, async (req, res) => {
+    try {
+      const providers = await db.select().from(aiProviders) as any[];
+      return res.json({ providers });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/admin/ai/providers", requireAdmin, requireRole("super_admin"), async (req: any, res) => {
+    try {
+      const { name, displayName, apiKeyEnvVar } = req.body;
+      if (!name?.trim() || !displayName?.trim() || !apiKeyEnvVar?.trim()) return res.status(400).json({ error: "缺少必填字段" });
+      const inserted = await db.insert(aiProviders).values({ name: name.trim(), displayName: displayName.trim(), apiKeyEnvVar: apiKeyEnvVar.trim() } as any) as any[];
+      await logAudit(req.admin, "ai_provider_created", "ai_provider", name);
+      return res.json({ success: true, provider: inserted[0] });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/admin/ai/models", requireAdmin, async (req, res) => {
+    try {
+      const models = await db.select().from(aiModels) as any[];
+      return res.json({ models });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/admin/ai/models", requireAdmin, requireRole("super_admin"), async (req: any, res) => {
+    try {
+      const { providerId, modelName, operation, priceInputPerMillion, priceOutputPerMillion, isDefault } = req.body;
+      if (!providerId || !modelName?.trim() || !operation?.trim()) return res.status(400).json({ error: "缺少必填字段" });
+      if (isDefault) {
+        const siblings = await db.select().from(aiModels).where(eq(aiModels.operation, operation.trim())) as any[];
+        for (const s of siblings) {
+          if (s.isDefault) await db.update(aiModels).set({ isDefault: false, updatedAt: new Date() } as any).where(eq(aiModels.id, s.id));
+        }
+      }
+      const inserted = await db.insert(aiModels).values({
+        providerId: Number(providerId),
+        modelName: modelName.trim(),
+        operation: operation.trim(),
+        priceInputPerMillion: Number(priceInputPerMillion) || 0,
+        priceOutputPerMillion: Number(priceOutputPerMillion) || 0,
+        isDefault: !!isDefault,
+      } as any) as any[];
+      await logAudit(req.admin, "ai_model_created", "ai_model", modelName);
+      return res.json({ success: true, model: inserted[0] });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.patch("/api/admin/ai/models/:id", requireAdmin, requireRole("super_admin"), async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const { enabled, isDefault, priceInputPerMillion, priceOutputPerMillion } = req.body;
+      const update: any = { updatedAt: new Date() };
+      if (enabled !== undefined) update.enabled = !!enabled;
+      if (priceInputPerMillion !== undefined) update.priceInputPerMillion = Number(priceInputPerMillion);
+      if (priceOutputPerMillion !== undefined) update.priceOutputPerMillion = Number(priceOutputPerMillion);
+      if (isDefault) {
+        const rows = await db.select().from(aiModels).where(eq(aiModels.id, Number(id))) as any[];
+        const model = rows[0];
+        if (model) {
+          const siblings = await db.select().from(aiModels).where(eq(aiModels.operation, model.operation)) as any[];
+          for (const s of siblings) {
+            if (s.isDefault && s.id !== model.id) await db.update(aiModels).set({ isDefault: false, updatedAt: new Date() } as any).where(eq(aiModels.id, s.id));
+          }
+        }
+        update.isDefault = true;
+      }
+      await db.update(aiModels).set(update).where(eq(aiModels.id, Number(id)));
+      await logAudit(req.admin, "ai_model_updated", "ai_model", id, update);
+      return res.json({ success: true });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/admin/ai/prompts", requireAdmin, async (req, res) => {
+    try {
+      const all = await db.select().from(promptVersions) as any[];
+      const operation = req.query.operation as string | undefined;
+      const filtered = operation ? all.filter((p) => p.operation === operation) : all;
+      filtered.sort((a, b) => a.operation.localeCompare(b.operation) || b.version - a.version);
+      return res.json({ prompts: filtered });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/admin/ai/prompts", requireAdmin, requireRole("super_admin"), async (req: any, res) => {
+    try {
+      const { operation, content } = req.body;
+      if (!operation?.trim() || !content?.trim()) return res.status(400).json({ error: "operation 和 content 不能为空" });
+      const existing = await db.select().from(promptVersions).where(eq(promptVersions.operation, operation.trim())) as any[];
+      const nextVersion = existing.length ? Math.max(...existing.map((p: any) => p.version)) + 1 : 1;
+      const inserted = await db.insert(promptVersions).values({ operation: operation.trim(), version: nextVersion, status: "draft", content: content.trim(), editedByAdmin: req.admin.username } as any) as any[];
+      await logAudit(req.admin, "prompt_draft_saved", "prompt", operation, { version: nextVersion });
+      return res.json({ success: true, prompt: inserted[0] });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/admin/ai/prompts/:id/publish", requireAdmin, requireRole("super_admin"), async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const rows = await db.select().from(promptVersions).where(eq(promptVersions.id, Number(id))) as any[];
+      const prompt = rows[0];
+      if (!prompt) return res.status(404).json({ error: "提示词版本不存在" });
+      const siblings = await db.select().from(promptVersions).where(eq(promptVersions.operation, prompt.operation)) as any[];
+      for (const s of siblings) {
+        if (s.status === "published" && s.id !== prompt.id) {
+          await db.update(promptVersions).set({ status: "archived" } as any).where(eq(promptVersions.id, s.id));
+        }
+      }
+      await db.update(promptVersions).set({ status: "published", publishedByAdmin: req.admin.username, publishedAt: new Date() } as any).where(eq(promptVersions.id, prompt.id));
+      await logAudit(req.admin, "prompt_published", "prompt", prompt.operation, { version: prompt.version });
+      return res.json({ success: true });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ===================== Support Tickets (customer service) =====================
+  app.get("/api/admin/tickets", requireAdmin, requireRole("customer_service"), async (req, res) => {
+    try {
+      const all = await db.select().from(supportTickets) as any[];
+      const status = req.query.status as string | undefined;
+      const filtered = status ? all.filter((t) => t.status === status) : all;
+      filtered.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      return res.json({ tickets: filtered, total: filtered.length });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/admin/tickets/:id", requireAdmin, requireRole("customer_service"), async (req, res) => {
+    try {
+      const rows = await db.select().from(supportTickets).where(eq(supportTickets.id, Number(req.params.id))) as any[];
+      const ticket = rows[0];
+      if (!ticket) return res.status(404).json({ error: "工单不存在" });
+      const replies = await db.select().from(ticketReplies).where(eq(ticketReplies.ticketId, ticket.id)) as any[];
+      replies.sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      return res.json({ ticket, replies });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/admin/tickets", async (req, res) => {
+    try {
+      const { uid, subject, message, relatedOrderNo } = req.body;
+      if (!subject?.trim() || !message?.trim()) return res.status(400).json({ error: "subject 和 message 不能为空" });
+      let userId: number | null = null;
+      if (uid) {
+        const urows = await db.select().from(users).where(eq(users.uid, uid)) as any[];
+        userId = urows[0]?.id ?? null;
+      }
+      const inserted = await db.insert(supportTickets).values({ userId, uid: uid || null, subject: subject.trim(), message: message.trim(), relatedOrderNo: relatedOrderNo || null } as any) as any[];
+      return res.json({ success: true, ticket: inserted[0] });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/admin/tickets/:id/reply", requireAdmin, requireRole("customer_service"), async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const { message, status } = req.body;
+      if (!message?.trim()) return res.status(400).json({ error: "回复内容不能为空" });
+      await db.insert(ticketReplies).values({ ticketId: Number(id), authorType: "admin", authorName: req.admin.username, message: message.trim() } as any);
+      const update: any = { assignedToAdmin: req.admin.username, updatedAt: new Date() };
+      if (status) update.status = status;
+      await db.update(supportTickets).set(update).where(eq(supportTickets.id, Number(id)));
+      await logAudit(req.admin, "ticket_replied", "ticket", id);
+      return res.json({ success: true });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.patch("/api/admin/tickets/:id/status", requireAdmin, requireRole("customer_service"), async (req: any, res) => {
+    try {
+      const { status } = req.body;
+      if (!["open", "in_progress", "resolved", "closed"].includes(status)) return res.status(400).json({ error: "无效状态" });
+      await db.update(supportTickets).set({ status, updatedAt: new Date() } as any).where(eq(supportTickets.id, Number(req.params.id)));
+      await logAudit(req.admin, "ticket_status_changed", "ticket", req.params.id, { status });
+      return res.json({ success: true });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ===================== Notifications Center =====================
+  app.get("/api/admin/notifications", requireAdmin, async (req, res) => {
+    try {
+      const all = await db.select().from(notifications) as any[];
+      all.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      return res.json({ notifications: all, total: all.length });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/admin/notifications", requireAdmin, requireRole("operations"), async (req: any, res) => {
+    try {
+      const { title, body, audience, targetUid } = req.body;
+      if (!title?.trim() || !body?.trim()) return res.status(400).json({ error: "title 和 body 不能为空" });
+      if (audience === "uid" && !targetUid?.trim()) return res.status(400).json({ error: "指定用户时必须提供 targetUid" });
+      const inserted = await db.insert(notifications).values({
+        title: title.trim(),
+        body: body.trim(),
+        audience: audience === "uid" ? "uid" : "all",
+        targetUid: audience === "uid" ? targetUid.trim() : null,
+        createdByAdmin: req.admin.username,
+      } as any) as any[];
+      await logAudit(req.admin, "notification_sent", "notification", String(inserted[0]?.id), { audience });
+      return res.json({ success: true, notification: inserted[0] });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/notifications/feed", async (req, res) => {
+    try {
+      const uid = req.query.uid as string | undefined;
+      const all = await db.select().from(notifications) as any[];
+      const feed = all.filter((n: any) => n.audience === "all" || (uid && n.targetUid === uid));
+      feed.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      return res.json({ notifications: feed.slice(0, 50) });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ===================== Risk Control =====================
+  app.get("/api/admin/risk-flags", requireAdmin, requireRole("operations"), async (req, res) => {
+    try {
+      const all = await db.select().from(riskFlags) as any[];
+      const status = req.query.status as string | undefined;
+      const filtered = status ? all.filter((r) => r.status === status) : all;
+      filtered.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      return res.json({ flags: filtered, total: filtered.length });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.patch("/api/admin/risk-flags/:id", requireAdmin, requireRole("operations"), async (req: any, res) => {
+    try {
+      const { status } = req.body;
+      if (!["open", "reviewed", "dismissed"].includes(status)) return res.status(400).json({ error: "无效状态" });
+      await db.update(riskFlags).set({ status, reviewedByAdmin: req.admin.username, updatedAt: new Date() } as any).where(eq(riskFlags.id, Number(req.params.id)));
+      await logAudit(req.admin, "risk_flag_reviewed", "risk_flag", req.params.id, { status });
+      return res.json({ success: true });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  async function evaluateRiskRules(userId: number) {
+    try {
+      const urows = (await db.select().from(users).where(eq(users.id, userId))) as any[];
+      const uid = urows[0]?.uid;
+      if (!uid) return;
+      const userPayments = (await db.select().from(payments).where(eq(payments.userId, userId))) as any[];
+      const recentPaid = userPayments.filter((p: any) => p.status === 2 && Date.now() - new Date(p.paidAt || p.createdAt).getTime() < 3600_000);
+      if (recentPaid.length >= 3) {
+        await db.insert(riskFlags).values({ uid, ruleType: "payment_velocity", severity: "medium", detail: `1小时内完成${recentPaid.length}笔支付` } as any);
+      }
+      const allRefunds = (await db.select().from(refunds)) as any[];
+      const paymentIds = userPayments.map((p: any) => p.id);
+      const myRefunds = allRefunds.filter((r: any) => paymentIds.includes(r.paymentId) && r.status === 2);
+      if (myRefunds.length >= 3) {
+        await db.insert(riskFlags).values({ uid, ruleType: "refund_abuse", severity: "high", detail: `累计成功退款${myRefunds.length}次` } as any);
+      }
+    } catch (err) {
+      console.error("[Risk] evaluateRiskRules failed:", err);
+    }
+  }
 
   // Static trust/legal pages — must be registered before Vite middleware
   // so that crawlers reach real HTML without executing JavaScript.
