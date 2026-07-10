@@ -58,7 +58,7 @@ const CJK_FONT_FAMILY = "'NotoSansSC', \"PingFang SC\", \"Hiragino Sans GB\", \"
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { db, eq, and } from "./src/db/index.ts";
-import { users, resumeVersions, rewriteSuggestions, clarificationQuestions, userFeedbacks, eventLogs, payments, admins, refunds } from "./src/db/schema.ts";
+import { users, resumeVersions, rewriteSuggestions, clarificationQuestions, userFeedbacks, eventLogs, payments, admins, refunds, auditLogs, costEvents } from "./src/db/schema.ts";
 import { createPaymentOrder, queryPaymentStatus, createRefund, isPaymentConfigured } from "./src/lib/payment-client.ts";
 
 const JWT_SECRET = process.env.JWT_SECRET || "careerai-local-dev-secret-change-in-prod";
@@ -145,6 +145,60 @@ async function requireAdmin(req: any, res: any, next: any) {
   next();
 }
 
+const ADMIN_ROLES: string[] = ["super_admin", "operations", "finance", "customer_service", "auditor"];
+
+function requireRole(...roles: string[]) {
+  return (req: any, res: any, next: any) => {
+    if (!req.admin) return res.status(401).json({ error: "未授权" });
+    if (req.admin.role === "super_admin") return next();
+    if (!roles.includes(req.admin.role)) {
+      return res.status(403).json({ error: "权限不足，无法执行该操作" });
+    }
+    next();
+  };
+}
+
+async function logAudit(admin: any, action: string, targetType?: string, targetId?: string, detail?: any) {
+  try {
+    await db.insert(auditLogs).values({
+      adminId: admin?.id ?? null,
+      adminUsername: admin?.username || "system",
+      action,
+      targetType: targetType || null,
+      targetId: targetId || null,
+      detail: detail ? JSON.stringify(detail) : null,
+    } as any);
+  } catch (err) {
+    console.error("[Audit] Failed to write audit log:", err);
+  }
+}
+
+// Approximate Gemini pricing (USD per 1M tokens), converted to CNY cents. Adjust as real billing data becomes available.
+const GEMINI_INPUT_COST_PER_1M_CENTS_CNY = 70; // ~$0.10/1M input tokens, illustrative
+const GEMINI_OUTPUT_COST_PER_1M_CENTS_CNY = 280; // ~$0.40/1M output tokens, illustrative
+
+async function logAiCostEvent(taskId: string | undefined, model: string, operation: string, usage: any) {
+  try {
+    const tokensIn = usage?.promptTokenCount || 0;
+    const tokensOut = usage?.candidatesTokenCount || 0;
+    const costCents = Math.round(
+      (tokensIn / 1_000_000) * GEMINI_INPUT_COST_PER_1M_CENTS_CNY +
+      (tokensOut / 1_000_000) * GEMINI_OUTPUT_COST_PER_1M_CENTS_CNY
+    );
+    await db.insert(costEvents).values({
+      taskId: taskId || null,
+      provider: "gemini",
+      model,
+      operation,
+      tokensIn,
+      tokensOut,
+      costCents,
+    } as any);
+  } catch (err) {
+    console.error("[Cost] Failed to log AI cost event:", err);
+  }
+}
+
 async function seedDefaultAdmin() {
   try {
     const existing = await executeWithRetry(() => db.select().from(admins)) as any[];
@@ -152,7 +206,7 @@ async function seedDefaultAdmin() {
     const defaultUsername = process.env.ADMIN_DEFAULT_USERNAME || "admin";
     const defaultPassword = process.env.ADMIN_DEFAULT_PASSWORD || "CareerAI@2026";
     const passwordHash = await bcrypt.hash(defaultPassword, 10);
-    await db.insert(admins).values({ username: defaultUsername, passwordHash, role: "admin" } as any);
+    await db.insert(admins).values({ username: defaultUsername, passwordHash, role: "super_admin" } as any);
     console.log(`[Admin] Seeded default admin account "${defaultUsername}". Please log in at /admin and change the password source (ADMIN_DEFAULT_PASSWORD env var).`);
   } catch (err) {
     console.error("[Admin] Failed to seed default admin:", err);
@@ -1878,6 +1932,7 @@ async function startServer() {
             }
           }
         }), "clarification-questions");
+        await logAiCostEvent(report_id, "gemini-3.5-flash", "clarification-questions", response.usageMetadata);
         
         if (response.text) {
           questions = JSON.parse(response.text.trim());
@@ -2045,6 +2100,7 @@ async function startServer() {
             }
           }
         }), "rewrite-suggestions");
+        await logAiCostEvent(report_id, "gemini-3.5-flash", "rewrite-suggestions", response.usageMetadata);
         
         if (response.text) {
           suggestions = JSON.parse(response.text.trim());
@@ -2183,6 +2239,7 @@ ${originalText}
         model: "gemini-3.5-flash",
         contents: prompt,
       }), "regenerate-rewrite");
+      await logAiCostEvent(suggestion_id, "gemini-3.5-flash", "regenerate-rewrite", response.usageMetadata);
       if (response.text) {
         newRewrittenText = response.text.trim();
       }
@@ -2350,6 +2407,7 @@ ${originalText}
               }
             }
           }), "resume-versions");
+          await logAiCostEvent(report_id, "gemini-3.5-flash", "resume-versions", response.usageMetadata);
 
           if (response.text) {
             const parsed = JSON.parse(response.text.trim());
@@ -2938,6 +2996,7 @@ ${originalText}
       const valid = await bcrypt.compare(password, admin.passwordHash);
       if (!valid) return res.status(401).json({ error: "用户名或密码错误" });
       const token = jwt.sign({ adminId: admin.id, username: admin.username, isAdmin: true }, JWT_SECRET, { expiresIn: "12h" });
+      await logAudit(admin, "login", "admin", String(admin.id));
       return res.json({ token, admin: { id: admin.id, username: admin.username, role: admin.role } });
     } catch (err: any) {
       console.error("Admin login error:", err);
@@ -3144,7 +3203,7 @@ ${originalText}
   });
 
   // API Route: Issue a real refund via the payment gateway for a paid order
-  app.post("/api/admin/payments/:businessOrderNo/refund", requireAdmin, async (req: any, res) => {
+  app.post("/api/admin/payments/:businessOrderNo/refund", requireAdmin, requireRole("finance"), async (req: any, res) => {
     try {
       if (!isPaymentConfigured()) {
         return res.status(503).json({ error: "支付服务未配置" });
@@ -3190,6 +3249,7 @@ ${originalText}
         await db.update(payments).set({ status: 6, statusName: "已退款", updatedAt: new Date() } as any).where(eq(payments.id, order.id));
       }
 
+      await logAudit(req.admin, "refund_issued", "payment", businessOrderNo, { amount, reason: reason.trim(), refundOrderNo: refundResult.refundOrderNo });
       return res.json({ success: true, refund: Array.isArray(inserted) ? inserted[0] : inserted, gatewayResult: refundResult });
     } catch (err: any) {
       console.error("Admin refund error:", err);
@@ -3330,6 +3390,92 @@ ${originalText}
       { stage: "高级简历重构 (Executive Upgrade)", count: paymentCompleted, percentage: Math.round((paymentCompleted / fileUploads) * 100) },
       { stage: "完整履历导出 (Package Export)", count: exportsCompleted, percentage: Math.round((exportsCompleted / fileUploads) * 100) }
     ]);
+  });
+
+  // API Route: Audit log (read-only, for compliance / traceability)
+  app.get("/api/admin/audit-logs", requireAdmin, requireRole("auditor"), async (req, res) => {
+    try {
+      const all = await db.select().from(auditLogs) as any[];
+      const sorted = all.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      return res.json({ logs: sorted.slice(0, 300), total: all.length });
+    } catch (err: any) {
+      console.error("Admin audit logs error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // API Route: AI cost accounting & margin analysis (finance module)
+  app.get("/api/admin/finance/costs", requireAdmin, requireRole("finance"), async (req, res) => {
+    try {
+      const allCosts = await db.select().from(costEvents) as any[];
+      const totalCostCents = allCosts.reduce((s: number, c: any) => s + (c.costCents || 0), 0);
+      const totalTokensIn = allCosts.reduce((s: number, c: any) => s + (c.tokensIn || 0), 0);
+      const totalTokensOut = allCosts.reduce((s: number, c: any) => s + (c.tokensOut || 0), 0);
+
+      const byOperation: Record<string, { count: number; costCents: number }> = {};
+      for (const c of allCosts) {
+        const key = c.operation || "unknown";
+        if (!byOperation[key]) byOperation[key] = { count: 0, costCents: 0 };
+        byOperation[key].count += 1;
+        byOperation[key].costCents += c.costCents || 0;
+      }
+
+      const allPayments = await db.select().from(payments) as any[];
+      const totalRevenueCents = allPayments.filter((p: any) => p.status === 2).reduce((s: number, p: any) => s + p.amount, 0);
+
+      return res.json({
+        totalCostCents,
+        totalTokensIn,
+        totalTokensOut,
+        totalRevenueCents,
+        grossMarginCents: totalRevenueCents - totalCostCents,
+        grossMarginPct: totalRevenueCents > 0 ? Math.round(((totalRevenueCents - totalCostCents) / totalRevenueCents) * 1000) / 10 : null,
+        byOperation,
+        recentEvents: allCosts.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, 100),
+      });
+    } catch (err: any) {
+      console.error("Admin finance costs error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // API Route: Admin account management (RBAC) — super_admin only
+  app.get("/api/admin/accounts", requireAdmin, requireRole("super_admin"), async (req, res) => {
+    try {
+      const all = await db.select().from(admins) as any[];
+      return res.json({ accounts: all.map((a: any) => ({ id: a.id, username: a.username, role: a.role, createdAt: a.createdAt })) });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/admin/accounts", requireAdmin, requireRole("super_admin"), async (req: any, res) => {
+    try {
+      const { username, password, role } = req.body;
+      if (!username?.trim() || !password?.trim()) return res.status(400).json({ error: "用户名和密码不能为空" });
+      if (!ADMIN_ROLES.includes(role)) return res.status(400).json({ error: "无效的角色" });
+      const existing = await db.select().from(admins).where(eq(admins.username, username.trim())) as any[];
+      if (existing.length > 0) return res.status(409).json({ error: "用户名已存在" });
+      const passwordHash = await bcrypt.hash(password, 10);
+      const inserted = await db.insert(admins).values({ username: username.trim(), passwordHash, role } as any) as any[];
+      await logAudit(req.admin, "admin_account_created", "admin", username.trim(), { role });
+      return res.json({ success: true, account: Array.isArray(inserted) ? inserted[0] : inserted });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.patch("/api/admin/accounts/:id/role", requireAdmin, requireRole("super_admin"), async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const { role } = req.body;
+      if (!ADMIN_ROLES.includes(role)) return res.status(400).json({ error: "无效的角色" });
+      await db.update(admins).set({ role } as any).where(eq(admins.id, Number(id)));
+      await logAudit(req.admin, "admin_role_changed", "admin", id, { newRole: role });
+      return res.json({ success: true });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
   });
 
   // Static trust/legal pages — must be registered before Vite middleware

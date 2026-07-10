@@ -104,6 +104,29 @@ export const refunds = pgTable('refunds', {
   updatedAt: timestamp('updated_at').defaultNow(),
 });
 
+export const auditLogs = pgTable('audit_logs', {
+  id: serial('id').primaryKey(),
+  adminId: integer('admin_id'),
+  adminUsername: text('admin_username').notNull(),
+  action: text('action').notNull(),
+  targetType: text('target_type'),
+  targetId: text('target_id'),
+  detail: text('detail'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const costEvents = pgTable('cost_events', {
+  id: serial('id').primaryKey(),
+  taskId: text('task_id'),
+  provider: text('provider').notNull(),
+  model: text('model').notNull(),
+  operation: text('operation').notNull(),
+  tokensIn: integer('tokens_in').default(0),
+  tokensOut: integer('tokens_out').default(0),
+  costCents: integer('cost_cents').notNull().default(0),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
   resumeVersions: many(resumeVersions),

@@ -1,5 +1,5 @@
 import pg from "pg";
-import { users, resumeVersions, rewriteSuggestions, clarificationQuestions, userFeedbacks, eventLogs, payments, admins, refunds } from "./schema.ts";
+import { users, resumeVersions, rewriteSuggestions, clarificationQuestions, userFeedbacks, eventLogs, payments, admins, refunds, auditLogs, costEvents } from "./schema.ts";
 
 const { Pool } = pg;
 
@@ -27,6 +27,8 @@ const tableMap = new Map<any, string>([
   [payments,                "payments"],
   [admins,                  "admins"],
   [refunds,                 "refunds"],
+  [auditLogs,               "audit_logs"],
+  [costEvents,              "cost_events"],
 ]);
 
 // ─── Column name helpers ──────────────────────────────────────────────────────
@@ -66,6 +68,19 @@ const fieldToCol: Record<string, string> = {
   refundOrderNo:    "refund_order_no",
   reason:           "reason",
   processedByAdmin: "processed_by_admin",
+  adminId:          "admin_id",
+  adminUsername:    "admin_username",
+  action:           "action",
+  targetType:       "target_type",
+  targetId:         "target_id",
+  detail:           "detail",
+  taskId:           "task_id",
+  provider:         "provider",
+  model:            "model",
+  operation:        "operation",
+  tokensIn:         "tokens_in",
+  tokensOut:        "tokens_out",
+  costCents:        "cost_cents",
 };
 
 const colToField: Record<string, string> = {
@@ -102,6 +117,18 @@ const colToField: Record<string, string> = {
   refund_order_no:     "refundOrderNo",
   reason:              "reason",
   processed_by_admin:  "processedByAdmin",
+  admin_id:            "adminId",
+  admin_username:      "adminUsername",
+  action:              "action",
+  target_type:         "targetType",
+  target_id:           "targetId",
+  detail:              "detail",
+  provider:            "provider",
+  model:               "model",
+  operation:           "operation",
+  tokens_in:           "tokensIn",
+  tokens_out:          "tokensOut",
+  cost_cents:          "costCents",
 };
 
 function colName(fieldObj: any): string {

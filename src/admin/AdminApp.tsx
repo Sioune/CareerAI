@@ -87,17 +87,30 @@ function LoginScreen({ onLoggedIn }: { onLoggedIn: () => void }) {
   );
 }
 
-type Tab = 'overview' | 'users' | 'tasks' | 'payments' | 'refunds' | 'referrals';
+type Tab = 'overview' | 'users' | 'tasks' | 'payments' | 'refunds' | 'referrals' | 'finance' | 'audit' | 'accounts';
 
-function Nav({ tab, setTab, onLogout, adminName }: { tab: Tab; setTab: (t: Tab) => void; onLogout: () => void; adminName: string }) {
-  const items: { key: Tab; label: string }[] = [
+const ROLE_LABEL: Record<string, string> = {
+  super_admin: '超级管理员',
+  operations: '运营',
+  finance: '财务',
+  customer_service: '客服',
+  auditor: '审计',
+};
+
+function Nav({ tab, setTab, onLogout, adminName, adminRole }: { tab: Tab; setTab: (t: Tab) => void; onLogout: () => void; adminName: string; adminRole: string }) {
+  const isSuper = adminRole === 'super_admin';
+  const items: { key: Tab; label: string; roles?: string[] }[] = [
     { key: 'overview', label: '经营概览' },
     { key: 'users', label: '用户管理' },
     { key: 'tasks', label: '任务列表' },
     { key: 'payments', label: '支付管理' },
-    { key: 'refunds', label: '退款管理' },
+    { key: 'refunds', label: '退款管理', roles: ['finance'] },
     { key: 'referrals', label: '推荐/权益' },
+    { key: 'finance', label: '财务与AI成本', roles: ['finance'] },
+    { key: 'audit', label: '审计日志', roles: ['auditor'] },
+    { key: 'accounts', label: '管理员账号', roles: ['super_admin'] },
   ];
+  const visible = items.filter((it) => !it.roles || isSuper || it.roles.includes(adminRole));
   return (
     <div className="w-56 shrink-0 bg-slate-900 text-slate-100 min-h-screen flex flex-col">
       <div className="p-4 border-b border-slate-700">
@@ -105,7 +118,7 @@ function Nav({ tab, setTab, onLogout, adminName }: { tab: Tab; setTab: (t: Tab) 
         <p className="text-xs text-slate-400">后台管理系统</p>
       </div>
       <nav className="flex-1 py-2">
-        {items.map((it) => (
+        {visible.map((it) => (
           <button
             key={it.key}
             onClick={() => setTab(it.key)}
@@ -116,7 +129,8 @@ function Nav({ tab, setTab, onLogout, adminName }: { tab: Tab; setTab: (t: Tab) 
         ))}
       </nav>
       <div className="p-4 border-t border-slate-700 text-xs text-slate-400">
-        <p className="mb-2">{adminName}</p>
+        <p className="mb-1">{adminName}</p>
+        <p className="mb-2 text-slate-500">{ROLE_LABEL[adminRole] || adminRole}</p>
         <button onClick={onLogout} className="text-slate-300 hover:text-white underline">退出登录</button>
       </div>
     </div>
@@ -549,9 +563,205 @@ function ReferralsTab() {
   );
 }
 
+function FinanceTab() {
+  const [data, setData] = useState<any>(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    apiFetch('/api/admin/finance/costs').then(setData).catch((e) => setError(e.message));
+  }, []);
+
+  if (error) return <p className="text-red-600 text-sm">{error}</p>;
+  if (!data) return <p className="text-slate-500 text-sm">加载中...</p>;
+
+  return (
+    <div>
+      <h2 className="text-lg font-bold text-slate-900 mb-4">财务与 AI 成本</h2>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <Card label="累计收入" value={fmtMoney(data.totalRevenueCents)} />
+        <Card label="AI 成本估算" value={fmtMoney(data.totalCostCents)} sub={`输入 ${data.totalTokensIn} / 输出 ${data.totalTokensOut} tokens`} />
+        <Card label="毛利" value={fmtMoney(data.grossMarginCents)} sub={data.grossMarginPct !== null ? `毛利率 ${data.grossMarginPct}%` : undefined} />
+        <Card label="AI 调用次数" value={String(data.recentEvents.length)} />
+      </div>
+
+      <h3 className="font-semibold text-sm mb-2 text-slate-700">按功能类型成本分布</h3>
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden mb-6">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-slate-600 text-xs">
+            <tr>
+              <th className="text-left px-3 py-2">功能</th>
+              <th className="text-left px-3 py-2">调用次数</th>
+              <th className="text-left px-3 py-2">成本</th>
+            </tr>
+          </thead>
+          <tbody>
+            {Object.entries(data.byOperation).map(([op, v]: [string, any]) => (
+              <tr key={op} className="border-t border-slate-100">
+                <td className="px-3 py-2 font-mono text-xs">{op}</td>
+                <td className="px-3 py-2">{v.count}</td>
+                <td className="px-3 py-2">{fmtMoney(v.costCents)}</td>
+              </tr>
+            ))}
+            {Object.keys(data.byOperation).length === 0 && (
+              <tr><td colSpan={3} className="text-center text-slate-400 py-6">暂无数据（说明：Gemini API 未配置或尚未产生调用）</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="text-xs text-slate-400">注：成本为基于 Gemini 官方公开单价的估算值，非平台实际账单金额，仅供毛利趋势参考。</p>
+    </div>
+  );
+}
+
+function AuditTab() {
+  const [rows, setRows] = useState<any[]>([]);
+  const [total, setTotal] = useState(0);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    apiFetch('/api/admin/audit-logs').then((d) => { setRows(d.logs); setTotal(d.total); }).catch((e) => setError(e.message));
+  }, []);
+
+  return (
+    <div>
+      <h2 className="text-lg font-bold text-slate-900 mb-4">审计日志 ({total})</h2>
+      {error && <p className="text-red-600 text-sm mb-2">{error}</p>}
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-slate-600 text-xs">
+            <tr>
+              <th className="text-left px-3 py-2">时间</th>
+              <th className="text-left px-3 py-2">操作人</th>
+              <th className="text-left px-3 py-2">操作</th>
+              <th className="text-left px-3 py-2">对象</th>
+              <th className="text-left px-3 py-2">详情</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id} className="border-t border-slate-100">
+                <td className="px-3 py-2 text-slate-500">{fmtDate(r.createdAt)}</td>
+                <td className="px-3 py-2">{r.adminUsername}</td>
+                <td className="px-3 py-2 font-mono text-xs">{r.action}</td>
+                <td className="px-3 py-2 text-slate-500">{r.targetType ? `${r.targetType}:${r.targetId}` : '-'}</td>
+                <td className="px-3 py-2 text-slate-400 text-xs max-w-xs truncate">{r.detail || '-'}</td>
+              </tr>
+            ))}
+            {rows.length === 0 && (
+              <tr><td colSpan={5} className="text-center text-slate-400 py-6">暂无数据</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+const ALL_ROLES = ['super_admin', 'operations', 'finance', 'customer_service', 'auditor'];
+
+function AccountsTab() {
+  const [rows, setRows] = useState<any[]>([]);
+  const [error, setError] = useState('');
+  const [showCreate, setShowCreate] = useState(false);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [role, setRole] = useState('operations');
+  const [submitting, setSubmitting] = useState(false);
+  const [createError, setCreateError] = useState('');
+
+  const load = useCallback(() => {
+    apiFetch('/api/admin/accounts').then((d) => setRows(d.accounts)).catch((e) => setError(e.message));
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const changeRole = async (id: number, newRole: string) => {
+    try {
+      await apiFetch(`/api/admin/accounts/${id}/role`, { method: 'PATCH', body: JSON.stringify({ role: newRole }) });
+      load();
+    } catch (e: any) {
+      setError(e.message);
+    }
+  };
+
+  const createAccount = async () => {
+    setSubmitting(true);
+    setCreateError('');
+    try {
+      await apiFetch('/api/admin/accounts', { method: 'POST', body: JSON.stringify({ username, password, role }) });
+      setShowCreate(false);
+      setUsername(''); setPassword(''); setRole('operations');
+      load();
+    } catch (e: any) {
+      setCreateError(e.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-lg font-bold text-slate-900">管理员账号</h2>
+        <button onClick={() => setShowCreate(true)} className="text-sm bg-slate-900 text-white px-4 py-1.5 rounded-lg">+ 新建管理员</button>
+      </div>
+      {error && <p className="text-red-600 text-sm mb-2">{error}</p>}
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-slate-600 text-xs">
+            <tr>
+              <th className="text-left px-3 py-2">用户名</th>
+              <th className="text-left px-3 py-2">角色</th>
+              <th className="text-left px-3 py-2">创建时间</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((a) => (
+              <tr key={a.id} className="border-t border-slate-100">
+                <td className="px-3 py-2 font-medium">{a.username}</td>
+                <td className="px-3 py-2">
+                  <select className="border border-slate-300 rounded-lg px-2 py-1 text-xs" value={a.role} onChange={(e) => changeRole(a.id, e.target.value)}>
+                    {ALL_ROLES.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
+                  </select>
+                </td>
+                <td className="px-3 py-2 text-slate-500">{fmtDate(a.createdAt)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {showCreate && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={() => setShowCreate(false)}>
+          <div className="bg-white rounded-xl max-w-sm w-full p-6" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-bold mb-4">新建管理员</h3>
+            <label className="block text-sm text-slate-600 mb-1">用户名</label>
+            <input className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm mb-3" value={username} onChange={(e) => setUsername(e.target.value)} />
+            <label className="block text-sm text-slate-600 mb-1">初始密码</label>
+            <input type="password" className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm mb-3" value={password} onChange={(e) => setPassword(e.target.value)} />
+            <label className="block text-sm text-slate-600 mb-1">角色</label>
+            <select className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm mb-3" value={role} onChange={(e) => setRole(e.target.value)}>
+              {ALL_ROLES.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
+            </select>
+            {createError && <p className="text-sm text-red-600 mb-3">{createError}</p>}
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setShowCreate(false)} className="px-4 py-2 text-sm rounded-lg border border-slate-300">取消</button>
+              <button onClick={createAccount} disabled={submitting} className="px-4 py-2 text-sm rounded-lg bg-slate-900 text-white disabled:opacity-50">
+                {submitting ? '创建中...' : '创建'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AdminApp() {
   const [authed, setAuthed] = useState<boolean | null>(null);
   const [adminName, setAdminName] = useState('');
+  const [adminRole, setAdminRole] = useState('');
   const [tab, setTab] = useState<Tab>('overview');
 
   const checkAuth = useCallback(() => {
@@ -560,7 +770,7 @@ export default function AdminApp() {
       return;
     }
     apiFetch('/api/admin/me')
-      .then((d) => { setAdminName(d.username); setAuthed(true); })
+      .then((d) => { setAdminName(d.username); setAdminRole(d.role); setAuthed(true); })
       .catch(() => { localStorage.removeItem(TOKEN_KEY); setAuthed(false); });
   }, []);
 
@@ -576,7 +786,7 @@ export default function AdminApp() {
 
   return (
     <div className="flex min-h-screen bg-slate-50">
-      <Nav tab={tab} setTab={setTab} onLogout={logout} adminName={adminName} />
+      <Nav tab={tab} setTab={setTab} onLogout={logout} adminName={adminName} adminRole={adminRole} />
       <div className="flex-1 p-6">
         {tab === 'overview' && <OverviewTab />}
         {tab === 'users' && <UsersTab />}
@@ -584,6 +794,9 @@ export default function AdminApp() {
         {tab === 'payments' && <PaymentsTab />}
         {tab === 'refunds' && <RefundsTab />}
         {tab === 'referrals' && <ReferralsTab />}
+        {tab === 'finance' && <FinanceTab />}
+        {tab === 'audit' && <AuditTab />}
+        {tab === 'accounts' && <AccountsTab />}
       </div>
     </div>
   );
