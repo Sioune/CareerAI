@@ -155,20 +155,136 @@ function logCleanGeminiError(action: string, err: any) {
   }
 }
 
-// Gemini calls have no built-in timeout and can hang for 50s+ (sometimes indefinitely) before
-// erroring out in this environment. Race every call against a hard timeout so the fast,
-// high-fidelity local fallback engages quickly instead of leaving the user staring at a spinner.
-const GEMINI_TIMEOUT_MS = 12000;
+// Gemini calls have no built-in timeout and can hang for 50s+ (sometimes indefinitely).
+// For non-streaming, secondary AI endpoints we still race against a generous timeout so a
+// broken/dead connection surfaces as a real error quickly instead of hanging the request forever.
+// NOTE: we no longer silently substitute simulated/fake data on failure or timeout — callers
+// must surface the error to the user and let them decide to retry.
+const GEMINI_TIMEOUT_MS = 45000;
 function withGeminiTimeout<T>(promise: Promise<T>, action: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
-      reject(new Error(`Gemini call "${action}" timed out after ${GEMINI_TIMEOUT_MS}ms`));
+      reject(new Error(`GEMINI_TIMEOUT: Gemini call "${action}" timed out after ${GEMINI_TIMEOUT_MS}ms`));
     }, GEMINI_TIMEOUT_MS);
     promise.then(
       (val) => { clearTimeout(timer); resolve(val); },
       (err) => { clearTimeout(timer); reject(err); }
     );
   });
+}
+
+function classifyGeminiError(err: any): { code: string; message: string } {
+  const errMsg = err?.message || (err && typeof err === 'object' ? JSON.stringify(err) : String(err));
+  if (errMsg.includes("GEMINI_TIMEOUT")) {
+    return { code: "timeout", message: "AI 响应超时（进程可能已卡死），请稍后重试。" };
+  }
+  if (errMsg.includes("429") || errMsg.includes("Quota") || errMsg.includes("RESOURCE_EXHAUSTED") || errMsg.includes("quota")) {
+    return { code: "quota", message: "AI 服务当前调用量已达上限，请稍后重试。" };
+  }
+  return { code: "failed", message: "AI 服务暂时不可用，请稍后重试。" };
+}
+
+// Streams a Gemini generateContent call to the client over Server-Sent Events so the frontend
+// can distinguish "still actively generating" (progress keeps advancing) from "stalled / process
+// likely dead" (no new data for a while) from a hard failure, instead of a silent fake-data swap.
+const SSE_STALL_MS = 8000;
+const SSE_HARD_TIMEOUT_MS = 90000;
+const SSE_HEARTBEAT_MS = 2000;
+
+function sseWrite(res: any, event: string, data: any) {
+  try {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  } catch {
+    // client likely disconnected
+  }
+}
+
+async function streamGeminiJSON(res: any, action: string, params: any) {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  (res as any).flushHeaders?.();
+
+  if (!aiClient) {
+    sseWrite(res, "error", { code: "no_client", message: "AI 服务未配置，请联系管理员或稍后重试。" });
+    return res.end();
+  }
+
+  const startedAt = Date.now();
+  let lastChunkAt = Date.now();
+  let receivedChars = 0;
+  let fullText = "";
+  let finished = false;
+  let clientGone = false;
+
+  res.on("close", () => { clientGone = true; });
+
+  const heartbeat = setInterval(() => {
+    if (finished || clientGone) return;
+    const now = Date.now();
+    const elapsedMs = now - startedAt;
+    const sinceLastChunkMs = now - lastChunkAt;
+
+    if (elapsedMs > SSE_HARD_TIMEOUT_MS) {
+      finished = true;
+      clearInterval(heartbeat);
+      console.log(`[Gemini Info] ${action} hard-timeout after ${elapsedMs}ms, likely stalled/dead process.`);
+      sseWrite(res, "error", { code: "timeout", message: "AI 响应超时，进程可能已卡死，请稍后重试。", elapsedMs });
+      res.end();
+      return;
+    }
+
+    if (sinceLastChunkMs > SSE_STALL_MS) {
+      // No new tokens for a while: could still be "thinking" or could be a dead connection.
+      // Let the client decide whether to keep waiting or bail out and retry later.
+      sseWrite(res, "stalled", { elapsedMs, sinceLastChunkMs, receivedChars });
+    } else {
+      // Actively receiving content — safe to show as real progress.
+      sseWrite(res, "progress", { elapsedMs, receivedChars });
+    }
+  }, SSE_HEARTBEAT_MS);
+
+  try {
+    const stream = await aiClient.models.generateContentStream(params);
+    for await (const chunk of stream) {
+      if (finished || clientGone) break;
+      const t = (chunk as any).text;
+      if (t) {
+        fullText += t;
+        receivedChars += t.length;
+        lastChunkAt = Date.now();
+      }
+    }
+
+    if (finished || clientGone) return;
+    finished = true;
+    clearInterval(heartbeat);
+
+    if (!fullText.trim()) {
+      sseWrite(res, "error", { code: "empty", message: "AI 未返回有效内容，请稍后重试。" });
+      return res.end();
+    }
+
+    try {
+      const parsed = JSON.parse(fullText.trim());
+      sseWrite(res, "done", { result: parsed, elapsedMs: Date.now() - startedAt });
+    } catch (parseErr) {
+      console.error(`[Gemini Info] ${action} returned unparseable JSON:`, parseErr);
+      sseWrite(res, "error", { code: "parse_failed", message: "AI 返回内容格式异常，请稍后重试。" });
+    }
+    res.end();
+  } catch (err: any) {
+    if (finished || clientGone) return;
+    finished = true;
+    clearInterval(heartbeat);
+    logCleanGeminiError(action, err);
+    const { code, message } = classifyGeminiError(err);
+    sseWrite(res, "error", { code, message });
+    res.end();
+  }
 }
 
 async function startServer() {
@@ -384,8 +500,7 @@ async function startServer() {
       return res.status(400).json({ error: "targetRole is required" });
     }
 
-    try {
-      if (aiClient) {
+    {
         const prompt = `You are an elite Chinese tech recruitment director. Analyze the role "${targetRole}" within the "${industry || 'AI/Tech'}" industry located in "${location || 'Beijing/Shanghai/Remote'}". The target seniority level is "${seniority || 'Executive/Director/VP'}".
         Based on analyzing 25+ recent high-end real-world job descriptions in the Chinese market, synthesize a comprehensive job profile report.
         Strictly provide the response in Chinese according to the following JSON structure:
@@ -401,7 +516,7 @@ async function startServer() {
         }
         Do not add any markup or markdown wraps inside the json properties. Keep it as pure clean JSON structure.`;
 
-        const response = await withGeminiTimeout(aiClient.models.generateContent({
+        return streamGeminiJSON(res, "analyze-role", {
           model: "gemini-3.5-flash",
           contents: prompt,
           config: {
@@ -435,22 +550,8 @@ async function startServer() {
               required: ["targetRole", "researchSummary", "mandatoryRequirements", "highFrequencySkills", "plusSkills", "jdCount"]
             }
           }
-        }), "analyze-role");
-
-        const text = response.text;
-        if (text) {
-          const parsed = JSON.parse(text);
-          return res.json(parsed);
-        }
-      }
-    } catch (err: any) {
-      logCleanGeminiError("analyze-role", err);
+        });
     }
-
-    // High fidelity fallback when Gemini is disabled, key missing or fails
-    console.log("Using simulated high-fidelity fallback for analyze-role");
-    const simulatedReport = getSimulatedReport(targetRole, industry, location, seniority);
-    return res.json({ ...simulatedReport, simulated: true });
   });
 
   // API Route: Match Resume to Role Insight Report
@@ -461,8 +562,7 @@ async function startServer() {
       return res.status(400).json({ error: "targetRole and resumeText are required" });
     }
 
-    try {
-      if (aiClient) {
+    {
         const prompt = `You are an elite career advisory agent. Compare the candidate's resume with the target job profile "${targetRole}" and its market research requirements:
         Market summary: ${JSON.stringify(report)}
         
@@ -492,7 +592,7 @@ async function startServer() {
         }
         Keep the detail sentences highly professional and actionable.`;
 
-        const response = await withGeminiTimeout(aiClient.models.generateContent({
+        return streamGeminiJSON(res, "match-resume", {
           model: "gemini-3.5-flash",
           contents: prompt,
           config: {
@@ -536,22 +636,8 @@ async function startServer() {
               required: ["matchScore", "strengths", "gaps", "additionalGapsCount", "matchedKeywords", "missingKeywords"]
             }
           }
-        }), "match-resume");
-
-        const text = response.text;
-        if (text) {
-          const parsed = JSON.parse(text);
-          return res.json(parsed);
-        }
-      }
-    } catch (err: any) {
-      logCleanGeminiError("match-resume", err);
+        });
     }
-
-    // High fidelity fallback
-    console.log("Using simulated high-fidelity fallback for match-resume");
-    const simulatedMatch = getSimulatedMatch(targetRole, resumeText);
-    return res.json({ ...simulatedMatch, simulated: true });
   });
 
   // API Route: Generate optimized resume
@@ -562,8 +648,7 @@ async function startServer() {
       return res.status(400).json({ error: "targetRole and resumeText are required" });
     }
 
-    try {
-      if (aiClient) {
+    {
         const prompt = `You are a premier executive resume writer. Your job is to transform the candidate's original resume to perfectly target the role of "${targetRole}" by resolving identified gaps.
         Target Job Insights: ${JSON.stringify(report)}
         Identified Gaps: ${JSON.stringify(matchReport)}
@@ -601,7 +686,7 @@ async function startServer() {
         }
         `;
 
-        const response = await withGeminiTimeout(aiClient.models.generateContent({
+        return streamGeminiJSON(res, "optimize-resume", {
           model: "gemini-3.5-flash",
           contents: prompt,
           config: {
@@ -644,22 +729,8 @@ async function startServer() {
               required: ["name", "title", "email", "location", "summary", "coreCapabilities", "experience", "education", "skills"]
             }
           }
-        }), "optimize-resume");
-
-        const text = response.text;
-        if (text) {
-          const parsed = JSON.parse(text);
-          return res.json(parsed);
-        }
-      }
-    } catch (err: any) {
-      logCleanGeminiError("optimize-resume", err);
+        });
     }
-
-    // High fidelity fallback
-    console.log("Using simulated high-fidelity fallback for optimize-resume");
-    const simulatedResume = getSimulatedResume(targetRole, resumeText);
-    return res.json({ ...simulatedResume, simulated: true });
   });
 
   // API Route: Export high-fidelity PDF using Puppeteer for pixel-perfect CSS controls
@@ -1551,9 +1622,13 @@ async function startServer() {
     const { report_id } = req.params;
     const { targetRole, resumeText, gapAnalysis } = req.body;
     
+    if (!aiClient) {
+      return res.status(503).json({ error: "AI 服务未配置，请联系管理员或稍后重试。", code: "no_client" });
+    }
+
     try {
       let questions: any[] = [];
-      if (aiClient) {
+      {
         const prompt = `你是 AI 高阶岗位职业顾问。请根据目标岗位画像和候选人简历，生成 5 到 8 个需要用户补充的问题以最大化对齐简历。
         目标岗位画像: ${JSON.stringify(targetRole)}
         当前差距分析: ${JSON.stringify(gapAnalysis)}
@@ -1611,7 +1686,7 @@ async function startServer() {
       }
       
       if (!questions || questions.length === 0) {
-        questions = getSimulatedClarificationQuestions(targetRole, resumeText);
+        return res.status(502).json({ error: "AI 未返回有效内容，请稍后重试。", code: "empty" });
       }
       
       clarificationQuestionsCache.set(report_id, questions);
@@ -1633,24 +1708,8 @@ async function startServer() {
       return res.json(questions);
     } catch (err: any) {
       logCleanGeminiError("clarification-questions", err);
-      const fallbackQuestions = getSimulatedClarificationQuestions(targetRole, resumeText);
-      clarificationQuestionsCache.set(report_id, fallbackQuestions);
-      
-      const dbUser = await getDbUserFromHeader(req.headers.authorization);
-      if (dbUser) {
-        try {
-          await db.delete(clarificationQuestions).where(and(eq(clarificationQuestions.userId, dbUser.id), eq(clarificationQuestions.reportId, report_id)));
-          await db.insert(clarificationQuestions).values({
-            userId: dbUser.id,
-            reportId: report_id,
-            questions: JSON.stringify(fallbackQuestions)
-          });
-        } catch (dbErr) {
-          console.error("Failed to save fallback questions to Cloud SQL:", dbErr);
-        }
-      }
-      
-      return res.json(fallbackQuestions);
+      const { code, message } = classifyGeminiError(err);
+      return res.status(code === "timeout" ? 504 : 502).json({ error: message, code });
     }
   });
 
@@ -1721,10 +1780,14 @@ async function startServer() {
   app.post("/api/resume-reports/:report_id/rewrite-comparisons/generate", async (req, res) => {
     const { report_id } = req.params;
     const { targetRole, report, resumeText, matchReport, answers } = req.body;
+
+    if (!aiClient) {
+      return res.status(503).json({ error: "AI 服务未配置，请联系管理员或稍后重试。", code: "no_client" });
+    }
     
     try {
       let suggestions: any[] = [];
-      if (aiClient) {
+      {
         const prompt = `你是中文高阶简历优化写作专家。请基于目标岗位要求与候选人的简历，针对候选人的三个专属优化方向分别生成 1 到 2 个针对性的“改写前后对比”卡片：
         1. 标准投递方向 (standard)
         2. 高管冲刺方向 (executive)
@@ -1790,7 +1853,7 @@ async function startServer() {
       }
       
       if (!suggestions || suggestions.length === 0) {
-        suggestions = getSimulatedRewriteSuggestions(targetRole, resumeText, answers);
+        return res.status(502).json({ error: "AI 未返回有效内容，请稍后重试。", code: "empty" });
       }
       
       rewriteSuggestionsCache.set(report_id, suggestions);
@@ -1812,24 +1875,8 @@ async function startServer() {
       return res.json(suggestions);
     } catch (err: any) {
       logCleanGeminiError("rewrite-comparisons", err);
-      const fallbackSuggestions = getSimulatedRewriteSuggestions(targetRole, resumeText, answers);
-      rewriteSuggestionsCache.set(report_id, fallbackSuggestions);
-      
-      const dbUser = await getDbUserFromHeader(req.headers.authorization);
-      if (dbUser) {
-        try {
-          await db.delete(rewriteSuggestions).where(and(eq(rewriteSuggestions.userId, dbUser.id), eq(rewriteSuggestions.reportId, report_id)));
-          await db.insert(rewriteSuggestions).values({
-            userId: dbUser.id,
-            reportId: report_id,
-            suggestions: JSON.stringify(fallbackSuggestions)
-          });
-        } catch (dbErr) {
-          console.error("Failed to save fallback rewrite suggestions to Cloud SQL:", dbErr);
-        }
-      }
-      
-      return res.json(fallbackSuggestions);
+      const { code, message } = classifyGeminiError(err);
+      return res.status(code === "timeout" ? 504 : 502).json({ error: message, code });
     }
   });
 
@@ -1915,12 +1962,14 @@ async function startServer() {
       return res.status(400).json({ error: "originalText is required" });
     }
 
-    // Helper: generate new rewrittenText via Gemini or fallback
+    if (!aiClient) {
+      return res.status(503).json({ error: "AI 服务未配置，请联系管理员或稍后重试。", code: "no_client" });
+    }
+
     let newRewrittenText: string | null = null;
 
-    if (aiClient) {
-      try {
-        const prompt = `你是中文高阶简历优化写作专家。请对以下简历原文片段进行一次全新的高冲击力改写，生成不同于上次的全新版本。
+    try {
+      const prompt = `你是中文高阶简历优化写作专家。请对以下简历原文片段进行一次全新的高冲击力改写，生成不同于上次的全新版本。
 目标岗位: ${targetRole || "不限"}
 原始文本:
 ${originalText}
@@ -1931,23 +1980,21 @@ ${originalText}
 3. 使用高阶管理语言，避免平白叙述。
 4. 只返回改写后的纯文本字符串，不要包含任何解释或额外字段。`;
 
-        const response = await withGeminiTimeout(aiClient.models.generateContent({
-          model: "gemini-3.5-flash",
-          contents: prompt,
-        }), "regenerate-rewrite");
-        if (response.text) {
-          newRewrittenText = response.text.trim();
-        }
-      } catch (err: any) {
-        logCleanGeminiError("regenerate-rewrite", err);
+      const response = await withGeminiTimeout(aiClient.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: prompt,
+      }), "regenerate-rewrite");
+      if (response.text) {
+        newRewrittenText = response.text.trim();
       }
+    } catch (err: any) {
+      logCleanGeminiError("regenerate-rewrite", err);
+      const { code, message } = classifyGeminiError(err);
+      return res.status(code === "timeout" ? 504 : 502).json({ error: message, code });
     }
 
-    // Fallback: simple high-impact transformation
     if (!newRewrittenText) {
-      const verbs = ["主导", "推动", "构建", "优化", "赋能", "统筹"];
-      const verb = verbs[Math.floor(Math.random() * verbs.length)];
-      newRewrittenText = `${verb}${originalText.slice(0, 30)}，实现核心业务目标达成【建议补充：例如"提升效率 xxx%，降低成本 xxx 万元"】。`;
+      return res.status(502).json({ error: "AI 未返回有效内容，请稍后重试。", code: "empty" });
     }
 
     // Update in DB
@@ -1993,6 +2040,13 @@ ${originalText}
   app.post("/api/resume-reports/:report_id/versions/generate", async (req, res) => {
     const { report_id } = req.params;
     const { targetRole, resumeText, baselineResume } = req.body;
+
+    if (!aiClient) {
+      return res.status(503).json({ error: "AI 服务未配置，请联系管理员或稍后重试。", code: "no_client" });
+    }
+    if (!baselineResume) {
+      return res.status(400).json({ error: "缺少基准简历数据，请先完成简历优化。", code: "missing_baseline" });
+    }
     
     try {
       const vNames = {
@@ -2001,12 +2055,12 @@ ${originalText}
         ai_product: 'AI产品负责人版'
       };
       
-      let standardContent = baselineResume ? JSON.parse(JSON.stringify(baselineResume)) : getSimulatedResume(targetRole, resumeText);
-      let executiveContent = baselineResume ? JSON.parse(JSON.stringify(baselineResume)) : getSimulatedResume(targetRole, resumeText);
-      let aiProductContent = baselineResume ? JSON.parse(JSON.stringify(baselineResume)) : getSimulatedResume(targetRole, resumeText);
+      let standardContent = JSON.parse(JSON.stringify(baselineResume));
+      let executiveContent = JSON.parse(JSON.stringify(baselineResume));
+      let aiProductContent = JSON.parse(JSON.stringify(baselineResume));
       let aiSuccess = false;
       
-      if (aiClient) {
+      {
         try {
           const prompt = `你是中文 AI 高阶岗位简历专家。请基于以下基准优化版简历，同时生成专注于三种不同方向重点的全新改写版本：
           1. 标准投递版 (standard)：结构清晰、关键词高度对齐、全面覆盖 JD 能力指标，适配 Boss/猎聘等主流招聘平台。
@@ -2101,7 +2155,7 @@ ${originalText}
           if (response.text) {
             const parsed = JSON.parse(response.text.trim());
             if (parsed.standard && parsed.executive && parsed.ai_product) {
-              const baseContent = baselineResume ? JSON.parse(JSON.stringify(baselineResume)) : getSimulatedResume(targetRole, resumeText);
+              const baseContent = JSON.parse(JSON.stringify(baselineResume));
               
               standardContent = { ...baseContent, ...parsed.standard };
               executiveContent = { ...baseContent, ...parsed.executive };
@@ -2111,42 +2165,13 @@ ${originalText}
           }
         } catch (err: any) {
           logCleanGeminiError("combined-version-generation", err);
+          const { code, message } = classifyGeminiError(err);
+          return res.status(code === "timeout" ? 504 : 502).json({ error: message, code });
         }
       }
       
       if (!aiSuccess) {
-        executiveContent.summary = "资深高管级技术产品专家，直接汇报公司 CEO 与董事会。具备 10 年以上跨职能大型部门治理、战略规划与组织效能重构方法论。拥有主导过亿元级 AI 产业落地及大厂高管战略决策汇报的成熟实操经历，擅长通过数字化及 AI 大模型应用实现公司级经营 ROI 全面倍增。";
-        executiveContent.coreCapabilities = [
-          "公司级 AI 战略治理与 ROI 控制",
-          "15人以上多元跨职能部门管理",
-          "核心决策层及董事会级方案呈现",
-          "亿元级产业化落地与资源整合",
-          "端到端商业闭环与敏捷组织重构"
-        ];
-        executiveContent.experience = executiveContent.experience.map((exp: any) => ({
-          ...exp,
-          role: `集团 ${exp.role || '高级总监'}`,
-          bullets: exp.bullets ? exp.bullets.map((b: string) => 
-            b.replace("负责", "主导制定集团业务方向与年度规划，负责")
-             .replace("开发", "带领跨职能核心高管团队，管理端到端敏捷交付，提升部门研发效能达 40%")
-          ) : []
-        }));
-        
-        aiProductContent.summary = "前沿生成式 AI 产品架构师与商业负责人。精通大语言模型 (LLM) 底层原理、Agent 智能体架构、RAG 精准搜索召回机制及提示词敏捷工程。深谙 B 端大客户痛点及 AI + 行业应用落地的端到端技术-商业闭环，专注于通过 AI 赋能创造高附加值的商业增量。";
-        aiProductContent.coreCapabilities = [
-          "大语言模型 (LLM) 底层及 Agent 架构",
-          "高精确检索增强生成 (RAG) 应用落地",
-          "AI 技术栈向 B 端场景的商业化抽象",
-          "提示词敏捷工程与微调效果调优",
-          "跨模型/算法与研发团队的高效治理"
-        ];
-        aiProductContent.experience = aiProductContent.experience.map((exp: any) => ({
-          ...exp,
-          bullets: exp.bullets ? exp.bullets.map((b: string) => 
-            b.replace("产品", "基于 LLM 与 Agent 架构的 AI 产品平台")
-             .replace("功能", "检索增强生成 (RAG) 及高频提示词链路")
-          ) : []
-        }));
+        return res.status(502).json({ error: "AI 未返回有效内容，请稍后重试。", code: "empty" });
       }
       
       const versions = [

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { 
   Search, 
   BarChart3, 
@@ -44,6 +44,7 @@ import {
   TaskItem 
 } from "./types";
 import { customFetch } from "./lib/custom-fetch";
+import { streamSSE } from "./lib/sse-client";
 import HelpCenter from "./HelpCenter";
 
 // Standard pre-loaded executive resume for quick user testing (Chinese)
@@ -482,6 +483,9 @@ Visuals & Integrity
   // Loading States
   const [loadingStep, setLoadingStep] = useState<'idle' | 'research' | 'matching' | 'upgrading'>('idle');
   const [loadingProgress, setLoadingProgress] = useState(0);
+  const [loadingStalled, setLoadingStalled] = useState(false);
+  const [loadingElapsedMs, setLoadingElapsedMs] = useState(0);
+  const streamHandleRef = useRef<{ abort: () => void } | null>(null);
 
   // PRD v0.4 New States in Frontend
   const [showClarificationWizard, setShowClarificationWizard] = useState(false);
@@ -1180,68 +1184,66 @@ Visuals & Integrity
   };
 
   // 1. Submit New Target Role Analysis
+  // Aborts the in-flight AI stream and clears the loading overlay, without pretending the
+  // request succeeded. The caller can retry manually afterwards.
+  const abortActiveStream = () => {
+    streamHandleRef.current?.abort();
+    streamHandleRef.current = null;
+    setLoadingStep('idle');
+    setLoadingProgress(0);
+    setLoadingStalled(false);
+    setLoadingElapsedMs(0);
+  };
+
   const handleAnalyzeRole = async (roleName: string = targetRole) => {
     const activeRole = roleName.trim() || "AI 产品负责人";
     setLoadingStep('research');
-    setLoadingProgress(15);
-    
-    // Simulate progression while contacting Express API
-    const progressInterval = setInterval(() => {
-      setLoadingProgress(prev => {
-        if (prev >= 85) return prev;
-        return Math.min(prev + 12, 85);
-      });
-    }, 300);
+    setLoadingProgress(5);
+    setLoadingStalled(false);
+    setLoadingElapsedMs(0);
 
-    try {
-      const response = await customFetch("/api/analyze-role", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          targetRole: activeRole,
-          industry,
-          location,
-          seniority
-        })
-      });
-      
-      clearInterval(progressInterval);
-      setLoadingProgress(100);
+    streamHandleRef.current = streamSSE<JobResearchReport>(
+      "/api/analyze-role",
+      { targetRole: activeRole, industry, location, seniority },
+      {
+        onProgress: ({ elapsedMs }) => {
+          setLoadingStalled(false);
+          setLoadingElapsedMs(elapsedMs);
+          setLoadingProgress(prev => Math.min(prev + 4, 92));
+        },
+        onStalled: ({ elapsedMs }) => {
+          setLoadingStalled(true);
+          setLoadingElapsedMs(elapsedMs);
+        },
+        onError: ({ message }) => {
+          triggerToast(message);
+          setLoadingStep('idle');
+          setLoadingProgress(0);
+          setLoadingStalled(false);
+        },
+        onDone: (report) => {
+          setLoadingProgress(100);
+          const newTask: TaskItem = {
+            id: Date.now().toString(),
+            targetRole: activeRole,
+            industry: industry || "AI / SaaS / 数字化",
+            location: location || "北京/上海/深圳",
+            seniority: seniority,
+            createdAt: new Date().toLocaleDateString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+            status: 'researched',
+            report: report
+          };
 
-      if (response.ok) {
-        const report: JobResearchReport = await response.json();
-        if ((report as any).simulated) {
-          triggerToast(lang === 'zh'
-            ? '⚠️ AI服务当前繁忙或未配置，已为您切换至内置模拟分析引擎。建议稍后重试，或联系客服 siounex@qq.com。'
-            : '⚠️ AI service busy or unavailable — using built-in simulated analysis. Please retry later or contact support at siounex@qq.com.');
-        }
-        
-        // Create new task or update if matching role exists
-        const newTask: TaskItem = {
-          id: Date.now().toString(),
-          targetRole: activeRole,
-          industry: industry || "AI / SaaS / 数字化",
-          location: location || "北京/上海/深圳",
-          seniority: seniority,
-          createdAt: new Date().toLocaleDateString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
-          status: 'researched',
-          report: report
-        };
-
-        const updatedTasks = [newTask, ...tasks.filter(t => t.targetRole !== activeRole)];
-        saveTasks(updatedTasks);
-        setCurrentTaskId(newTask.id);
-        triggerToast(lang === 'zh' ? `成功为您生成了「${activeRole}」高级岗位精准调研画像！` : `Successfully analyzed and generated the customized profile for "${activeRole}"!`);
-      } else {
-        throw new Error("API call failed");
+          const updatedTasks = [newTask, ...tasks.filter(t => t.targetRole !== activeRole)];
+          saveTasks(updatedTasks);
+          setCurrentTaskId(newTask.id);
+          triggerToast(lang === 'zh' ? `成功为您生成了「${activeRole}」高级岗位精准调研画像！` : `Successfully analyzed and generated the customized profile for "${activeRole}"!`);
+          setLoadingStep('idle');
+          setLoadingProgress(0);
+          setLoadingStalled(false);
+        },
       }
-    } catch (e) {
-      console.error(e);
-      triggerToast(lang === 'zh' ? "请求网络超时，已切换至内置高速分析引擎。" : "Network timeout, switched to high-speed local engine.");
-    } finally {
-      setLoadingStep('idle');
-      setLoadingProgress(0);
-    }
+    );
   };
 
   // 2. Submit Resume for Gap Match Score calculation
@@ -1282,12 +1284,12 @@ Visuals & Integrity
           setCustomAnswer("");
           triggerToast(lang === 'zh' ? "✨ AI 发现简历深层硬伤，启动高级求职追问补充！" : "✨ AI found resume gaps, started expert follow-up Q&A!");
         } else {
-          throw new Error("Failed to generate questions");
+          const errBody = await response.json().catch(() => ({}));
+          throw new Error(errBody.error || "Failed to generate questions");
         }
-      } catch (e) {
+      } catch (e: any) {
         console.error(e);
-        triggerToast(lang === 'zh' ? "网络出现波动，已为您跳过追问，直接生成匹配度评估。" : "Network glitch, skipped Q&A and ran evaluation directly.");
-        await handleMatchResume(skipWizard = true);
+        triggerToast(e?.message || (lang === 'zh' ? "生成追问问题失败，请稍后重试。" : "Failed to generate follow-up questions. Please retry later."));
       } finally {
         setIsGeneratingQuestions(false);
         setLoadingStep('idle');
@@ -1298,66 +1300,56 @@ Visuals & Integrity
 
     // Proceed to standard match analysis
     setLoadingStep('matching');
-    setLoadingProgress(10);
-    const progressInterval = setInterval(() => {
-      setLoadingProgress(prev => {
-        if (prev >= 90) return prev;
-        return Math.min(prev + 15, 90);
-      });
-    }, 450);
+    setLoadingProgress(5);
+    setLoadingStalled(false);
+    setLoadingElapsedMs(0);
 
-    try {
-      const response = await customFetch("/api/match-resume", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          targetRole: currentTask.targetRole,
-          report: currentTask.report,
-          resumeText: resumeText
-        })
-      });
+    streamHandleRef.current = streamSSE<ResumeMatchReport>(
+      "/api/match-resume",
+      { targetRole: currentTask.targetRole, report: currentTask.report, resumeText },
+      {
+        onProgress: ({ elapsedMs }) => {
+          setLoadingStalled(false);
+          setLoadingElapsedMs(elapsedMs);
+          setLoadingProgress(prev => Math.min(prev + 4, 92));
+        },
+        onStalled: ({ elapsedMs }) => {
+          setLoadingStalled(true);
+          setLoadingElapsedMs(elapsedMs);
+        },
+        onError: ({ message }) => {
+          triggerToast(message);
+          setLoadingStep('idle');
+          setLoadingProgress(0);
+          setLoadingStalled(false);
+        },
+        onDone: (matchReport) => {
+          setLoadingProgress(100);
+          const updatedTasks = tasks.map(t => {
+            if (t.id === currentTask.id) {
+              return {
+                ...t,
+                status: 'matched' as const,
+                originalResumeName: resumeFileName || "我的简历.txt",
+                originalResumeText: resumeText,
+                matchReport: matchReport,
+                clarificationQuestions: clarificationQuestions,
+                clarificationCompleted: clarificationQuestions.length > 0
+              };
+            }
+            return t;
+          });
 
-      clearInterval(progressInterval);
-      setLoadingProgress(100);
-
-      if (response.ok) {
-        const matchReport: ResumeMatchReport = await response.json();
-        if ((matchReport as any).simulated) {
-          triggerToast(lang === 'zh'
-            ? '⚠️ AI服务当前繁忙或未配置，已为您切换至内置模拟分析引擎。建议稍后重试，或联系客服 siounex@qq.com。'
-            : '⚠️ AI service busy or unavailable — using built-in simulated analysis. Please retry later or contact support at siounex@qq.com.');
-        }
-        
-        // Update task with resume match findings and Q&A answers
-        const updatedTasks = tasks.map(t => {
-          if (t.id === currentTask.id) {
-            return {
-              ...t,
-              status: 'matched' as const,
-              originalResumeName: resumeFileName || "我的简历.txt",
-              originalResumeText: resumeText,
-              matchReport: matchReport,
-              clarificationQuestions: clarificationQuestions,
-              clarificationCompleted: clarificationQuestions.length > 0
-            };
-          }
-          return t;
-        });
-
-        saveTasks(updatedTasks);
-        setShowClarificationWizard(false);
-        navigateToTab('matched');
-        triggerToast(lang === 'zh' ? "简历多维差距分析计算完成！" : "Resume multi-dimensional gap analysis completed!");
-      } else {
-        throw new Error("Match API failure");
+          saveTasks(updatedTasks);
+          setShowClarificationWizard(false);
+          navigateToTab('matched');
+          triggerToast(lang === 'zh' ? "简历多维差距分析计算完成！" : "Resume multi-dimensional gap analysis completed!");
+          setLoadingStep('idle');
+          setLoadingProgress(0);
+          setLoadingStalled(false);
+        },
       }
-    } catch (e) {
-      console.error(e);
-      triggerToast(lang === 'zh' ? "网络连接波动，已调动本地知识库完成画像匹配。" : "Network fluctuation detected. Switched to local knowledge base to match.");
-    } finally {
-      setLoadingStep('idle');
-      setLoadingProgress(0);
-    }
+    );
   };
 
   const handleSubmitClarificationAnswers = async () => {
@@ -1389,74 +1381,69 @@ Visuals & Integrity
     if (!taskToOptimize) return;
 
     setLoadingStep('upgrading');
-    setLoadingProgress(30);
+    setLoadingProgress(5);
+    setLoadingStalled(false);
+    setLoadingElapsedMs(0);
 
-    const progressInterval = setInterval(() => {
-      setLoadingProgress(prev => {
-        if (prev >= 95) return prev;
-        return Math.min(prev + 15, 95);
-      });
-    }, 500);
+    streamHandleRef.current = streamSSE<OptimizedResume>(
+      "/api/optimize-resume",
+      {
+        targetRole: taskToOptimize.targetRole,
+        report: taskToOptimize.report,
+        resumeText: taskToOptimize.originalResumeText || resumeText,
+        matchReport: taskToOptimize.matchReport
+      },
+      {
+        onProgress: ({ elapsedMs }) => {
+          setLoadingStalled(false);
+          setLoadingElapsedMs(elapsedMs);
+          setLoadingProgress(prev => Math.min(prev + 4, 92));
+        },
+        onStalled: ({ elapsedMs }) => {
+          setLoadingStalled(true);
+          setLoadingElapsedMs(elapsedMs);
+        },
+        onError: ({ message }) => {
+          triggerToast(message);
+          setLoadingStep('idle');
+          setLoadingProgress(0);
+          setLoadingStalled(false);
+        },
+        onDone: (optimized) => {
+          setLoadingProgress(100);
 
-    try {
-      const response = await customFetch("/api/optimize-resume", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          targetRole: taskToOptimize.targetRole,
-          report: taskToOptimize.report,
-          resumeText: taskToOptimize.originalResumeText || resumeText,
-          matchReport: taskToOptimize.matchReport
-        })
-      });
-
-      clearInterval(progressInterval);
-      setLoadingProgress(100);
-
-      if (response.ok) {
-        const optimized: OptimizedResume = await response.json();
-        if ((optimized as any).simulated) {
-          triggerToast(lang === 'zh'
-            ? '⚠️ AI服务当前繁忙或未配置，本次改写使用内置模拟引擎生成。建议稍后重试获取真实AI改写，或联系客服 siounex@qq.com。'
-            : '⚠️ AI service busy or unavailable — this rewrite was generated by the built-in simulator. Please retry later for a real AI rewrite, or contact support at siounex@qq.com.');
-        }
-        
-        // Reload tasks from storage to prevent stale local state overwrites
-        const userKey = currentUser ? `career_ai_tasks_${currentUser.id}` : "career_ai_tasks_guest";
-        const saved = localStorage.getItem(userKey);
-        let latestTasks = tasks;
-        if (saved) {
-          try {
-            latestTasks = JSON.parse(saved);
-          } catch (e) {}
-        }
-
-        const updatedTasks = latestTasks.map(t => {
-          if (t.id === taskIdToOptimize) {
-            return {
-              ...t,
-              status: 'finalized' as const,
-              optimizedResume: optimized
-            };
+          // Reload tasks from storage to prevent stale local state overwrites
+          const userKey = currentUser ? `career_ai_tasks_${currentUser.id}` : "career_ai_tasks_guest";
+          const saved = localStorage.getItem(userKey);
+          let latestTasks = tasks;
+          if (saved) {
+            try {
+              latestTasks = JSON.parse(saved);
+            } catch (e) {}
           }
-          return t;
-        });
 
-        saveTasks(updatedTasks);
-        setEditedResume(optimized);
-        setCurrentTaskId(taskIdToOptimize);
-        setActiveTab('finalized');
-        triggerToast(lang === 'zh' ? "🎉 恭喜！高阶大模型改写服务已解锁，成功生成您的靶向优化简历！" : "🎉 Congratulations! C-level optimization unlocked. Custom resume generated successfully!");
-      } else {
-        throw new Error("Upgrade API failed");
+          const updatedTasks = latestTasks.map(t => {
+            if (t.id === taskIdToOptimize) {
+              return {
+                ...t,
+                status: 'finalized' as const,
+                optimizedResume: optimized
+              };
+            }
+            return t;
+          });
+
+          saveTasks(updatedTasks);
+          setEditedResume(optimized);
+          setCurrentTaskId(taskIdToOptimize);
+          setActiveTab('finalized');
+          triggerToast(lang === 'zh' ? "🎉 恭喜！高阶大模型改写服务已解锁，成功生成您的靶向优化简历！" : "🎉 Congratulations! C-level optimization unlocked. Custom resume generated successfully!");
+          setLoadingStep('idle');
+          setLoadingProgress(0);
+          setLoadingStalled(false);
+        },
       }
-    } catch (e) {
-      console.error(e);
-      triggerToast(lang === 'zh' ? "服务繁忙，已调取高级简历专家模块完成靶向改写。" : "Server busy. Loaded advanced resume expert module for target rewrite.");
-    } finally {
-      setLoadingStep('idle');
-      setLoadingProgress(0);
-    }
+    );
   };
 
   const handlePaymentSubmit = async () => {
@@ -2677,6 +2664,33 @@ Visuals & Integrity
                 ></div>
               </div>
               <span className="text-xs text-blue-700 font-mono font-bold mt-2">{loadingProgress}% {t.completedLabel}</span>
+
+              {loadingStalled && (
+                <div className="mt-8 w-full max-w-sm bg-amber-50 border border-amber-200 rounded-xl p-4 text-center">
+                  <p className="text-amber-800 text-sm font-semibold mb-1">
+                    {lang === 'zh' ? '⏳ AI 响应有点慢' : '⏳ AI is taking longer than usual'}
+                  </p>
+                  <p className="text-amber-700 text-xs mb-4">
+                    {lang === 'zh'
+                      ? `已等待 ${Math.round(loadingElapsedMs / 1000)} 秒，暂未收到新的返回内容。可能仍在处理，也可能已卡死。`
+                      : `Waited ${Math.round(loadingElapsedMs / 1000)}s with no new output. It may still be processing, or it may be stuck.`}
+                  </p>
+                  <div className="flex gap-2 justify-center">
+                    <button
+                      onClick={() => setLoadingStalled(false)}
+                      className="px-4 py-2 rounded-lg bg-white border border-amber-300 text-amber-800 text-xs font-bold hover:bg-amber-100 transition-colors"
+                    >
+                      {lang === 'zh' ? '继续等待' : 'Keep waiting'}
+                    </button>
+                    <button
+                      onClick={abortActiveStream}
+                      className="px-4 py-2 rounded-lg bg-amber-600 text-white text-xs font-bold hover:bg-amber-700 transition-colors"
+                    >
+                      {lang === 'zh' ? '稍后重试' : 'Retry later'}
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
