@@ -80,6 +80,30 @@ export const payments = pgTable('payments', {
   updatedAt: timestamp('updated_at').defaultNow(),
 });
 
+export const admins = pgTable('admins', {
+  id: serial('id').primaryKey(),
+  username: text('username').notNull().unique(),
+  passwordHash: text('password_hash').notNull(),
+  role: text('role').notNull().default('admin'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const refunds = pgTable('refunds', {
+  id: serial('id').primaryKey(),
+  paymentId: integer('payment_id')
+    .references(() => payments.id, { onDelete: 'cascade' })
+    .notNull(),
+  businessOrderNo: text('business_order_no').notNull(),
+  refundOrderNo: text('refund_order_no'),
+  amount: integer('amount').notNull(), // in cents (分)
+  reason: text('reason'),
+  status: integer('status').notNull().default(1), // 1=处理中 2=成功 3=失败
+  statusName: text('status_name').default('处理中'),
+  processedByAdmin: text('processed_by_admin'),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
   resumeVersions: many(resumeVersions),

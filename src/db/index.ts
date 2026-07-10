@@ -1,5 +1,5 @@
 import pg from "pg";
-import { users, resumeVersions, rewriteSuggestions, clarificationQuestions, userFeedbacks, eventLogs, payments } from "./schema.ts";
+import { users, resumeVersions, rewriteSuggestions, clarificationQuestions, userFeedbacks, eventLogs, payments, admins, refunds } from "./schema.ts";
 
 const { Pool } = pg;
 
@@ -25,6 +25,8 @@ const tableMap = new Map<any, string>([
   [userFeedbacks,           "user_feedbacks"],
   [eventLogs,               "event_logs"],
   [payments,                "payments"],
+  [admins,                  "admins"],
+  [refunds,                 "refunds"],
 ]);
 
 // ─── Column name helpers ──────────────────────────────────────────────────────
@@ -58,6 +60,12 @@ const fieldToCol: Record<string, string> = {
   thirdPartyOrderNo:"third_party_order_no",
   paidAt:           "paid_at",
   updatedAt:        "updated_at",
+  username:         "username",
+  role:             "role",
+  paymentId:        "payment_id",
+  refundOrderNo:    "refund_order_no",
+  reason:           "reason",
+  processedByAdmin: "processed_by_admin",
 };
 
 const colToField: Record<string, string> = {
@@ -88,6 +96,12 @@ const colToField: Record<string, string> = {
   third_party_order_no: "thirdPartyOrderNo",
   paid_at:             "paidAt",
   updated_at:          "updatedAt",
+  username:            "username",
+  role:                "role",
+  payment_id:          "paymentId",
+  refund_order_no:     "refundOrderNo",
+  reason:              "reason",
+  processed_by_admin:  "processedByAdmin",
 };
 
 function colName(fieldObj: any): string {

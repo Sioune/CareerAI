@@ -1,3 +1,5 @@
 - [CareerAI fake-flow patterns](careerai-fake-flows.md) — payment/referral "success" flows called nonexistent API endpoints, silently succeeding via Vite's dev catch-all; check endpoints actually exist in server.ts before trusting a "working" flow.
 - [Gemini call timeouts](gemini-timeouts.md) — Gemini SDK calls have no built-in timeout and can hang 50s+ or indefinitely; always race them against a hard timeout so fallbacks engage fast.
 - [CareerAI real payment gateway](careerai-payment-gateway.md) — WeChat/Alipay via ICBC merchant gateway, HMAC-signed, no simulated success path; poll/callback only.
+- [CareerAI DB wrapper table registration](careerai-db-wrapper-tables.md) — new schema.ts tables must also be added to src/db/index.ts tableMap/fieldToCol/colToField or queries silently fail with "relation unknown".
+- [CareerAI admin back-office](careerai-admin-backoffice.md) — real (non-mock) admin module at /admin scoped to phase-1 subset of a much larger enterprise PRD; RBAC/audit/CMS deferred.

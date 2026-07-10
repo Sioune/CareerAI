@@ -1,0 +1,14 @@
+---
+name: CareerAI custom DB wrapper requires manual table registration
+description: Adding a new Drizzle schema table in this project does not automatically make it queryable — the hand-rolled db wrapper needs it registered too.
+---
+
+`src/db/index.ts` is a hand-written Drizzle-like wrapper (not real Drizzle) that maps table objects to raw SQL table/column names via manual lookup tables: `tableMap` (table object → table name string) and `fieldToCol`/`colToField` (camelCase JS field → snake_case column, both directions).
+
+**Why:** Drizzle's real query builder isn't used — `db.select().from(table)` resolves the table name via `tableMap.get(table)`, defaulting to the literal string `"unknown"` if not found, which fails with a cryptic `relation "unknown" does not exist` Postgres error that looks like a missing-table bug rather than a missing-registration bug.
+
+**How to apply:** Whenever adding a new table to `src/db/schema.ts`, you must also, in `src/db/index.ts`:
+1. Import the new table export.
+2. Add it to `tableMap` with its snake_case table name.
+3. Add each of its camelCase fields to both `fieldToCol` and `colToField`.
+Skipping any of these silently breaks that table's queries even though the schema/table itself is fine.

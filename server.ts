@@ -58,8 +58,8 @@ const CJK_FONT_FAMILY = "'NotoSansSC', \"PingFang SC\", \"Hiragino Sans GB\", \"
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { db, eq, and } from "./src/db/index.ts";
-import { users, resumeVersions, rewriteSuggestions, clarificationQuestions, userFeedbacks, eventLogs, payments } from "./src/db/schema.ts";
-import { createPaymentOrder, queryPaymentStatus, isPaymentConfigured } from "./src/lib/payment-client.ts";
+import { users, resumeVersions, rewriteSuggestions, clarificationQuestions, userFeedbacks, eventLogs, payments, admins, refunds } from "./src/db/schema.ts";
+import { createPaymentOrder, queryPaymentStatus, createRefund, isPaymentConfigured } from "./src/lib/payment-client.ts";
 
 const JWT_SECRET = process.env.JWT_SECRET || "careerai-local-dev-secret-change-in-prod";
 
@@ -123,6 +123,41 @@ async function getDbUserFromHeader(authHeader?: string) {
   }
 }
 
+
+async function getAdminFromHeader(authHeader?: string) {
+  if (!authHeader || !authHeader.startsWith("Bearer ")) return null;
+  const token = authHeader.split("Bearer ")[1];
+  try {
+    const payload = jwt.verify(token, JWT_SECRET) as any;
+    if (!payload || !payload.isAdmin || !payload.adminId) return null;
+    const rows = await executeWithRetry(() => db.select().from(admins).where(eq(admins.id, payload.adminId))) as any[];
+    if (rows.length > 0) return rows[0];
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function requireAdmin(req: any, res: any, next: any) {
+  const admin = await getAdminFromHeader(req.headers.authorization);
+  if (!admin) return res.status(401).json({ error: "未授权，请以管理员身份登录" });
+  req.admin = admin;
+  next();
+}
+
+async function seedDefaultAdmin() {
+  try {
+    const existing = await executeWithRetry(() => db.select().from(admins)) as any[];
+    if (existing.length > 0) return;
+    const defaultUsername = process.env.ADMIN_DEFAULT_USERNAME || "admin";
+    const defaultPassword = process.env.ADMIN_DEFAULT_PASSWORD || "CareerAI@2026";
+    const passwordHash = await bcrypt.hash(defaultPassword, 10);
+    await db.insert(admins).values({ username: defaultUsername, passwordHash, role: "admin" } as any);
+    console.log(`[Admin] Seeded default admin account "${defaultUsername}". Please log in at /admin and change the password source (ADMIN_DEFAULT_PASSWORD env var).`);
+  } catch (err) {
+    console.error("[Admin] Failed to seed default admin:", err);
+  }
+}
 
 const requireFn = typeof require !== "undefined" ? require : createRequire(import.meta.url);
 const pdf = requireFn("pdf-parse");
@@ -293,6 +328,7 @@ async function startServer() {
   const PORT = parseInt(process.env.PORT || "5000", 10);
 
   initCjkFont().catch(() => {});
+  seedDefaultAdmin().catch(() => {});
 
   app.use(express.json({ limit: "10mb" }));
 
@@ -2887,7 +2923,341 @@ ${originalText}
     }
   });
 
-  app.get("/api/admin/feedback-summary", async (req, res) => {
+  // ===================== Admin Back-Office Module =====================
+
+  // API Route: Admin login
+  app.post("/api/admin/login", async (req, res) => {
+    try {
+      const { username, password } = req.body;
+      if (!username?.trim() || !password?.trim()) {
+        return res.status(400).json({ error: "用户名和密码不能为空" });
+      }
+      const rows = await db.select().from(admins).where(eq(admins.username, username.trim())) as any[];
+      const admin = rows[0];
+      if (!admin) return res.status(401).json({ error: "用户名或密码错误" });
+      const valid = await bcrypt.compare(password, admin.passwordHash);
+      if (!valid) return res.status(401).json({ error: "用户名或密码错误" });
+      const token = jwt.sign({ adminId: admin.id, username: admin.username, isAdmin: true }, JWT_SECRET, { expiresIn: "12h" });
+      return res.json({ token, admin: { id: admin.id, username: admin.username, role: admin.role } });
+    } catch (err: any) {
+      console.error("Admin login error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/admin/me", requireAdmin, async (req: any, res) => {
+    return res.json({ id: req.admin.id, username: req.admin.username, role: req.admin.role });
+  });
+
+  // API Route: Business overview / dashboard
+  app.get("/api/admin/overview", requireAdmin, async (req, res) => {
+    try {
+      const allUsers = await db.select().from(users) as any[];
+      const allPayments = await db.select().from(payments) as any[];
+      const allRefunds = await db.select().from(refunds) as any[];
+      const allResumeVersions = await db.select().from(resumeVersions) as any[];
+      const allLogs = await db.select().from(eventLogs) as any[];
+
+      const paidPayments = allPayments.filter((p: any) => p.status === 2);
+      const totalRevenueCents = paidPayments.reduce((sum: number, p: any) => sum + (p.amount || 0), 0);
+      const successRefunds = allRefunds.filter((r: any) => r.status === 2);
+      const totalRefundedCents = successRefunds.reduce((sum: number, r: any) => sum + (r.amount || 0), 0);
+
+      const distinctTasks = new Set(allResumeVersions.map((v: any) => v.reportId)).size;
+      const referralConversions = allLogs.filter((l: any) => l.eventType === "referral_conversion");
+
+      const now = Date.now();
+      const dayMs = 24 * 60 * 60 * 1000;
+      const newUsersLast7d = allUsers.filter((u: any) => u.createdAt && (now - new Date(u.createdAt).getTime()) <= 7 * dayMs).length;
+
+      return res.json({
+        totalUsers: allUsers.length,
+        newUsersLast7d,
+        totalTasks: distinctTasks,
+        totalPayments: allPayments.length,
+        paidPayments: paidPayments.length,
+        pendingPayments: allPayments.filter((p: any) => p.status === 1).length,
+        totalRevenueCents,
+        totalRefundedCents,
+        netRevenueCents: totalRevenueCents - totalRefundedCents,
+        refundCount: allRefunds.length,
+        referralConversions: referralConversions.length,
+      });
+    } catch (err: any) {
+      console.error("Admin overview error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // API Route: User list (search + pagination-lite)
+  app.get("/api/admin/users", requireAdmin, async (req, res) => {
+    try {
+      const search = String(req.query.search || "").trim().toLowerCase();
+      const allUsers = await db.select().from(users) as any[];
+      const allPayments = await db.select().from(payments) as any[];
+      const allResumeVersions = await db.select().from(resumeVersions) as any[];
+
+      let filtered = allUsers;
+      if (search) {
+        filtered = allUsers.filter((u: any) => u.uid.toLowerCase().includes(search) || u.email.toLowerCase().includes(search));
+      }
+
+      const result = filtered.map((u: any) => {
+        const userPayments = allPayments.filter((p: any) => p.userId === u.id);
+        const paidPayments = userPayments.filter((p: any) => p.status === 2);
+        const taskCount = new Set(allResumeVersions.filter((v: any) => v.userId === u.id).map((v: any) => v.reportId)).size;
+        return {
+          id: u.id,
+          uid: u.uid,
+          email: u.email,
+          referredBy: u.referredBy,
+          createdAt: u.createdAt,
+          totalPaidCents: paidPayments.reduce((s: number, p: any) => s + p.amount, 0),
+          paymentCount: userPayments.length,
+          taskCount,
+        };
+      }).sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+      return res.json({ users: result.slice(0, 200), total: result.length });
+    } catch (err: any) {
+      console.error("Admin users list error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // API Route: User detail
+  app.get("/api/admin/users/:uid", requireAdmin, async (req, res) => {
+    try {
+      const { uid } = req.params;
+      const rows = await db.select().from(users).where(eq(users.uid, uid)) as any[];
+      const user = rows[0];
+      if (!user) return res.status(404).json({ error: "用户不存在" });
+
+      const userPayments = (await db.select().from(payments).where(eq(payments.userId, user.id))) as any[];
+      const userLogs = (await db.select().from(eventLogs).where(eq(eventLogs.userId, user.id))) as any[];
+      const userResumeVersions = (await db.select().from(resumeVersions).where(eq(resumeVersions.userId, user.id))) as any[];
+      const allRefunds = await db.select().from(refunds) as any[];
+      const paymentIds = new Set(userPayments.map((p: any) => p.id));
+      const userRefunds = allRefunds.filter((r: any) => paymentIds.has(r.paymentId));
+
+      const referralConversions = userLogs.filter((l: any) => l.eventType === "referral_conversion");
+
+      return res.json({
+        user: {
+          id: user.id,
+          uid: user.uid,
+          email: user.email,
+          referredBy: user.referredBy,
+          createdAt: user.createdAt,
+        },
+        payments: userPayments,
+        refunds: userRefunds,
+        tasks: userResumeVersions.map((v: any) => ({ reportId: v.reportId, createdAt: v.createdAt })),
+        referralConversions,
+        eventLogs: userLogs.slice(-100).reverse(),
+      });
+    } catch (err: any) {
+      console.error("Admin user detail error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // API Route: Task list (from resume versions, joined with owning user)
+  app.get("/api/admin/tasks", requireAdmin, async (req, res) => {
+    try {
+      const search = String(req.query.search || "").trim().toLowerCase();
+      const allResumeVersions = await db.select().from(resumeVersions) as any[];
+      const allUsers = await db.select().from(users) as any[];
+      const usersById = new Map(allUsers.map((u: any) => [u.id, u]));
+      const allPayments = await db.select().from(payments) as any[];
+
+      let list = allResumeVersions.map((v: any) => {
+        const owner = usersById.get(v.userId);
+        const taskPayments = allPayments.filter((p: any) => p.taskId === v.reportId);
+        return {
+          reportId: v.reportId,
+          uid: owner?.uid || "未知",
+          userId: v.userId,
+          createdAt: v.createdAt,
+          hasPaidUnlock: taskPayments.some((p: any) => p.status === 2),
+          paymentCount: taskPayments.length,
+        };
+      });
+
+      if (search) {
+        list = list.filter((t: any) => t.reportId.toLowerCase().includes(search) || t.uid.toLowerCase().includes(search));
+      }
+
+      list.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      return res.json({ tasks: list.slice(0, 200), total: list.length });
+    } catch (err: any) {
+      console.error("Admin tasks list error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // API Route: Payment list
+  app.get("/api/admin/payments", requireAdmin, async (req, res) => {
+    try {
+      const statusFilter = req.query.status ? Number(req.query.status) : undefined;
+      const allPayments = await db.select().from(payments) as any[];
+      const allUsers = await db.select().from(users) as any[];
+      const usersById = new Map(allUsers.map((u: any) => [u.id, u]));
+
+      let list = allPayments.map((p: any) => ({
+        ...p,
+        uid: usersById.get(p.userId)?.uid || "未知",
+      }));
+      if (statusFilter !== undefined) {
+        list = list.filter((p: any) => p.status === statusFilter);
+      }
+      list.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      return res.json({ payments: list.slice(0, 200), total: list.length });
+    } catch (err: any) {
+      console.error("Admin payments list error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // API Route: Refund list
+  app.get("/api/admin/refunds", requireAdmin, async (req, res) => {
+    try {
+      const allRefunds = await db.select().from(refunds) as any[];
+      const allPayments = await db.select().from(payments) as any[];
+      const paymentsById = new Map(allPayments.map((p: any) => [p.id, p]));
+      const allUsers = await db.select().from(users) as any[];
+      const usersById = new Map(allUsers.map((u: any) => [u.id, u]));
+
+      const list = allRefunds.map((r: any) => {
+        const payment = paymentsById.get(r.paymentId);
+        return {
+          ...r,
+          uid: payment ? usersById.get(payment.userId)?.uid || "未知" : "未知",
+        };
+      }).sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+      return res.json({ refunds: list.slice(0, 200), total: list.length });
+    } catch (err: any) {
+      console.error("Admin refunds list error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // API Route: Issue a real refund via the payment gateway for a paid order
+  app.post("/api/admin/payments/:businessOrderNo/refund", requireAdmin, async (req: any, res) => {
+    try {
+      if (!isPaymentConfigured()) {
+        return res.status(503).json({ error: "支付服务未配置" });
+      }
+      const { businessOrderNo } = req.params;
+      const { amount, reason } = req.body;
+      if (!amount || amount <= 0) return res.status(400).json({ error: "退款金额无效" });
+      if (!reason?.trim()) return res.status(400).json({ error: "请填写退款原因" });
+
+      const rows = await db.select().from(payments).where(eq(payments.businessOrderNo, businessOrderNo)) as any[];
+      const order = rows[0];
+      if (!order) return res.status(404).json({ error: "订单不存在" });
+      if (order.status !== 2) return res.status(400).json({ error: "只能对已支付订单发起退款" });
+      if (amount > order.amount) return res.status(400).json({ error: "退款金额不能超过订单实付金额" });
+
+      const existingRefunds = await db.select().from(refunds).where(eq(refunds.paymentId, order.id)) as any[];
+      const alreadyRefunded = existingRefunds.filter((r: any) => r.status === 2).reduce((s: number, r: any) => s + r.amount, 0);
+      if (alreadyRefunded + amount > order.amount) {
+        return res.status(400).json({ error: "累计退款金额不能超过订单实付金额" });
+      }
+
+      const notifyUrl = `${getPublicBaseUrl(req)}/api/admin/refunds/callback`;
+      const refundResult = await createRefund({
+        businessOrderNo: order.businessOrderNo,
+        paymentOrderNo: order.paymentOrderNo,
+        refundAmount: amount,
+        reason: reason.trim(),
+        notifyUrl,
+      });
+
+      const inserted = await db.insert(refunds).values({
+        paymentId: order.id,
+        businessOrderNo: order.businessOrderNo,
+        refundOrderNo: refundResult.refundOrderNo,
+        amount,
+        reason: reason.trim(),
+        status: refundResult.status ?? 1,
+        statusName: refundResult.statusName ?? "处理中",
+        processedByAdmin: req.admin.username,
+      } as any) as any[];
+
+      if (refundResult.status === 2 && alreadyRefunded + amount >= order.amount) {
+        await db.update(payments).set({ status: 6, statusName: "已退款", updatedAt: new Date() } as any).where(eq(payments.id, order.id));
+      }
+
+      return res.json({ success: true, refund: Array.isArray(inserted) ? inserted[0] : inserted, gatewayResult: refundResult });
+    } catch (err: any) {
+      console.error("Admin refund error:", err);
+      return res.status(502).json({ error: err.message || "退款申请失败，请稍后重试" });
+    }
+  });
+
+  // API Route: Async refund notify callback from the payment gateway
+  app.post("/api/admin/refunds/callback", async (req, res) => {
+    try {
+      const notify = req.body;
+      const refundOrderNo = notify?.refundOrderNo;
+      if (!refundOrderNo) return res.status(200).send();
+      const rows = await db.select().from(refunds).where(eq(refunds.refundOrderNo, refundOrderNo)) as any[];
+      const refund = rows[0];
+      if (!refund) return res.status(200).send();
+
+      await db.update(refunds).set({
+        status: notify.status,
+        statusName: notify.statusName,
+        updatedAt: new Date(),
+      } as any).where(eq(refunds.id, refund.id));
+
+      if (notify.status === 2) {
+        const paymentRows = await db.select().from(payments).where(eq(payments.id, refund.paymentId)) as any[];
+        const payment = paymentRows[0];
+        if (payment) {
+          const allRefundsForPayment = await db.select().from(refunds).where(eq(refunds.paymentId, payment.id)) as any[];
+          const totalRefunded = allRefundsForPayment.filter((r: any) => r.id === refund.id ? true : r.status === 2).reduce((s: number, r: any) => s + r.amount, 0);
+          if (totalRefunded >= payment.amount) {
+            await db.update(payments).set({ status: 6, statusName: "已退款", updatedAt: new Date() } as any).where(eq(payments.id, payment.id));
+          }
+        }
+      }
+      return res.status(200).send();
+    } catch (err: any) {
+      console.error("Refund callback error:", err);
+      return res.status(200).send();
+    }
+  });
+
+  // API Route: Referral ledger (all referral conversions across users)
+  app.get("/api/admin/referrals", requireAdmin, async (req, res) => {
+    try {
+      const allLogs = await db.select().from(eventLogs).where(eq(eventLogs.eventType, "referral_conversion")) as any[];
+      const allUsers = await db.select().from(users) as any[];
+      const usersById = new Map(allUsers.map((u: any) => [u.id, u]));
+
+      const list = allLogs.map((l: any) => {
+        let meta: any = {};
+        try { meta = JSON.parse(l.metaData || "{}"); } catch {}
+        return {
+          id: l.id,
+          referrerUid: usersById.get(l.userId)?.uid || "未知",
+          referredUid: meta.referredUid || "未知",
+          claimed: !!meta.claimed,
+          createdAt: l.createdAt,
+        };
+      }).sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+      return res.json({ referrals: list.slice(0, 300), total: list.length });
+    } catch (err: any) {
+      console.error("Admin referrals list error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/admin/feedback-summary", requireAdmin, async (req, res) => {
     // Collect all feedbacks from memory cache
     const all: any[] = [];
     for (const [taskId, list] of userFeedbacksCache.entries()) {
@@ -2924,7 +3294,7 @@ ${originalText}
     });
   });
 
-  app.get("/api/admin/conversion-funnel", async (req, res) => {
+  app.get("/api/admin/conversion-funnel", requireAdmin, async (req, res) => {
     let dbFileUploads = 0;
     let dbJdAnalyzed = 0;
     let dbReportsGenerated = 0;
