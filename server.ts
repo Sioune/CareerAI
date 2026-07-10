@@ -171,7 +171,7 @@ async function startServer() {
   // API Route: Register
   app.post("/api/auth/register", async (req, res) => {
     try {
-      const { username, password } = req.body;
+      const { username, password, referredBy } = req.body;
       if (!username?.trim() || !password?.trim()) {
         return res.status(400).json({ error: "用户名和密码不能为空" });
       }
@@ -183,14 +183,92 @@ async function startServer() {
         return res.status(409).json({ error: "用户名已存在，请直接登录" });
       }
 
+      // Validate referrer: must be a real, distinct, existing user.
+      let referrerUid: string | null = null;
+      if (referredBy && typeof referredBy === "string") {
+        const candidate = referredBy.trim().toLowerCase();
+        if (candidate && candidate !== uid) {
+          const referrerRows = await db.select().from(users).where(eq(users.uid, candidate)) as any[];
+          if (referrerRows.length > 0) {
+            referrerUid = candidate;
+          }
+        }
+      }
+
       const passwordHash = await bcrypt.hash(password, 10);
-      const result = await db.insert(users).values({ uid, email, passwordHash } as any) as any[];
+      const insertData: any = { uid, email, passwordHash };
+      if (referrerUid) insertData.referredBy = referrerUid;
+      const result = await db.insert(users).values(insertData) as any[];
       const newUser = Array.isArray(result) ? result[0] : result;
+
+      // Only now, on a real completed registration, log a referral conversion for the referrer.
+      if (referrerUid) {
+        const referrerRows = await db.select().from(users).where(eq(users.uid, referrerUid)) as any[];
+        const referrer = referrerRows[0];
+        if (referrer) {
+          await db.insert(eventLogs).values({
+            userId: referrer.id,
+            eventType: "referral_conversion",
+            metaData: JSON.stringify({ referredUid: uid, claimed: false }),
+          } as any);
+        }
+      }
 
       const token = jwt.sign({ uid, email }, JWT_SECRET, { expiresIn: "30d" });
       return res.json({ success: true, token, user: { id: String(uid), username: username.trim() } });
     } catch (err: any) {
       console.error("Registration error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // API Route: Referral status — how many unclaimed real referral conversions this user has
+  app.get("/api/referrals/status", async (req, res) => {
+    try {
+      const user = await getDbUserFromHeader(req.headers.authorization);
+      if (!user) return res.status(401).json({ error: "未登录" });
+
+      const logs = await db.select().from(eventLogs).where(eq(eventLogs.userId, user.id)) as any[];
+      const conversions = logs.filter((l: any) => l.eventType === "referral_conversion");
+      const unclaimed = conversions.filter((l: any) => {
+        try { return !JSON.parse(l.metaData || "{}").claimed; } catch { return false; }
+      });
+      return res.json({
+        totalConversions: conversions.length,
+        unclaimedCredits: unclaimed.length,
+      });
+    } catch (err: any) {
+      console.error("Referral status error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // API Route: Claim one free-quota credit — only succeeds if a real, unclaimed referral conversion exists
+  app.post("/api/referrals/claim", async (req, res) => {
+    try {
+      const user = await getDbUserFromHeader(req.headers.authorization);
+      if (!user) return res.status(401).json({ error: "未登录" });
+
+      const logs = await db.select().from(eventLogs).where(eq(eventLogs.userId, user.id)) as any[];
+      const unclaimed = logs.find((l: any) => {
+        if (l.eventType !== "referral_conversion") return false;
+        try { return !JSON.parse(l.metaData || "{}").claimed; } catch { return false; }
+      });
+
+      if (!unclaimed) {
+        return res.status(404).json({ error: "暂无可核销的真实推荐注册记录，请等待好友通过您的链接完成注册" });
+      }
+
+      const meta = JSON.parse(unclaimed.metaData || "{}");
+      meta.claimed = true;
+      meta.claimedAt = new Date().toISOString();
+      await db.update(eventLogs)
+        .set({ metaData: JSON.stringify(meta) } as any)
+        .where(eq(eventLogs.id, unclaimed.id));
+
+      return res.json({ success: true, referredUid: meta.referredUid });
+    } catch (err: any) {
+      console.error("Referral claim error:", err);
       return res.status(500).json({ error: err.message });
     }
   });
@@ -356,7 +434,7 @@ async function startServer() {
     // High fidelity fallback when Gemini is disabled, key missing or fails
     console.log("Using simulated high-fidelity fallback for analyze-role");
     const simulatedReport = getSimulatedReport(targetRole, industry, location, seniority);
-    return res.json(simulatedReport);
+    return res.json({ ...simulatedReport, simulated: true });
   });
 
   // API Route: Match Resume to Role Insight Report
@@ -457,7 +535,7 @@ async function startServer() {
     // High fidelity fallback
     console.log("Using simulated high-fidelity fallback for match-resume");
     const simulatedMatch = getSimulatedMatch(targetRole, resumeText);
-    return res.json(simulatedMatch);
+    return res.json({ ...simulatedMatch, simulated: true });
   });
 
   // API Route: Generate optimized resume
@@ -565,7 +643,7 @@ async function startServer() {
     // High fidelity fallback
     console.log("Using simulated high-fidelity fallback for optimize-resume");
     const simulatedResume = getSimulatedResume(targetRole, resumeText);
-    return res.json(simulatedResume);
+    return res.json({ ...simulatedResume, simulated: true });
   });
 
   // API Route: Export high-fidelity PDF using Puppeteer for pixel-perfect CSS controls

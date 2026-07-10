@@ -5,6 +5,7 @@ export const users = pgTable('users', {
   id: serial('id').primaryKey(),
   uid: text('uid').notNull().unique(), // Supabase Auth UID
   email: text('email').notNull(),
+  referredBy: text('referred_by'), // uid of the referrer, set only at registration time
   createdAt: timestamp('created_at').defaultNow(),
 });
 

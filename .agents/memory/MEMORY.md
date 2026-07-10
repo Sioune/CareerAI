@@ -1,0 +1,1 @@
+- [CareerAI fake-flow patterns](careerai-fake-flows.md) — payment/referral "success" flows called nonexistent API endpoints, silently succeeding via Vite's dev catch-all; check endpoints actually exist in server.ts before trusting a "working" flow.
