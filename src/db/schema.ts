@@ -97,9 +97,12 @@ export const refunds = pgTable('refunds', {
   refundOrderNo: text('refund_order_no'),
   amount: integer('amount').notNull(), // in cents (分)
   reason: text('reason'),
-  status: integer('status').notNull().default(1), // 1=处理中 2=成功 3=失败
+  status: integer('status').notNull().default(1), // 0=待审批 1=处理中 2=成功 3=失败 4=已拒绝
   statusName: text('status_name').default('处理中'),
   processedByAdmin: text('processed_by_admin'),
+  requestedByAdmin: text('requested_by_admin'),
+  approvedByAdmin: text('approved_by_admin'),
+  rejectionReason: text('rejection_reason'),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });

@@ -442,8 +442,8 @@ function PaymentsTab() {
       {refundTarget && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={() => setRefundTarget(null)}>
           <div className="bg-white rounded-xl max-w-sm w-full p-6" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-lg font-bold mb-4">发起退款</h3>
-            <p className="text-xs text-slate-500 mb-3">订单：{refundTarget.businessOrderNo}</p>
+            <h3 className="text-lg font-bold mb-4">发起退款申请</h3>
+            <p className="text-xs text-slate-500 mb-3">订单：{refundTarget.businessOrderNo}（需另一位管理员审批后才会实际退款）</p>
             <label className="block text-sm text-slate-600 mb-1">退款金额（元）</label>
             <input
               type="number"
@@ -473,18 +473,54 @@ function PaymentsTab() {
   );
 }
 
-function RefundsTab() {
+function RefundsTab({ adminUsername, adminRole }: { adminUsername: string; adminRole: string }) {
   const [rows, setRows] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
   const [error, setError] = useState('');
+  const [rejectTarget, setRejectTarget] = useState<any>(null);
+  const [rejectReason, setRejectReason] = useState('');
+  const [busyId, setBusyId] = useState<number | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     apiFetch('/api/admin/refunds').then((d) => { setRows(d.refunds); setTotal(d.total); }).catch((e) => setError(e.message));
   }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const canApprove = (r: any) => r.status === 0 && (adminRole === 'super_admin' || r.requestedByAdmin !== adminUsername);
+
+  const approve = async (id: number) => {
+    setBusyId(id);
+    setError('');
+    try {
+      await apiFetch(`/api/admin/refunds/${id}/approve`, { method: 'POST' });
+      load();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const submitReject = async () => {
+    if (!rejectTarget) return;
+    setBusyId(rejectTarget.id);
+    try {
+      await apiFetch(`/api/admin/refunds/${rejectTarget.id}/reject`, { method: 'POST', body: JSON.stringify({ reason: rejectReason }) });
+      setRejectTarget(null);
+      setRejectReason('');
+      load();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   return (
     <div>
       <h2 className="text-lg font-bold text-slate-900 mb-4">退款管理 ({total})</h2>
+      <p className="text-xs text-slate-400 mb-3">双人复核机制：发起人不能审批自己提交的退款申请（超级管理员除外）。</p>
       {error && <p className="text-red-600 text-sm mb-2">{error}</p>}
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
         <table className="w-full text-sm">
@@ -495,8 +531,10 @@ function RefundsTab() {
               <th className="text-left px-3 py-2">退款金额</th>
               <th className="text-left px-3 py-2">原因</th>
               <th className="text-left px-3 py-2">状态</th>
-              <th className="text-left px-3 py-2">操作人</th>
+              <th className="text-left px-3 py-2">发起人</th>
+              <th className="text-left px-3 py-2">审批人</th>
               <th className="text-left px-3 py-2">时间</th>
+              <th className="text-left px-3 py-2"></th>
             </tr>
           </thead>
           <tbody>
@@ -506,17 +544,54 @@ function RefundsTab() {
                 <td className="px-3 py-2">{r.uid}</td>
                 <td className="px-3 py-2">{fmtMoney(r.amount)}</td>
                 <td className="px-3 py-2 text-slate-500">{r.reason}</td>
-                <td className="px-3 py-2">{r.statusName}</td>
-                <td className="px-3 py-2 text-slate-500">{r.processedByAdmin}</td>
+                <td className="px-3 py-2">
+                  {r.status === 0 ? <span className="text-amber-600">待审批</span> : r.status === 4 ? <span className="text-slate-400">已拒绝</span> : r.statusName}
+                </td>
+                <td className="px-3 py-2 text-slate-500">{r.requestedByAdmin || r.processedByAdmin || '-'}</td>
+                <td className="px-3 py-2 text-slate-500">{r.approvedByAdmin || '-'}</td>
                 <td className="px-3 py-2 text-slate-500">{fmtDate(r.createdAt)}</td>
+                <td className="px-3 py-2 whitespace-nowrap">
+                  {r.status === 0 && (
+                    canApprove(r) ? (
+                      <>
+                        <button disabled={busyId === r.id} onClick={() => approve(r.id)} className="text-emerald-600 hover:underline mr-3 disabled:opacity-50">批准</button>
+                        <button disabled={busyId === r.id} onClick={() => { setRejectTarget(r); setRejectReason(''); }} className="text-red-600 hover:underline disabled:opacity-50">拒绝</button>
+                      </>
+                    ) : (
+                      <span className="text-xs text-slate-400">待他人审批</span>
+                    )
+                  )}
+                </td>
               </tr>
             ))}
             {rows.length === 0 && (
-              <tr><td colSpan={7} className="text-center text-slate-400 py-6">暂无数据</td></tr>
+              <tr><td colSpan={9} className="text-center text-slate-400 py-6">暂无数据</td></tr>
             )}
           </tbody>
         </table>
       </div>
+
+      {rejectTarget && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={() => setRejectTarget(null)}>
+          <div className="bg-white rounded-xl max-w-sm w-full p-6" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-bold mb-4">拒绝退款申请</h3>
+            <p className="text-xs text-slate-500 mb-3">订单：{rejectTarget.businessOrderNo}</p>
+            <label className="block text-sm text-slate-600 mb-1">拒绝原因</label>
+            <textarea
+              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm mb-3"
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              rows={3}
+            />
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setRejectTarget(null)} className="px-4 py-2 text-sm rounded-lg border border-slate-300">取消</button>
+              <button onClick={submitReject} disabled={busyId === rejectTarget.id} className="px-4 py-2 text-sm rounded-lg bg-red-600 text-white disabled:opacity-50">
+                确认拒绝
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -792,7 +867,7 @@ export default function AdminApp() {
         {tab === 'users' && <UsersTab />}
         {tab === 'tasks' && <TasksTab />}
         {tab === 'payments' && <PaymentsTab />}
-        {tab === 'refunds' && <RefundsTab />}
+        {tab === 'refunds' && <RefundsTab adminUsername={adminName} adminRole={adminRole} />}
         {tab === 'referrals' && <ReferralsTab />}
         {tab === 'finance' && <FinanceTab />}
         {tab === 'audit' && <AuditTab />}

@@ -3202,7 +3202,7 @@ ${originalText}
     }
   });
 
-  // API Route: Issue a real refund via the payment gateway for a paid order
+  // API Route: Maker-Checker step 1 — finance submits a refund REQUEST (no gateway call yet, requires a second admin to approve)
   app.post("/api/admin/payments/:businessOrderNo/refund", requireAdmin, requireRole("finance"), async (req: any, res) => {
     try {
       if (!isPaymentConfigured()) {
@@ -3220,40 +3220,106 @@ ${originalText}
       if (amount > order.amount) return res.status(400).json({ error: "退款金额不能超过订单实付金额" });
 
       const existingRefunds = await db.select().from(refunds).where(eq(refunds.paymentId, order.id)) as any[];
-      const alreadyRefunded = existingRefunds.filter((r: any) => r.status === 2).reduce((s: number, r: any) => s + r.amount, 0);
+      const alreadyRefunded = existingRefunds
+        .filter((r: any) => r.status === 1 || r.status === 2 || r.status === 0)
+        .reduce((s: number, r: any) => s + r.amount, 0);
       if (alreadyRefunded + amount > order.amount) {
-        return res.status(400).json({ error: "累计退款金额不能超过订单实付金额" });
+        return res.status(400).json({ error: "累计退款（含待审批）金额不能超过订单实付金额" });
       }
+
+      const inserted = await db.insert(refunds).values({
+        paymentId: order.id,
+        businessOrderNo: order.businessOrderNo,
+        amount,
+        reason: reason.trim(),
+        status: 0,
+        statusName: "待审批",
+        requestedByAdmin: req.admin.username,
+      } as any) as any[];
+
+      await logAudit(req.admin, "refund_requested", "payment", businessOrderNo, { amount, reason: reason.trim() });
+      return res.json({ success: true, refund: Array.isArray(inserted) ? inserted[0] : inserted, pendingApproval: true });
+    } catch (err: any) {
+      console.error("Admin refund request error:", err);
+      return res.status(502).json({ error: err.message || "退款申请失败，请稍后重试" });
+    }
+  });
+
+  // API Route: Maker-Checker step 2a — a different finance/super_admin approves and the gateway call actually fires
+  app.post("/api/admin/refunds/:id/approve", requireAdmin, requireRole("finance"), async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const rows = await db.select().from(refunds).where(eq(refunds.id, Number(id))) as any[];
+      const refund = rows[0];
+      if (!refund) return res.status(404).json({ error: "退款申请不存在" });
+      if (refund.status !== 0) return res.status(400).json({ error: "该退款申请已被处理" });
+      if (refund.requestedByAdmin === req.admin.username && req.admin.role !== "super_admin") {
+        return res.status(403).json({ error: "退款需要由发起人以外的管理员复核，不能自行审批" });
+      }
+
+      const orderRows = await db.select().from(payments).where(eq(payments.id, refund.paymentId)) as any[];
+      const order = orderRows[0];
+      if (!order) return res.status(404).json({ error: "关联订单不存在" });
 
       const notifyUrl = `${getPublicBaseUrl(req)}/api/admin/refunds/callback`;
       const refundResult = await createRefund({
         businessOrderNo: order.businessOrderNo,
         paymentOrderNo: order.paymentOrderNo,
-        refundAmount: amount,
-        reason: reason.trim(),
+        refundAmount: refund.amount,
+        reason: refund.reason || "",
         notifyUrl,
       });
 
-      const inserted = await db.insert(refunds).values({
-        paymentId: order.id,
-        businessOrderNo: order.businessOrderNo,
+      await db.update(refunds).set({
         refundOrderNo: refundResult.refundOrderNo,
-        amount,
-        reason: reason.trim(),
         status: refundResult.status ?? 1,
         statusName: refundResult.statusName ?? "处理中",
         processedByAdmin: req.admin.username,
-      } as any) as any[];
+        approvedByAdmin: req.admin.username,
+        updatedAt: new Date(),
+      } as any).where(eq(refunds.id, refund.id));
 
-      if (refundResult.status === 2 && alreadyRefunded + amount >= order.amount) {
-        await db.update(payments).set({ status: 6, statusName: "已退款", updatedAt: new Date() } as any).where(eq(payments.id, order.id));
+      if (refundResult.status === 2) {
+        const allRefundsForPayment = await db.select().from(refunds).where(eq(refunds.paymentId, order.id)) as any[];
+        const totalRefunded = allRefundsForPayment
+          .filter((r: any) => r.id === refund.id ? true : r.status === 2)
+          .reduce((s: number, r: any) => s + r.amount, 0);
+        if (totalRefunded >= order.amount) {
+          await db.update(payments).set({ status: 6, statusName: "已退款", updatedAt: new Date() } as any).where(eq(payments.id, order.id));
+        }
       }
 
-      await logAudit(req.admin, "refund_issued", "payment", businessOrderNo, { amount, reason: reason.trim(), refundOrderNo: refundResult.refundOrderNo });
-      return res.json({ success: true, refund: Array.isArray(inserted) ? inserted[0] : inserted, gatewayResult: refundResult });
+      await logAudit(req.admin, "refund_approved", "payment", order.businessOrderNo, { refundId: refund.id, amount: refund.amount, refundOrderNo: refundResult.refundOrderNo });
+      return res.json({ success: true, gatewayResult: refundResult });
     } catch (err: any) {
-      console.error("Admin refund error:", err);
-      return res.status(502).json({ error: err.message || "退款申请失败，请稍后重试" });
+      console.error("Admin refund approve error:", err);
+      return res.status(502).json({ error: err.message || "退款审批失败，请稍后重试" });
+    }
+  });
+
+  // API Route: Maker-Checker step 2b — reject a pending refund request
+  app.post("/api/admin/refunds/:id/reject", requireAdmin, requireRole("finance"), async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const { reason } = req.body;
+      const rows = await db.select().from(refunds).where(eq(refunds.id, Number(id))) as any[];
+      const refund = rows[0];
+      if (!refund) return res.status(404).json({ error: "退款申请不存在" });
+      if (refund.status !== 0) return res.status(400).json({ error: "该退款申请已被处理" });
+
+      await db.update(refunds).set({
+        status: 4,
+        statusName: "已拒绝",
+        approvedByAdmin: req.admin.username,
+        rejectionReason: reason?.trim() || null,
+        updatedAt: new Date(),
+      } as any).where(eq(refunds.id, refund.id));
+
+      await logAudit(req.admin, "refund_rejected", "refund", String(refund.id), { reason: reason?.trim() });
+      return res.json({ success: true });
+    } catch (err: any) {
+      console.error("Admin refund reject error:", err);
+      return res.status(500).json({ error: err.message });
     }
   });
 
