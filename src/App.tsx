@@ -3616,18 +3616,15 @@ Visuals & Integrity
                             <div className="relative border-t border-dashed border-slate-100 mt-2 pt-4">
                               <div className="absolute inset-0 backdrop-blur-[2.5px] bg-white/70 z-10 flex items-center justify-center">
                                 <button 
-                                  onClick={() => {
-                                    const updatedTasks = tasks.map(t => {
-                                      if (t.id === currentTask.id) {
-                                        return { ...t, status: 'upgraded' as const };
-                                      }
-                                      return t;
-                                    });
-                                    saveTasks(updatedTasks);
-                                  }}
-                                  className="bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold px-4 py-2 rounded-lg shadow-md transition-all flex items-center gap-2"
+                                  onClick={handlePaymentSubmit}
+                                  disabled={isCreatingSession}
+                                  className="bg-slate-900 hover:bg-slate-800 disabled:bg-slate-400 disabled:cursor-not-allowed text-white text-xs font-bold px-4 py-2 rounded-lg shadow-md transition-all flex items-center gap-2"
                                 >
-                                  <Lock className="w-3.5 h-3.5 text-blue-400" />
+                                  {isCreatingSession ? (
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                  ) : (
+                                    <Lock className="w-3.5 h-3.5 text-blue-400" />
+                                  )}
                                   <span>付费解锁额外 {currentTask.matchReport.additionalGapsCount} 项深度缺陷清单</span>
                                 </button>
                               </div>
