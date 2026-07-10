@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { QRCodeSVG } from "qrcode.react";
 import { 
   Search, 
   BarChart3, 
@@ -324,7 +325,7 @@ export default function App() {
     currentUserLabel: lang === 'zh' ? '当前登录高管账户：' : 'Current active executive: ',
     stripePayTitle: lang === 'zh' ? '微信/支付宝安全收银台' : 'WeChat / Alipay Cashier',
     stripePayInstructions: lang === 'zh' ? '请使用手机微信或支付宝扫描下方二维码完成支付，完成支付后将由大模型为您深度重构简历。' : 'Please scan the QR code with WeChat or Alipay to complete your payment, after which AI will start optimizing your resume.',
-    openInNewTab: lang === 'zh' ? '点击新窗口一键完成模拟付款' : 'Open in New Window (Instant Sandbox Bypass)',
+    openInNewTab: lang === 'zh' ? '在新窗口中打开付款二维码' : 'Open payment QR code in new window',
     paymentPending: lang === 'zh' ? '正在连线支付网关，等待支付结果...' : 'Awaiting WeChat/Alipay transaction confirmation...',
     paymentSuccessToast: lang === 'zh' ? '支付成功！正在为您进行高阶大模型简历重构，请稍候...' : 'Payment successful! Restructuring your resume, please wait...',
     paymentFailedToast: lang === 'zh' ? '支付未完成或已被取消，请重试' : 'Payment was not completed or has been cancelled.',
@@ -4648,12 +4649,9 @@ Visuals & Integrity
 
                 {/* Real-time Generated QR Code Box with custom brand borders */}
                 <div className={`bg-slate-50 border-2 w-48 h-48 mx-auto rounded-2xl shadow-inner flex flex-col items-center justify-center p-3 relative mb-4 transition-colors duration-300 ${paymentMethod === 'wechat' ? 'border-emerald-200 bg-emerald-50/20' : 'border-sky-200 bg-sky-50/20'}`}>
-                  <img 
-                    src={qrCodeUrl}
-                    alt="Payment QR Code"
-                    className="w-40 h-40 object-contain rounded-lg shadow-sm"
-                    referrerPolicy="no-referrer"
-                  />
+                  <div className="w-40 h-40 bg-white rounded-lg shadow-sm flex items-center justify-center p-2">
+                    <QRCodeSVG value={qrCodeUrl} size={144} level="M" includeMargin={false} />
+                  </div>
                 </div>
 
                 {/* Open in a new window link */}
