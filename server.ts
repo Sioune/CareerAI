@@ -155,6 +155,22 @@ function logCleanGeminiError(action: string, err: any) {
   }
 }
 
+// Gemini calls have no built-in timeout and can hang for 50s+ (sometimes indefinitely) before
+// erroring out in this environment. Race every call against a hard timeout so the fast,
+// high-fidelity local fallback engages quickly instead of leaving the user staring at a spinner.
+const GEMINI_TIMEOUT_MS = 12000;
+function withGeminiTimeout<T>(promise: Promise<T>, action: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`Gemini call "${action}" timed out after ${GEMINI_TIMEOUT_MS}ms`));
+    }, GEMINI_TIMEOUT_MS);
+    promise.then(
+      (val) => { clearTimeout(timer); resolve(val); },
+      (err) => { clearTimeout(timer); reject(err); }
+    );
+  });
+}
+
 async function startServer() {
   const app = express();
   const PORT = parseInt(process.env.PORT || "5000", 10);
@@ -385,7 +401,7 @@ async function startServer() {
         }
         Do not add any markup or markdown wraps inside the json properties. Keep it as pure clean JSON structure.`;
 
-        const response = await aiClient.models.generateContent({
+        const response = await withGeminiTimeout(aiClient.models.generateContent({
           model: "gemini-3.5-flash",
           contents: prompt,
           config: {
@@ -419,7 +435,7 @@ async function startServer() {
               required: ["targetRole", "researchSummary", "mandatoryRequirements", "highFrequencySkills", "plusSkills", "jdCount"]
             }
           }
-        });
+        }), "analyze-role");
 
         const text = response.text;
         if (text) {
@@ -476,7 +492,7 @@ async function startServer() {
         }
         Keep the detail sentences highly professional and actionable.`;
 
-        const response = await aiClient.models.generateContent({
+        const response = await withGeminiTimeout(aiClient.models.generateContent({
           model: "gemini-3.5-flash",
           contents: prompt,
           config: {
@@ -520,7 +536,7 @@ async function startServer() {
               required: ["matchScore", "strengths", "gaps", "additionalGapsCount", "matchedKeywords", "missingKeywords"]
             }
           }
-        });
+        }), "match-resume");
 
         const text = response.text;
         if (text) {
@@ -585,7 +601,7 @@ async function startServer() {
         }
         `;
 
-        const response = await aiClient.models.generateContent({
+        const response = await withGeminiTimeout(aiClient.models.generateContent({
           model: "gemini-3.5-flash",
           contents: prompt,
           config: {
@@ -628,7 +644,7 @@ async function startServer() {
               required: ["name", "title", "email", "location", "summary", "coreCapabilities", "experience", "education", "skills"]
             }
           }
-        });
+        }), "optimize-resume");
 
         const text = response.text;
         if (text) {
@@ -1563,7 +1579,7 @@ async function startServer() {
           }
         ]`;
         
-        const response = await aiClient.models.generateContent({
+        const response = await withGeminiTimeout(aiClient.models.generateContent({
           model: "gemini-3.5-flash",
           contents: prompt,
           config: {
@@ -1587,7 +1603,7 @@ async function startServer() {
               }
             }
           }
-        });
+        }), "clarification-questions");
         
         if (response.text) {
           questions = JSON.parse(response.text.trim());
@@ -1739,7 +1755,7 @@ async function startServer() {
         
         输出格式为 JSON Array。`;
         
-        const response = await aiClient.models.generateContent({
+        const response = await withGeminiTimeout(aiClient.models.generateContent({
           model: "gemini-3.5-flash",
           contents: prompt,
           config: {
@@ -1766,7 +1782,7 @@ async function startServer() {
               }
             }
           }
-        });
+        }), "rewrite-suggestions");
         
         if (response.text) {
           suggestions = JSON.parse(response.text.trim());
@@ -1915,10 +1931,10 @@ ${originalText}
 3. 使用高阶管理语言，避免平白叙述。
 4. 只返回改写后的纯文本字符串，不要包含任何解释或额外字段。`;
 
-        const response = await aiClient.models.generateContent({
+        const response = await withGeminiTimeout(aiClient.models.generateContent({
           model: "gemini-3.5-flash",
           contents: prompt,
-        });
+        }), "regenerate-rewrite");
         if (response.text) {
           newRewrittenText = response.text.trim();
         }
@@ -2002,7 +2018,7 @@ ${originalText}
           
           请严格按照指定的 JSON 结构输出。每个版本必须包含更新后的 summary、coreCapabilities、experience (其中每个经历项都要保留原 company、role、duration，只优化 bullets)、以及 skills。`;
 
-          const response = await aiClient.models.generateContent({
+          const response = await withGeminiTimeout(aiClient.models.generateContent({
             model: "gemini-3.5-flash",
             contents: prompt,
             config: {
@@ -2080,7 +2096,7 @@ ${originalText}
                 required: ["standard", "executive", "ai_product"]
               }
             }
-          });
+          }), "resume-versions");
 
           if (response.text) {
             const parsed = JSON.parse(response.text.trim());
