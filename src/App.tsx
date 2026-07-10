@@ -1141,6 +1141,38 @@ Visuals & Integrity
     }, 3500);
   };
 
+  const handleCheckApiStatus = async () => {
+    triggerToast(lang === 'zh' ? '正在检测服务器连通性…' : 'Checking server connectivity…');
+    const start = performance.now();
+    try {
+      const res = await fetch('/api/health', { method: 'GET' });
+      const latency = Math.round(performance.now() - start);
+      if (!res.ok) {
+        triggerToast(
+          lang === 'zh'
+            ? `⚠️ API 状态: 异常 (HTTP ${res.status}, ${latency}ms)`
+            : `⚠️ API Status: Degraded (HTTP ${res.status}, ${latency}ms)`
+        );
+        return;
+      }
+      const data = await res.json();
+      const aiText = data?.aiEnabled
+        ? (lang === 'zh' ? 'AI引擎已连接' : 'AI engine connected')
+        : (lang === 'zh' ? 'AI引擎离线(使用内置模拟引擎)' : 'AI engine offline (using local simulator)');
+      triggerToast(
+        lang === 'zh'
+          ? `✅ API 状态: 在线 (${latency}ms) · ${aiText}`
+          : `✅ API Status: Online (${latency}ms) · ${aiText}`
+      );
+    } catch (err) {
+      triggerToast(
+        lang === 'zh'
+          ? '❌ API 状态: 无法连接服务器'
+          : '❌ API Status: Unable to reach server'
+      );
+    }
+  };
+
   // 1. Submit New Target Role Analysis
   const handleAnalyzeRole = async (roleName: string = targetRole) => {
     const activeRole = roleName.trim() || "AI 产品负责人";
@@ -4431,7 +4463,7 @@ Visuals & Integrity
             <div className="flex gap-6 text-xs text-slate-500 font-semibold">
               <a href="/terms" className="hover:text-blue-600 transition-colors">Terms of Service</a>
               <a href="/privacy" className="hover:text-blue-600 transition-colors">Privacy Policy</a>
-              <button onClick={() => triggerToast("API " + t.systemStatus + ": " + t.systemStatusLive + " (All systems online)")} className="hover:text-blue-600 transition-colors">API Status</button>
+              <button onClick={handleCheckApiStatus} className="hover:text-blue-600 transition-colors">API Status</button>
             </div>
           </footer>
 
