@@ -60,6 +60,26 @@ export const eventLogs = pgTable('event_logs', {
   createdAt: timestamp('created_at').defaultNow(),
 });
 
+export const payments = pgTable('payments', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id')
+    .references(() => users.id, { onDelete: 'cascade' })
+    .notNull(),
+  taskId: text('task_id').notNull(),
+  businessOrderNo: text('business_order_no').notNull().unique(),
+  paymentOrderNo: text('payment_order_no'), // returned by payment gateway
+  targetRole: text('target_role'),
+  amount: integer('amount').notNull(), // in cents (分)
+  status: integer('status').notNull().default(1), // 1=待支付 2=已支付 3=失败 4=已取消 5=已过期
+  statusName: text('status_name').default('待支付'),
+  qrCodeUrl: text('qr_code_url'),
+  bankOrderNo: text('bank_order_no'),
+  thirdPartyOrderNo: text('third_party_order_no'),
+  paidAt: timestamp('paid_at'),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
   resumeVersions: many(resumeVersions),

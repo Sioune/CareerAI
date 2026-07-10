@@ -439,12 +439,14 @@ Visuals & Integrity
   const [mobileWorkspaceTab, setMobileWorkspaceTab] = useState<'copilot' | 'resume'>('copilot');
   const [paymentMethod, setPaymentMethod] = useState<'wechat' | 'alipay'>('wechat');
 
-  // Real payment integration states
-  const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
-  const [paymentSessionId, setPaymentSessionId] = useState<string | null>(null);
-  const [isSandboxPayment, setIsSandboxPayment] = useState(true);
+  // Real payment integration states (工商银行支付网关：微信/支付宝扫码)
+  const [qrCodeUrl, setQrCodeUrl] = useState<string | null>(null);
+  const [businessOrderNo, setBusinessOrderNo] = useState<string | null>(null);
+  const [paymentOrderStatus, setPaymentOrderStatus] = useState<number | null>(null); // 1待支付 2已支付 3失败 4已取消 5已过期
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [isVerifyingPayment, setIsVerifyingPayment] = useState(false);
+  const paymentPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [referralStatus, setReferralStatus] = useState<{ unclaimedCredits: number; required: number; readyToClaim: boolean } | null>(null);
 
   // Local User Authentication States
   const [currentUser, setCurrentUser] = useState<{ id: string; username: string } | null>(() => {
@@ -459,6 +461,12 @@ Visuals & Integrity
     return null;
   });
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+
+  useEffect(() => {
+    return () => {
+      if (paymentPollRef.current) clearInterval(paymentPollRef.current);
+    };
+  }, []);
   const [authUsername, setAuthUsername] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [showUserDropdown, setShowUserDropdown] = useState(false);
@@ -1446,35 +1454,79 @@ Visuals & Integrity
     );
   };
 
+  const stopPaymentPolling = () => {
+    if (paymentPollRef.current) {
+      clearInterval(paymentPollRef.current);
+      paymentPollRef.current = null;
+    }
+  };
+
+  const fetchReferralStatus = async () => {
+    if (!currentUser) return;
+    try {
+      const res = await customFetch('/api/referrals/status');
+      if (res.ok) {
+        const data = await res.json();
+        setReferralStatus({
+          unclaimedCredits: data.unclaimedCredits ?? 0,
+          required: data.required ?? 2,
+          readyToClaim: !!data.readyToClaim,
+        });
+      }
+    } catch (e) {
+      console.error("Failed to fetch referral status:", e);
+    }
+  };
+
   const handlePaymentSubmit = async () => {
     if (!currentTask) return;
 
     setIsCreatingSession(true);
-    triggerToast(lang === 'zh' ? '正在为您极速开通专属安全收银台...' : 'Generating secure checkout session...');
+    triggerToast(lang === 'zh' ? '正在创建微信/支付宝支付订单...' : 'Creating your WeChat/Alipay payment order...');
 
     try {
-      const response = await customFetch("/api/create-checkout-session", {
+      const response = await customFetch("/api/payments/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           taskId: currentTask.id,
           targetRole: currentTask.targetRole,
-          paymentMethod: paymentMethod,
-          lang: lang
         })
       });
 
+      const data = await response.json().catch(() => ({}));
+
       if (response.ok) {
-        const data = await response.json();
-        setCheckoutUrl(data.url);
-        setPaymentSessionId(data.sessionId);
-        setIsSandboxPayment(!!data.isSandbox);
-        
+        setQrCodeUrl(data.qrCodeUrl);
+        setBusinessOrderNo(data.businessOrderNo);
+        setPaymentOrderStatus(data.status ?? 1);
+
         setShowQRModal(true);
-        triggerToast(lang === 'zh' ? '安全收银台加载完成！' : 'Checkout session generated!');
+        triggerToast(lang === 'zh' ? '请扫码完成支付' : 'Scan the QR code to complete payment');
+        fetchReferralStatus();
+
+        stopPaymentPolling();
+        paymentPollRef.current = setInterval(async () => {
+          try {
+            const statusRes = await customFetch(`/api/payments/${data.businessOrderNo}/status`);
+            if (!statusRes.ok) return;
+            const statusData = await statusRes.json();
+            setPaymentOrderStatus(statusData.status);
+            if (statusData.status === 2) {
+              stopPaymentPolling();
+              setShowQRModal(false);
+              triggerToast(t.paymentSuccessToast);
+              await runResumeOptimizationForTask(currentTask.id);
+            } else if ([3, 4, 5].includes(statusData.status)) {
+              stopPaymentPolling();
+              triggerToast(lang === 'zh' ? `订单未完成支付（${statusData.statusName || '已关闭'}），请重新下单` : `Payment did not complete (${statusData.statusName || 'closed'}). Please create a new order.`);
+            }
+          } catch (e) {
+            console.error("Payment poll error:", e);
+          }
+        }, 6000);
       } else {
-        const errData = await response.json();
-        triggerToast(lang === 'zh' ? `创建支付订单失败: ${errData.error || '未知错误'}` : `Checkout generation failed: ${errData.error || 'Unknown error'}`);
+        triggerToast(lang === 'zh' ? `创建支付订单失败: ${data.error || '未知错误'}` : `Failed to create order: ${data.error || 'Unknown error'}`);
       }
     } catch (error: any) {
       console.error("Payment submit error:", error);
@@ -1484,32 +1536,31 @@ Visuals & Integrity
     }
   };
 
-  const handleConfirmPaymentSuccess = async () => {
-    if (!currentTask || !paymentSessionId) return;
+  const handleCheckPaymentNow = async () => {
+    if (!currentTask || !businessOrderNo) return;
 
     setIsVerifyingPayment(true);
-    triggerToast(lang === 'zh' ? '正在核销您的微信/支付宝订单...' : 'Confirming your WeChat/Alipay order...');
+    triggerToast(lang === 'zh' ? '正在向银行网关查询支付状态...' : 'Querying the bank gateway for payment status...');
 
     try {
-      // Force status update to paid on server first to simulate instant confirmation success
-      await customFetch('/api/confirm-payment', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: paymentSessionId })
-      });
+      const res = await customFetch(`/api/payments/${businessOrderNo}/status`);
+      const data = await res.json().catch(() => ({}));
 
-      const res = await customFetch(`/api/verify-payment?session_id=${paymentSessionId}&task_id=${currentTask.id}`);
       if (res.ok) {
-        const data = await res.json();
-        if (data.status === 'paid') {
+        setPaymentOrderStatus(data.status);
+        if (data.status === 2) {
+          stopPaymentPolling();
           setShowQRModal(false);
           triggerToast(t.paymentSuccessToast);
           await runResumeOptimizationForTask(currentTask.id);
+        } else if ([3, 4, 5].includes(data.status)) {
+          stopPaymentPolling();
+          triggerToast(lang === 'zh' ? `订单未完成支付（${data.statusName || '已关闭'}），请重新下单` : `Payment did not complete (${data.statusName || 'closed'}). Please create a new order.`);
         } else {
-          triggerToast(lang === 'zh' ? '系统尚未检测到该笔账单的支付信息，请稍候再试' : 'Payment has not been received yet. Please try again.');
+          triggerToast(lang === 'zh' ? '系统尚未检测到该笔账单的支付信息，请扫码完成支付后再试' : 'Payment has not been received yet. Please complete the QR payment and try again.');
         }
       } else {
-        triggerToast(lang === 'zh' ? '校验异常，请重试' : 'Verification error, please try again.');
+        triggerToast(lang === 'zh' ? `校验异常: ${data.error || '请重试'}` : `Verification error: ${data.error || 'please try again'}`);
       }
     } catch (error) {
       console.error("Manual verification failed:", error);
@@ -1532,6 +1583,7 @@ Visuals & Integrity
       const data = await res.json().catch(() => ({}));
 
       if (res.ok && data.success) {
+        stopPaymentPolling();
         setShowQRModal(false);
         setShowShareModal(false);
 
@@ -1539,8 +1591,8 @@ Visuals & Integrity
           id: `referral-success-${Date.now()}`,
           title: "🎉 恭喜！推荐注册奖励已成功激活",
           titleEn: "🎉 Congratulations! Referral reward activated successfully",
-          content: `尊敬的用户，新用户已经通过您的专属链接成功注册！您的 1 次免费高管简历重构额度已成功激活，并已自动抵扣您对「${currentTask.targetRole}」岗位的简历深度重构订单！大语言模型正在极速重写、对齐高频词并格式化为STAR模型，稍后请直接审阅生成后的高阶简历成果！`,
-          contentEn: `Dear user, a new user has successfully registered through your unique referral link! Your free credit has been activated and successfully applied to your resume optimization order for "${currentTask.targetRole}"! The AI model is restructuring your profile. Please check the results in a moment!`,
+          content: `尊敬的用户，2 位新用户已经通过您的专属链接成功注册！您的 1 次免费高管简历重构额度已成功激活，并已自动抵扣您对「${currentTask.targetRole}」岗位的简历深度重构订单！大语言模型正在极速重写、对齐高频词并格式化为STAR模型，稍后请直接审阅生成后的高阶简历成果！`,
+          contentEn: `Dear user, 2 new users have successfully registered through your unique referral link! Your free credit has been activated and successfully applied to your resume optimization order for "${currentTask.targetRole}"! The AI model is restructuring your profile. Please check the results in a moment!`,
           time: lang === 'zh' ? "刚刚" : "Just now",
           timeEn: "Just now",
           isRead: false,
@@ -1556,9 +1608,14 @@ Visuals & Integrity
         triggerToast(lang === 'zh' ? "🎉 推荐核销成功！已自动抵扣本次账单，免费为您进行高阶大模型简历重构！" : "🎉 Referral verified! Zero-payment discount applied, restructuring your resume now!");
         await runResumeOptimizationForTask(currentTask.id);
       } else {
+        setReferralStatus({
+          unclaimedCredits: data.unclaimedCredits ?? 0,
+          required: data.required ?? 2,
+          readyToClaim: false,
+        });
         triggerToast(lang === 'zh'
-          ? '暂无可核销的真实推荐注册记录。需有新用户通过您的专属链接实际完成注册后，才能免费解锁本次额度。'
-          : 'No verified referral registration yet. A friend must actually register through your link before this credit unlocks.');
+          ? (data.error || `需要 2 位好友通过您的专属链接完成注册才能免费解锁，目前已有 ${data.unclaimedCredits ?? 0} 位`)
+          : 'You need 2 friends to actually register through your link before this credit unlocks.');
       }
     } catch (e) {
       console.error(e);
@@ -4568,7 +4625,7 @@ Visuals & Integrity
 
         {/* Paywall Checkout QR Code Overlay Modal */}
         <AnimatePresence>
-          {showQRModal && currentTask && checkoutUrl && (
+          {showQRModal && currentTask && qrCodeUrl && (
             <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
               <motion.div 
                 initial={{ opacity: 0, scale: 0.95 }}
@@ -4595,8 +4652,8 @@ Visuals & Integrity
                 {/* Real-time Generated QR Code Box with custom brand borders */}
                 <div className={`bg-slate-50 border-2 w-48 h-48 mx-auto rounded-2xl shadow-inner flex flex-col items-center justify-center p-3 relative mb-4 transition-colors duration-300 ${paymentMethod === 'wechat' ? 'border-emerald-200 bg-emerald-50/20' : 'border-sky-200 bg-sky-50/20'}`}>
                   <img 
-                    src={`https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(checkoutUrl)}`}
-                    alt="Checkout QR Code"
+                    src={qrCodeUrl}
+                    alt="Payment QR Code"
                     className="w-40 h-40 object-contain rounded-lg shadow-sm"
                     referrerPolicy="no-referrer"
                   />
@@ -4605,7 +4662,7 @@ Visuals & Integrity
                 {/* Open in a new window link */}
                 <div className="text-center mb-4">
                   <a 
-                    href={checkoutUrl}
+                    href={qrCodeUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     className={`inline-flex items-center gap-1.5 text-xs font-bold underline transition-colors ${paymentMethod === 'wechat' ? 'text-emerald-600 hover:text-emerald-700' : 'text-sky-600 hover:text-sky-700'}`}
@@ -4631,9 +4688,9 @@ Visuals & Integrity
                   </div>
                   <p className="text-[10.5px] text-slate-600 leading-relaxed font-semibold">
                     {lang === 'zh' ? (
-                      <>推广期内<strong>可免费体验一次</strong>！只需将专属邀请链接<strong>转发到微信群或社群</strong>，当有新用户通过您的推荐完成注册激活，系统将即刻自动激活并免费解锁本订单！</>
+                      <>推广期内，邀请<strong>2位好友</strong>通过您的专属链接注册，即可<strong>免费解锁一次</strong>！{referralStatus && <>（当前已核实 {referralStatus.unclaimedCredits}/{referralStatus.required} 位）</>}系统将根据真实注册记录自动核销，无需支付本订单！</>
                     ) : (
-                      <>During promotion, you can <strong>get 1 free rewrite quota</strong>! Share your invite link to groups. Once a new user registers through your link, this order will instantly activate for free!</>
+                      <>During promotion, invite <strong>2 friends</strong> to register through your link to <strong>unlock 1 free rewrite</strong>! {referralStatus && <>(Verified: {referralStatus.unclaimedCredits}/{referralStatus.required})</>} Credit is applied automatically once verified.</>
                     )}
                   </p>
                   <button 
@@ -4650,29 +4707,29 @@ Visuals & Integrity
                 <div className="flex items-center justify-center gap-2 mb-5 px-3 py-2 bg-slate-50 border border-slate-100 rounded-xl">
                   <Loader2 className={`w-3.5 h-3.5 animate-spin shrink-0 ${paymentMethod === 'wechat' ? 'text-emerald-600' : 'text-sky-600'}`} />
                   <span className="text-[11px] font-semibold text-slate-500 animate-pulse truncate">
-                    {t.paymentPending}
+                    {lang === 'zh' ? '正在自动检测支付结果，请扫码完成支付...' : t.paymentPending}
                   </span>
                 </div>
 
                 {/* Action buttons */}
                 <div className="flex gap-3">
                   <button 
-                    onClick={() => setShowQRModal(false)}
+                    onClick={() => { stopPaymentPolling(); setShowQRModal(false); }}
                     className="flex-1 py-2.5 border border-slate-200 hover:bg-slate-50 text-slate-600 rounded-xl text-xs font-bold transition-all"
                   >
                     {t.cancelOrder}
                   </button>
                   <button 
-                    onClick={handleConfirmPaymentSuccess}
+                    onClick={handleCheckPaymentNow}
                     disabled={isVerifyingPayment}
                     className={`flex-1 py-2.5 disabled:bg-slate-400 disabled:cursor-not-allowed text-white rounded-xl text-xs font-bold transition-all shadow-md flex items-center justify-center gap-1 ${paymentMethod === 'wechat' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-sky-600 hover:bg-sky-700'}`}
                   >
                     {isVerifyingPayment ? (
                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
                     ) : (
-                      <Check className="w-3.5 h-3.5" />
+                      <RefreshCw className="w-3.5 h-3.5" />
                     )}
-                    <span>{isVerifyingPayment ? (lang === 'zh' ? '核销中...' : 'Verifying...') : t.confirmSuccessText}</span>
+                    <span>{isVerifyingPayment ? (lang === 'zh' ? '查询中...' : 'Checking...') : (lang === 'zh' ? '立即刷新状态' : 'Refresh Status')}</span>
                   </button>
                 </div>
               </motion.div>
@@ -4706,8 +4763,8 @@ Visuals & Integrity
                   </h3>
                   <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
                     {lang === 'zh' 
-                      ? '将下方专属邀请函分享到微信群、社群或好友。当有新伙伴注册后，您的 1 次免费高阶重构额度将自动核销并立即生效！'
-                      : 'Copy and send the referral message below to groups or channels. Once a new friend registers, your 1 free credit activates instantly!'}
+                      ? `将下方专属邀请函分享到微信群、社群或好友。当有 2 位新伙伴通过您的链接完成注册后，您的 1 次免费高阶重构额度将自动核销并立即生效！${referralStatus ? `（当前进度：${referralStatus.unclaimedCredits}/${referralStatus.required}）` : ''}`
+                      : `Copy and send the referral message below to groups or channels. Once 2 new friends register through your link, your 1 free credit activates instantly!${referralStatus ? ` (Progress: ${referralStatus.unclaimedCredits}/${referralStatus.required})` : ''}`}
                   </p>
                 </div>
 
@@ -4720,13 +4777,13 @@ Visuals & Integrity
                   <div className="bg-white border border-slate-200 rounded-lg p-3 text-slate-700 leading-relaxed max-h-36 overflow-y-auto font-medium select-all">
                     {lang === 'zh' ? (
                       <>
-                        【CareerAI高管简历重构】我的朋友向我推荐了这款中高层管理者、技术领袖专属的简历优化神作！针对目标岗位JD一键靶向重构为STAR模型，高亮大厂高频领导力筛查词，ATS通过率提升2倍！送你一次免费体验机会，点击下方专属邀请链接，极速解锁高阶履历：
+                        【CareerAI高管简历重构】我的朋友向我推荐了这款中高层管理者、技术领袖专属的简历优化神作！针对目标岗位JD一键靶向重构为STAR模型，高亮大厂高频领导力筛查词，ATS通过率提升2倍！邀请2位好友注册即可免费体验一次，点击下方专属邀请链接，极速解锁高阶履历：
                         <br />
                         <span className="text-blue-600 font-semibold font-mono break-all">👉 {`${window.location.origin}/?ref=${currentUser ? currentUser.id : 'guest_promo'}`}</span>
                       </>
                     ) : (
                       <>
-                        [CareerAI Executive Resume Optimizer] My friend recommended this AI resume tool tailored for executives, directors, and tech leaders. Restructures CVs into the powerful STAR framework to match high-frequency industry keywords, doubling ATS pass rates. Get 1 free credit through my unique referral link:
+                        [CareerAI Executive Resume Optimizer] My friend recommended this AI resume tool tailored for executives, directors, and tech leaders. Restructures CVs into the powerful STAR framework to match high-frequency industry keywords, doubling ATS pass rates. Invite 2 friends to register to get 1 free credit through my unique referral link:
                         <br />
                         <span className="text-blue-600 font-semibold font-mono break-all">👉 {`${window.location.origin}/?ref=${currentUser ? currentUser.id : 'guest_promo'}`}</span>
                       </>

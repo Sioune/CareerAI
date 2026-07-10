@@ -1,2 +1,3 @@
 - [CareerAI fake-flow patterns](careerai-fake-flows.md) — payment/referral "success" flows called nonexistent API endpoints, silently succeeding via Vite's dev catch-all; check endpoints actually exist in server.ts before trusting a "working" flow.
 - [Gemini call timeouts](gemini-timeouts.md) — Gemini SDK calls have no built-in timeout and can hang 50s+ or indefinitely; always race them against a hard timeout so fallbacks engage fast.
+- [CareerAI real payment gateway](careerai-payment-gateway.md) — WeChat/Alipay via ICBC merchant gateway, HMAC-signed, no simulated success path; poll/callback only.

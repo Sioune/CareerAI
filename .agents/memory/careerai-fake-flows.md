@@ -16,8 +16,8 @@ are not sufficient proof a backend flow is real — verify the route exists serv
 grep the server file for the exact route path. If it's missing, the "success" is very likely a
 fallback artifact, not real backend logic.
 
-Fixed so far (referral only): registration now records real `referredBy`/`referral_conversion`
-event logs server-side; claiming requires `/api/referrals/claim` to find a real, unclaimed
-conversion. The broader fake payment-confirm flow (`handleConfirmPaymentSuccess`,
-`isSandboxPayment`) was intentionally left untouched — it was out of scope for the task that
-uncovered this, but should be revisited if payments become a real requirement.
+Update: both flows are now fully real. Referral claim requires 2 unclaimed, real
+`referral_conversion` logs (bumped from 1). Payment now goes through a real bank-backed
+gateway (WeChat/Alipay via an ICBC merchant service) with HMAC-signed requests — order
+creation, active status polling, and an async notify callback are all implemented and
+verified against the live gateway. See `careerai-payment-gateway.md` for integration details.

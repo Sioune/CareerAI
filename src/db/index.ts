@@ -1,5 +1,5 @@
 import pg from "pg";
-import { users, resumeVersions, rewriteSuggestions, clarificationQuestions, userFeedbacks, eventLogs } from "./schema.ts";
+import { users, resumeVersions, rewriteSuggestions, clarificationQuestions, userFeedbacks, eventLogs, payments } from "./schema.ts";
 
 const { Pool } = pg;
 
@@ -24,6 +24,7 @@ const tableMap = new Map<any, string>([
   [clarificationQuestions,  "clarification_questions"],
   [userFeedbacks,           "user_feedbacks"],
   [eventLogs,               "event_logs"],
+  [payments,                "payments"],
 ]);
 
 // ─── Column name helpers ──────────────────────────────────────────────────────
@@ -45,6 +46,18 @@ const fieldToCol: Record<string, string> = {
   eventType:     "event_type",
   metaData:      "meta_data",
   createdAt:     "created_at",
+  taskId:           "task_id",
+  businessOrderNo:  "business_order_no",
+  paymentOrderNo:   "payment_order_no",
+  targetRole:       "target_role",
+  amount:           "amount",
+  status:           "status",
+  statusName:       "status_name",
+  qrCodeUrl:        "qr_code_url",
+  bankOrderNo:      "bank_order_no",
+  thirdPartyOrderNo:"third_party_order_no",
+  paidAt:           "paid_at",
+  updatedAt:        "updated_at",
 };
 
 const colToField: Record<string, string> = {
@@ -63,6 +76,18 @@ const colToField: Record<string, string> = {
   event_type:     "eventType",
   meta_data:      "metaData",
   created_at:     "createdAt",
+  task_id:            "taskId",
+  business_order_no:  "businessOrderNo",
+  payment_order_no:   "paymentOrderNo",
+  target_role:        "targetRole",
+  amount:             "amount",
+  status:             "status",
+  status_name:        "statusName",
+  qr_code_url:        "qrCodeUrl",
+  bank_order_no:      "bankOrderNo",
+  third_party_order_no: "thirdPartyOrderNo",
+  paid_at:             "paidAt",
+  updated_at:          "updatedAt",
 };
 
 function colName(fieldObj: any): string {

@@ -58,7 +58,8 @@ const CJK_FONT_FAMILY = "'NotoSansSC', \"PingFang SC\", \"Hiragino Sans GB\", \"
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { db, eq, and } from "./src/db/index.ts";
-import { users, resumeVersions, rewriteSuggestions, clarificationQuestions, userFeedbacks, eventLogs } from "./src/db/schema.ts";
+import { users, resumeVersions, rewriteSuggestions, clarificationQuestions, userFeedbacks, eventLogs, payments } from "./src/db/schema.ts";
+import { createPaymentOrder, queryPaymentStatus, isPaymentConfigured } from "./src/lib/payment-client.ts";
 
 const JWT_SECRET = process.env.JWT_SECRET || "careerai-local-dev-secret-change-in-prod";
 
@@ -355,6 +356,7 @@ async function startServer() {
   });
 
   // API Route: Referral status — how many unclaimed real referral conversions this user has
+  const REFERRALS_REQUIRED_PER_CREDIT = 2;
   app.get("/api/referrals/status", async (req, res) => {
     try {
       const user = await getDbUserFromHeader(req.headers.authorization);
@@ -368,6 +370,8 @@ async function startServer() {
       return res.json({
         totalConversions: conversions.length,
         unclaimedCredits: unclaimed.length,
+        required: REFERRALS_REQUIRED_PER_CREDIT,
+        readyToClaim: unclaimed.length >= REFERRALS_REQUIRED_PER_CREDIT,
       });
     } catch (err: any) {
       console.error("Referral status error:", err);
@@ -375,33 +379,192 @@ async function startServer() {
     }
   });
 
-  // API Route: Claim one free-quota credit — only succeeds if a real, unclaimed referral conversion exists
+  // API Route: Claim one free-quota credit — requires 2 real, unclaimed referral conversions
   app.post("/api/referrals/claim", async (req, res) => {
     try {
       const user = await getDbUserFromHeader(req.headers.authorization);
       if (!user) return res.status(401).json({ error: "未登录" });
 
       const logs = await db.select().from(eventLogs).where(eq(eventLogs.userId, user.id)) as any[];
-      const unclaimed = logs.find((l: any) => {
+      const unclaimed = logs.filter((l: any) => {
         if (l.eventType !== "referral_conversion") return false;
         try { return !JSON.parse(l.metaData || "{}").claimed; } catch { return false; }
       });
 
-      if (!unclaimed) {
-        return res.status(404).json({ error: "暂无可核销的真实推荐注册记录，请等待好友通过您的链接完成注册" });
+      if (unclaimed.length < REFERRALS_REQUIRED_PER_CREDIT) {
+        return res.status(404).json({
+          error: `需要 ${REFERRALS_REQUIRED_PER_CREDIT} 位好友通过您的链接完成注册才能免费解锁一次，目前已有 ${unclaimed.length} 位`,
+          unclaimedCredits: unclaimed.length,
+          required: REFERRALS_REQUIRED_PER_CREDIT,
+        });
       }
 
-      const meta = JSON.parse(unclaimed.metaData || "{}");
-      meta.claimed = true;
-      meta.claimedAt = new Date().toISOString();
-      await db.update(eventLogs)
-        .set({ metaData: JSON.stringify(meta) } as any)
-        .where(eq(eventLogs.id, unclaimed.id));
+      const toClaim = unclaimed.slice(0, REFERRALS_REQUIRED_PER_CREDIT);
+      const referredUids: string[] = [];
+      for (const log of toClaim) {
+        const meta = JSON.parse(log.metaData || "{}");
+        meta.claimed = true;
+        meta.claimedAt = new Date().toISOString();
+        referredUids.push(meta.referredUid);
+        await db.update(eventLogs)
+          .set({ metaData: JSON.stringify(meta) } as any)
+          .where(eq(eventLogs.id, log.id));
+      }
 
-      return res.json({ success: true, referredUid: meta.referredUid });
+      return res.json({ success: true, referredUids });
     } catch (err: any) {
       console.error("Referral claim error:", err);
       return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ─── Real payment endpoints (工商银行支付服务网关) ───────────────────────────
+  const RESUME_UNLOCK_PRICE_CENTS = 2990; // ¥29.90，与前端 priceVal 保持一致
+
+  function getPublicBaseUrl(req: express.Request): string {
+    const domains = process.env.REPLIT_DOMAINS?.split(",").map((d) => d.trim()).filter(Boolean);
+    if (domains && domains.length > 0) return `https://${domains[0]}`;
+    if (process.env.REPLIT_DEV_DOMAIN) return `https://${process.env.REPLIT_DEV_DOMAIN}`;
+    return `${req.protocol}://${req.get("host")}`;
+  }
+
+  // API Route: Create a real payment order (WeChat/Alipay QR via ICBC gateway)
+  app.post("/api/payments/create", async (req, res) => {
+    try {
+      const user = await getDbUserFromHeader(req.headers.authorization);
+      if (!user) return res.status(401).json({ error: "未登录" });
+
+      if (!isPaymentConfigured()) {
+        return res.status(503).json({ error: "支付服务未配置，请联系管理员" });
+      }
+
+      const { taskId, targetRole } = req.body;
+      if (!taskId) return res.status(400).json({ error: "缺少任务 ID" });
+
+      const businessOrderNo = `CAREERAI_${Date.now()}_${user.id}_${Math.random().toString(36).slice(2, 8)}`;
+      const notifyUrl = `${getPublicBaseUrl(req)}/api/payments/callback`;
+
+      const orderData = await createPaymentOrder({
+        businessOrderNo,
+        amount: RESUME_UNLOCK_PRICE_CENTS,
+        subject: `CareerAI 高管简历重构 - ${targetRole || "定制简历"}`,
+        body: `目标岗位：${targetRole || "未指定"}`,
+        businessName: "CareerAI",
+        notifyUrl,
+        expiredSeconds: 1800,
+        attach: JSON.stringify({ userId: user.id, taskId }),
+      });
+
+      await db.insert(payments).values({
+        userId: user.id,
+        taskId: String(taskId),
+        businessOrderNo,
+        paymentOrderNo: orderData.paymentOrderNo,
+        targetRole: targetRole || null,
+        amount: RESUME_UNLOCK_PRICE_CENTS,
+        status: orderData.status ?? 1,
+        statusName: orderData.statusName ?? "待支付",
+        qrCodeUrl: orderData.qrCodeUrl,
+      } as any);
+
+      return res.json({
+        businessOrderNo,
+        paymentOrderNo: orderData.paymentOrderNo,
+        qrCodeUrl: orderData.qrCodeUrl,
+        status: orderData.status,
+        statusName: orderData.statusName,
+        expiredAt: orderData.expiredAt,
+        amount: RESUME_UNLOCK_PRICE_CENTS,
+      });
+    } catch (err: any) {
+      console.error("Create payment order error:", err);
+      return res.status(502).json({ error: err.message || "创建支付订单失败，请稍后重试" });
+    }
+  });
+
+  // API Route: Poll payment status — actively queries the bank gateway and syncs local record
+  app.get("/api/payments/:businessOrderNo/status", async (req, res) => {
+    try {
+      const user = await getDbUserFromHeader(req.headers.authorization);
+      if (!user) return res.status(401).json({ error: "未登录" });
+
+      const { businessOrderNo } = req.params;
+      const rows = await db.select().from(payments).where(eq(payments.businessOrderNo, businessOrderNo)) as any[];
+      const order = rows.find((r: any) => r.userId === user.id);
+      if (!order) return res.status(404).json({ error: "订单不存在" });
+
+      // Terminal states never change; skip the bank round-trip.
+      if ([2, 3, 4, 5].includes(order.status)) {
+        return res.json({ status: order.status, statusName: order.statusName, paidAt: order.paidAt });
+      }
+
+      if (!order.paymentOrderNo) {
+        return res.json({ status: order.status, statusName: order.statusName });
+      }
+
+      try {
+        const live = await queryPaymentStatus(order.paymentOrderNo);
+        if (live.status !== order.status) {
+          await db.update(payments)
+            .set({
+              status: live.status,
+              statusName: live.statusName,
+              bankOrderNo: live.bankOrderNo || undefined,
+              thirdPartyOrderNo: live.thirdPartyOrderNo || undefined,
+              paidAt: live.paidAt ? new Date(live.paidAt) : undefined,
+              updatedAt: new Date(),
+            } as any)
+            .where(eq(payments.businessOrderNo, businessOrderNo));
+        }
+        return res.json({ status: live.status, statusName: live.statusName, paidAt: live.paidAt });
+      } catch (queryErr: any) {
+        console.error("Payment status query error:", queryErr);
+        // Bank query failed transiently — fall back to last known local status rather than lying about success.
+        return res.json({ status: order.status, statusName: order.statusName, queryError: true });
+      }
+    } catch (err: any) {
+      console.error("Payment status route error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // API Route: Async payment notify callback from the payment gateway
+  app.post("/api/payments/callback", async (req, res) => {
+    try {
+      const notify = req.body;
+      const businessOrderNo = notify?.businessOrderNo;
+      const status = notify?.status;
+      if (!businessOrderNo || status === undefined) {
+        console.warn("Payment callback missing fields:", notify);
+        return res.status(200).send(); // ack anyway per gateway contract; nothing to process
+      }
+
+      const rows = await db.select().from(payments).where(eq(payments.businessOrderNo, businessOrderNo)) as any[];
+      const order = rows[0];
+      if (!order) {
+        console.warn("Payment callback for unknown order:", businessOrderNo);
+        return res.status(200).send();
+      }
+
+      // Idempotency: only apply if this is actually a new terminal state.
+      if (order.status !== status) {
+        await db.update(payments)
+          .set({
+            status,
+            statusName: notify.statusName || order.statusName,
+            bankOrderNo: notify.bankOrderNo || undefined,
+            thirdPartyOrderNo: notify.thirdPartyOrderNo || undefined,
+            paidAt: notify.paidAt ? new Date(notify.paidAt) : undefined,
+            updatedAt: new Date(),
+          } as any)
+          .where(eq(payments.businessOrderNo, businessOrderNo));
+      }
+
+      return res.status(200).send();
+    } catch (err: any) {
+      console.error("Payment callback error:", err);
+      // Gateway does not retry regardless, but still return 200 so it doesn't log a spurious delivery failure loop.
+      return res.status(200).send();
     }
   });
 
