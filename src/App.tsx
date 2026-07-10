@@ -253,11 +253,9 @@ export default function App() {
     wechatPay: lang === 'zh' ? '微信支付 (WeChat Pay)' : 'WeChat Pay',
     alipay: lang === 'zh' ? '支付宝 (Alipay)' : 'Alipay',
     totalPrice: lang === 'zh' ? '实付金额：' : 'Total Paid:',
-    priceVal: lang === 'zh' ? '¥ 29.90' : '$ 29.90',
+    priceVal: lang === 'zh' ? '¥ 0.01' : '$ 0.01',
     scanQR: lang === 'zh' ? '扫码支付，立即解锁' : 'Scan QR Code to Unlock Now',
     connectingSecure: lang === 'zh' ? '正在为您连线安全支付网关...' : 'Connecting to secure billing gateway...',
-    sandboxBypassTitle: lang === 'zh' ? '模拟测试直通车 (跳过支付)' : 'Sandbox Bypass (Skip Payment)',
-    sandboxBypassDesc: lang === 'zh' ? '该按钮仅在沙箱测试中可见，点击即可立即模拟成功支付并渲染简历。' : 'Developer sandbox sandbox bypass. Click to simulate successful payment instantly.',
 
     // Finalize/Workspace Screen
     workspaceTitle: lang === 'zh' ? '高管特许求职工作台' : 'C-Level Resume Workspace',
@@ -4672,6 +4670,7 @@ Visuals & Integrity
                   <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{lang === 'zh' ? '早鸟限时优惠价' : 'LIMITED TIME OFFER'}</div>
                   <div>
                     {t.earlyBirdPrice}：<strong className="font-extrabold text-sm text-slate-900">{t.priceVal}</strong> ({t.originalPrice} {lang === 'zh' ? '¥49.0' : '$49.0'})
+                    <div className="text-[9px] text-amber-500 font-bold mt-1">测试价，仅供内部联调使用</div>
                   </div>
                 </div>
 

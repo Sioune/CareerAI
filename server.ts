@@ -419,7 +419,7 @@ async function startServer() {
   });
 
   // ─── Real payment endpoints (工商银行支付服务网关) ───────────────────────────
-  const RESUME_UNLOCK_PRICE_CENTS = 2990; // ¥29.90，与前端 priceVal 保持一致
+  const RESUME_UNLOCK_PRICE_CENTS = 1; // ¥0.01（测试价，与前端 priceVal 保持一致）— TODO: 测试完成后改回 2990
 
   function getPublicBaseUrl(req: express.Request): string {
     const domains = process.env.REPLIT_DOMAINS?.split(",").map((d) => d.trim()).filter(Boolean);
