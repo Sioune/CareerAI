@@ -138,7 +138,7 @@ const NAV: NavGroup[] = [
     { key: 'files', label: '文件管理', module: 'tasks', planned: true },
   ]},
   { label: '商业化', pages: [
-    { key: 'products', label: '商品与价格', module: 'products', planned: true },
+    { key: 'products', label: '商品与价格', module: 'products' },
     { key: 'orders', label: '订单与支付', module: 'payments' },
     { key: 'refunds', label: '退款', module: 'payments' },
     { key: 'referrals', label: '优惠 · 推荐', module: 'growth' },
@@ -810,9 +810,21 @@ function AuditTab() {
   );
 }
 
+function VersionStatusBadge({ status }: { status: string }) {
+  const map: Record<string, { label: string; cls: string }> = {
+    published: { label: '已发布', cls: 'bg-green-100 text-green-700' },
+    draft: { label: '草稿', cls: 'bg-amber-100 text-amber-700' },
+    pending: { label: '审批中', cls: 'bg-blue-100 text-blue-700' },
+    archived: { label: '已归档', cls: 'bg-slate-100 text-slate-500' },
+  };
+  const it = map[status] || { label: status, cls: 'bg-slate-100 text-slate-500' };
+  return <span className={`px-2 py-0.5 rounded-full text-xs ${it.cls}`}>{it.label}</span>;
+}
+
 function ConfigTab() {
   const [rows, setRows] = useState<any[]>([]);
   const [error, setError] = useState('');
+  const [msg, setMsg] = useState('');
   const [key, setKey] = useState('');
   const [value, setValue] = useState('');
 
@@ -822,6 +834,7 @@ function ConfigTab() {
   useEffect(() => { load(); }, [load]);
 
   const saveDraft = async () => {
+    setError(''); setMsg('');
     try {
       let parsed: any = value;
       try { parsed = JSON.parse(value); } catch { /* keep as string */ }
@@ -831,15 +844,24 @@ function ConfigTab() {
     } catch (e: any) { setError(e.message); }
   };
 
-  const publish = async (id: number) => {
-    try { await apiFetch(`/api/admin/config/${id}/publish`, { method: 'POST' }); load(); }
+  const submitPublish = async (id: number) => {
+    setError(''); setMsg('');
+    try { const d = await apiFetch(`/api/admin/config/${id}/publish`, { method: 'POST' }); setMsg(d.message || '已提交发布审批'); load(); }
+    catch (e: any) { setError(e.message); }
+  };
+  const rollback = async (id: number) => {
+    setError(''); setMsg('');
+    if (!confirm('确认回滚到该历史版本？将立即生效并归档当前已发布版本。')) return;
+    try { const d = await apiFetch(`/api/admin/config/${id}/rollback`, { method: 'POST' }); setMsg(d.message || '已回滚'); load(); }
     catch (e: any) { setError(e.message); }
   };
 
   return (
     <div>
-      <h2 className="text-lg font-bold text-slate-900 mb-4">站点配置 / CMS（版本化 + 发布回滚）</h2>
+      <h2 className="text-lg font-bold text-slate-900 mb-1">站点配置 / CMS（版本化 + 发布审批 + 回滚）</h2>
+      <p className="text-xs text-slate-400 mb-3">发布需经审批中心复核（Maker-Checker）；回滚可即时恢复历史已发布版本。</p>
       {error && <p className="text-red-600 text-sm mb-2">{error}</p>}
+      {msg && <p className="text-emerald-600 text-sm mb-2">{msg}</p>}
       <div className="bg-white rounded-xl border border-slate-200 p-4 mb-4 flex gap-2 items-end">
         <div className="flex-1">
           <label className="block text-xs text-slate-500 mb-1">配置键 (key)</label>
@@ -868,15 +890,13 @@ function ConfigTab() {
               <tr key={c.id} className="border-t border-slate-100">
                 <td className="px-3 py-2 font-medium">{c.key}</td>
                 <td className="px-3 py-2">v{c.version}</td>
-                <td className="px-3 py-2">
-                  <span className={`px-2 py-0.5 rounded-full text-xs ${c.status === 'published' ? 'bg-green-100 text-green-700' : c.status === 'draft' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>
-                    {c.status === 'published' ? '已发布' : c.status === 'draft' ? '草稿' : '已归档'}
-                  </span>
-                </td>
+                <td className="px-3 py-2"><VersionStatusBadge status={c.status} /></td>
                 <td className="px-3 py-2 text-slate-500 max-w-xs truncate font-mono text-xs">{c.value}</td>
                 <td className="px-3 py-2 text-slate-500">{c.editedByAdmin}</td>
-                <td className="px-3 py-2">
-                  {c.status !== 'published' && <button onClick={() => publish(c.id)} className="text-blue-600 hover:underline text-xs">发布</button>}
+                <td className="px-3 py-2 whitespace-nowrap">
+                  {c.status === 'draft' && <button onClick={() => submitPublish(c.id)} className="text-blue-600 hover:underline text-xs">提交发布审批</button>}
+                  {c.status === 'pending' && <span className="text-blue-500 text-xs">审批中</span>}
+                  {c.status === 'archived' && <button onClick={() => rollback(c.id)} className="text-amber-600 hover:underline text-xs">回滚到此版本</button>}
                 </td>
               </tr>
             ))}
@@ -893,6 +913,7 @@ function AiTab() {
   const [models, setModels] = useState<any[]>([]);
   const [prompts, setPrompts] = useState<any[]>([]);
   const [error, setError] = useState('');
+  const [msg, setMsg] = useState('');
   const [promptOp, setPromptOp] = useState('');
   const [promptContent, setPromptContent] = useState('');
 
@@ -915,14 +936,22 @@ function AiTab() {
     catch (e: any) { setError(e.message); }
   };
   const saveDraftPrompt = async () => {
+    setError(''); setMsg('');
     try {
       await apiFetch('/api/admin/ai/prompts', { method: 'POST', body: JSON.stringify({ operation: promptOp, content: promptContent }) });
       setPromptOp(''); setPromptContent('');
       load();
     } catch (e: any) { setError(e.message); }
   };
-  const publishPrompt = async (id: number) => {
-    try { await apiFetch(`/api/admin/ai/prompts/${id}/publish`, { method: 'POST' }); load(); }
+  const submitPublishPrompt = async (id: number) => {
+    setError(''); setMsg('');
+    try { const d = await apiFetch(`/api/admin/ai/prompts/${id}/publish`, { method: 'POST' }); setMsg(d.message || '已提交发布审批'); load(); }
+    catch (e: any) { setError(e.message); }
+  };
+  const rollbackPrompt = async (id: number) => {
+    setError(''); setMsg('');
+    if (!confirm('确认回滚到该历史提示词版本？将立即生效并归档当前已发布版本。')) return;
+    try { const d = await apiFetch(`/api/admin/ai/prompts/${id}/rollback`, { method: 'POST' }); setMsg(d.message || '已回滚'); load(); }
     catch (e: any) { setError(e.message); }
   };
 
@@ -930,6 +959,7 @@ function AiTab() {
     <div className="space-y-6">
       <h2 className="text-lg font-bold text-slate-900">AI 模型 / 提示词管理</h2>
       {error && <p className="text-red-600 text-sm">{error}</p>}
+      {msg && <p className="text-emerald-600 text-sm">{msg}</p>}
 
       <div>
         <h3 className="font-semibold text-sm mb-2">供应商 ({providers.length})</h3>
@@ -997,13 +1027,13 @@ function AiTab() {
                 <tr key={p.id} className="border-t border-slate-100">
                   <td className="px-3 py-2 font-medium">{p.operation}</td>
                   <td className="px-3 py-2">v{p.version}</td>
-                  <td className="px-3 py-2">
-                    <span className={`px-2 py-0.5 rounded-full text-xs ${p.status === 'published' ? 'bg-green-100 text-green-700' : p.status === 'draft' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>
-                      {p.status === 'published' ? '已发布' : p.status === 'draft' ? '草稿' : '已归档'}
-                    </span>
-                  </td>
+                  <td className="px-3 py-2"><VersionStatusBadge status={p.status} /></td>
                   <td className="px-3 py-2 text-slate-500 max-w-xs truncate text-xs">{p.content}</td>
-                  <td className="px-3 py-2">{p.status !== 'published' && <button onClick={() => publishPrompt(p.id)} className="text-blue-600 hover:underline text-xs">发布</button>}</td>
+                  <td className="px-3 py-2 whitespace-nowrap">
+                    {p.status === 'draft' && <button onClick={() => submitPublishPrompt(p.id)} className="text-blue-600 hover:underline text-xs">提交发布审批</button>}
+                    {p.status === 'pending' && <span className="text-blue-500 text-xs">审批中</span>}
+                    {p.status === 'archived' && <button onClick={() => rollbackPrompt(p.id)} className="text-amber-600 hover:underline text-xs">回滚到此版本</button>}
+                  </td>
                 </tr>
               ))}
               {prompts.length === 0 && <tr><td colSpan={5} className="text-center text-slate-400 py-4">暂无提示词版本</td></tr>}
@@ -1495,6 +1525,142 @@ function ApprovalsTab({ adminUsername, adminRole }: { adminUsername: string; adm
   );
 }
 
+function ProductsTab() {
+  const [tree, setTree] = useState<any[]>([]);
+  const [error, setError] = useState('');
+  const [msg, setMsg] = useState('');
+  // new product
+  const [pCode, setPCode] = useState('');
+  const [pName, setPName] = useState('');
+  const [pDesc, setPDesc] = useState('');
+  // new sku
+  const [skuProductId, setSkuProductId] = useState<number | ''>('');
+  const [sCode, setSCode] = useState('');
+  const [sName, setSName] = useState('');
+  const [sRole, setSRole] = useState('');
+  // new price
+  const [priceSkuId, setPriceSkuId] = useState<number | ''>('');
+  const [priceYuan, setPriceYuan] = useState('');
+  const [priceEffective, setPriceEffective] = useState('');
+
+  const load = useCallback(() => {
+    apiFetch('/api/admin/products').then((d) => setTree(d.products || [])).catch((e) => setError(e.message));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const allSkus = tree.flatMap((p: any) => (p.skus || []).map((s: any) => ({ ...s, productName: p.name })));
+
+  const wrap = async (fn: () => Promise<any>) => {
+    setError(''); setMsg('');
+    try { const d = await fn(); if (d?.message) setMsg(d.message); load(); return d; }
+    catch (e: any) { setError(e.message); }
+  };
+
+  const createProduct = () => wrap(async () => {
+    const d = await apiFetch('/api/admin/products', { method: 'POST', body: JSON.stringify({ code: pCode, name: pName, description: pDesc }) });
+    setPCode(''); setPName(''); setPDesc(''); return d;
+  });
+  const createSku = () => wrap(async () => {
+    const d = await apiFetch('/api/admin/skus', { method: 'POST', body: JSON.stringify({ productId: skuProductId, code: sCode, name: sName, targetRole: sRole }) });
+    setSCode(''); setSName(''); setSRole(''); return d;
+  });
+  const createPrice = () => wrap(async () => {
+    const cents = Math.round(parseFloat(priceYuan) * 100);
+    if (!Number.isFinite(cents) || cents < 0) throw new Error('请输入有效的价格（元）');
+    const d = await apiFetch('/api/admin/prices', { method: 'POST', body: JSON.stringify({ skuId: priceSkuId, amount: cents, effectiveAt: priceEffective || undefined }) });
+    setPriceYuan(''); setPriceEffective(''); return d;
+  });
+  const submitPrice = (id: number) => wrap(() => apiFetch(`/api/admin/prices/${id}/publish`, { method: 'POST' }));
+  const rollbackPrice = (id: number) => {
+    if (!confirm('确认回滚到该历史价格版本？将立即生效并归档当前已发布版本。')) return;
+    return wrap(() => apiFetch(`/api/admin/prices/${id}/rollback`, { method: 'POST' }));
+  };
+
+  return (
+    <div className="space-y-6">
+      <h2 className="text-lg font-bold text-slate-900 mb-1">商品与价格（版本化 + 发布审批 + 回滚）</h2>
+      <p className="text-xs text-slate-400">商品 → 规格(SKU) → 价格版本。价格发布须经审批中心复核（Maker-Checker）；下单时会记录当时生效价格快照。</p>
+      {error && <p className="text-red-600 text-sm">{error}</p>}
+      {msg && <p className="text-emerald-600 text-sm">{msg}</p>}
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+        <div className="bg-white rounded-xl border border-slate-200 p-4">
+          <h3 className="font-semibold text-sm mb-2">新建商品</h3>
+          <input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm mb-2" value={pCode} onChange={(e) => setPCode(e.target.value)} placeholder="商品编码 code" />
+          <input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm mb-2" value={pName} onChange={(e) => setPName(e.target.value)} placeholder="商品名称" />
+          <input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm mb-2" value={pDesc} onChange={(e) => setPDesc(e.target.value)} placeholder="描述（可选）" />
+          <button onClick={createProduct} disabled={!pCode || !pName} className="w-full bg-slate-900 text-white px-4 py-1.5 rounded-lg text-sm disabled:opacity-50">创建商品</button>
+        </div>
+        <div className="bg-white rounded-xl border border-slate-200 p-4">
+          <h3 className="font-semibold text-sm mb-2">新建规格 (SKU)</h3>
+          <select className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm mb-2" value={skuProductId} onChange={(e) => setSkuProductId(e.target.value ? Number(e.target.value) : '')}>
+            <option value="">选择所属商品…</option>
+            {tree.map((p: any) => <option key={p.id} value={p.id}>{p.name} ({p.code})</option>)}
+          </select>
+          <input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm mb-2" value={sCode} onChange={(e) => setSCode(e.target.value)} placeholder="SKU 编码 code" />
+          <input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm mb-2" value={sName} onChange={(e) => setSName(e.target.value)} placeholder="SKU 名称" />
+          <input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm mb-2" value={sRole} onChange={(e) => setSRole(e.target.value)} placeholder="目标岗位 targetRole（用于下单价格快照匹配，可选）" />
+          <button onClick={createSku} disabled={!skuProductId || !sCode || !sName} className="w-full bg-slate-900 text-white px-4 py-1.5 rounded-lg text-sm disabled:opacity-50">创建 SKU</button>
+        </div>
+        <div className="bg-white rounded-xl border border-slate-200 p-4">
+          <h3 className="font-semibold text-sm mb-2">新建价格版本（草稿）</h3>
+          <select className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm mb-2" value={priceSkuId} onChange={(e) => setPriceSkuId(e.target.value ? Number(e.target.value) : '')}>
+            <option value="">选择 SKU…</option>
+            {allSkus.map((s: any) => <option key={s.id} value={s.id}>{s.productName} / {s.name} ({s.code})</option>)}
+          </select>
+          <input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm mb-2" value={priceYuan} onChange={(e) => setPriceYuan(e.target.value)} placeholder="价格（元），如 29.90" inputMode="decimal" />
+          <label className="block text-xs text-slate-500 mb-1">生效时间（可选）</label>
+          <input type="datetime-local" className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm mb-2" value={priceEffective} onChange={(e) => setPriceEffective(e.target.value)} />
+          <button onClick={createPrice} disabled={!priceSkuId || !priceYuan} className="w-full bg-slate-900 text-white px-4 py-1.5 rounded-lg text-sm disabled:opacity-50">保存价格草稿</button>
+        </div>
+      </div>
+
+      {tree.length === 0 && <div className="bg-white rounded-xl border border-dashed border-slate-300 p-10 text-center text-slate-400 text-sm">暂无商品，请先创建商品与 SKU。</div>}
+
+      {tree.map((p: any) => (
+        <div key={p.id} className="bg-white rounded-xl border border-slate-200 p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="font-semibold text-slate-900">{p.name}</span>
+            <span className="text-xs text-slate-400 font-mono">{p.code}</span>
+            {p.description && <span className="text-xs text-slate-400">— {p.description}</span>}
+          </div>
+          {(p.skus || []).length === 0 && <p className="text-xs text-slate-400">该商品暂无 SKU。</p>}
+          {(p.skus || []).map((s: any) => (
+            <div key={s.id} className="mb-4 last:mb-0">
+              <div className="text-sm font-medium text-slate-700 mb-1">
+                {s.name} <span className="text-xs text-slate-400 font-mono">{s.code}</span>
+                {s.targetRole && <span className="ml-2 text-xs text-slate-500">目标岗位：{s.targetRole}</span>}
+              </div>
+              <table className="w-full text-sm border border-slate-100 rounded-lg overflow-hidden">
+                <thead className="bg-slate-50 text-slate-600 text-xs">
+                  <tr><th className="text-left px-3 py-1.5">版本</th><th className="text-left px-3 py-1.5">价格</th><th className="text-left px-3 py-1.5">状态</th><th className="text-left px-3 py-1.5">生效时间</th><th className="text-left px-3 py-1.5">编辑者</th><th className="text-left px-3 py-1.5"></th></tr>
+                </thead>
+                <tbody>
+                  {(s.prices || []).map((pv: any) => (
+                    <tr key={pv.id} className="border-t border-slate-100">
+                      <td className="px-3 py-1.5">v{pv.version}</td>
+                      <td className="px-3 py-1.5 font-medium">{fmtMoney(pv.amount)} {pv.currency}</td>
+                      <td className="px-3 py-1.5"><VersionStatusBadge status={pv.status} /></td>
+                      <td className="px-3 py-1.5 text-slate-500 text-xs">{pv.effectiveAt ? fmtDate(pv.effectiveAt) : '-'}</td>
+                      <td className="px-3 py-1.5 text-slate-500 text-xs">{pv.editedByAdmin || '-'}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap">
+                        {pv.status === 'draft' && <button onClick={() => submitPrice(pv.id)} className="text-blue-600 hover:underline text-xs">提交发布审批</button>}
+                        {pv.status === 'pending' && <span className="text-blue-500 text-xs">审批中</span>}
+                        {pv.status === 'archived' && <button onClick={() => rollbackPrice(pv.id)} className="text-amber-600 hover:underline text-xs">回滚到此版本</button>}
+                      </td>
+                    </tr>
+                  ))}
+                  {(s.prices || []).length === 0 && <tr><td colSpan={6} className="text-center text-slate-400 py-3 text-xs">暂无价格版本</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function PlannedTab({ title }: { title: string }) {
   return (
     <div>
@@ -1569,7 +1735,7 @@ export default function AdminApp() {
         {page === 'qc' && <PlannedTab title="质量抽检" />}
         {page === 'failures' && <PlannedTab title="失败队列" />}
         {page === 'files' && <PlannedTab title="文件管理" />}
-        {page === 'products' && <PlannedTab title="商品与价格" />}
+        {page === 'products' && <ProductsTab />}
         {page === 'allocation' && <PlannedTab title="收入分配" />}
         {page === 'reconcile' && <PlannedTab title="对账 · 结算报表" />}
         {page === 'seo' && <PlannedTab title="SEO" />}

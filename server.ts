@@ -61,7 +61,7 @@ import { db, eq, and } from "./src/db/index.ts";
 import {
   users, resumeVersions, rewriteSuggestions, clarificationQuestions, userFeedbacks, eventLogs, payments, admins, refunds, auditLogs, costEvents,
   adminMfa, siteConfigs, aiProviders, aiModels, promptVersions, supportTickets, ticketReplies, notifications, riskFlags, revenueAllocations,
-  approvals,
+  approvals, products, skus, priceVersions,
 } from "./src/db/schema.ts";
 import { createPaymentOrder, queryPaymentStatus, createRefund, isPaymentConfigured } from "./src/lib/payment-client.ts";
 import { hasPermission, ROLES as ADMIN_ROLE_LIST, type PermModule } from "./src/shared/permissions.ts";
@@ -581,6 +581,23 @@ async function startServer() {
         attach: JSON.stringify({ userId: user.id, taskId }),
       });
 
+      // PRD §7 下单价格快照：记录当时生效的价格版本（若已配置）。仅作快照，不改变实际扣款金额。
+      let priceVersionId: number | null = null;
+      let priceSnapshot: number | null = null;
+      try {
+        if (targetRole) {
+          const matchedSkus = (await db.select().from(skus).where(eq(skus.targetRole, targetRole))) as any[];
+          const activeSku = matchedSkus.find((s) => s.status === "active");
+          if (activeSku) {
+            const pvs = (await db.select().from(priceVersions).where(eq(priceVersions.skuId, activeSku.id))) as any[];
+            const published = pvs.filter((v) => v.status === "published").sort((a, b) => b.version - a.version)[0];
+            if (published) { priceVersionId = published.id; priceSnapshot = published.amount; }
+          }
+        }
+      } catch (snapErr: any) {
+        console.warn("[payments] price snapshot lookup failed (non-fatal):", snapErr.message);
+      }
+
       await db.insert(payments).values({
         userId: user.id,
         taskId: String(taskId),
@@ -588,6 +605,8 @@ async function startServer() {
         paymentOrderNo: orderData.paymentOrderNo,
         targetRole: targetRole || null,
         amount: RESUME_UNLOCK_PRICE_CENTS,
+        priceVersionId,
+        priceSnapshot,
         status: orderData.status ?? 1,
         statusName: orderData.statusName ?? "待支付",
         qrCodeUrl: orderData.qrCodeUrl,
@@ -3510,6 +3529,98 @@ ${originalText}
   });
 
   // ===================== 审批中心 (PRD §12.6 Maker-Checker 统一入口) =====================
+  // ─── Phase 2A 发布审批闭环 helpers ──────────────────────────────────────────
+  // 真正执行"发布"：归档同组当前已发布版本，把目标版本置为 published。回滚复用同一逻辑。
+  async function publishConfigVersion(id: number, adminUsername: string): Promise<{ ok: boolean; error?: string; entity?: any }> {
+    const rows = await db.select().from(siteConfigs).where(eq(siteConfigs.id, id)) as any[];
+    const cfg = rows[0];
+    if (!cfg) return { ok: false, error: "配置不存在" };
+    const siblings = await db.select().from(siteConfigs).where(eq(siteConfigs.key, cfg.key)) as any[];
+    for (const s of siblings) {
+      if (s.status === "published" && s.id !== cfg.id) {
+        await db.update(siteConfigs).set({ status: "archived", updatedAt: new Date() } as any).where(eq(siteConfigs.id, s.id));
+      }
+    }
+    await db.update(siteConfigs).set({ status: "published", publishedByAdmin: adminUsername, publishedAt: new Date(), updatedAt: new Date() } as any).where(eq(siteConfigs.id, cfg.id));
+    return { ok: true, entity: cfg };
+  }
+  async function publishPromptVersion(id: number, adminUsername: string): Promise<{ ok: boolean; error?: string; entity?: any }> {
+    const rows = await db.select().from(promptVersions).where(eq(promptVersions.id, id)) as any[];
+    const prompt = rows[0];
+    if (!prompt) return { ok: false, error: "提示词版本不存在" };
+    const siblings = await db.select().from(promptVersions).where(eq(promptVersions.operation, prompt.operation)) as any[];
+    for (const s of siblings) {
+      if (s.status === "published" && s.id !== prompt.id) {
+        await db.update(promptVersions).set({ status: "archived" } as any).where(eq(promptVersions.id, s.id));
+      }
+    }
+    await db.update(promptVersions).set({ status: "published", publishedByAdmin: adminUsername, publishedAt: new Date() } as any).where(eq(promptVersions.id, prompt.id));
+    return { ok: true, entity: prompt };
+  }
+  async function publishPriceVersion(id: number, adminUsername: string): Promise<{ ok: boolean; error?: string; entity?: any }> {
+    const rows = await db.select().from(priceVersions).where(eq(priceVersions.id, id)) as any[];
+    const pv = rows[0];
+    if (!pv) return { ok: false, error: "价格版本不存在" };
+    const siblings = await db.select().from(priceVersions).where(eq(priceVersions.skuId, pv.skuId)) as any[];
+    for (const s of siblings) {
+      if (s.status === "published" && s.id !== pv.id) {
+        await db.update(priceVersions).set({ status: "archived", updatedAt: new Date() } as any).where(eq(priceVersions.id, s.id));
+      }
+    }
+    await db.update(priceVersions).set({ status: "published", publishedByAdmin: adminUsername, publishedAt: new Date(), updatedAt: new Date() } as any).where(eq(priceVersions.id, pv.id));
+    return { ok: true, entity: pv };
+  }
+
+  const PUBLISH_TARGET_TABLE: Record<string, any> = {
+    config_publish: siteConfigs,
+    prompt_publish: promptVersions,
+    price_publish: priceVersions,
+  };
+  // 审批通过后执行对应发布；返回 null 表示该类型不在发布闭环内。
+  async function executePublishApproval(type: string, targetId: number, adminUsername: string) {
+    if (type === "config_publish") return publishConfigVersion(targetId, adminUsername);
+    if (type === "prompt_publish") return publishPromptVersion(targetId, adminUsername);
+    if (type === "price_publish") return publishPriceVersion(targetId, adminUsername);
+    return null;
+  }
+  // 审批被拒后把目标版本从 pending 退回 draft（不影响历史已发布版本）。
+  async function revertPendingToDraft(type: string, targetId: number) {
+    const table = PUBLISH_TARGET_TABLE[type];
+    if (!table) return;
+    const rows = await db.select().from(table).where(eq(table.id, targetId)) as any[];
+    if (rows[0]?.status === "pending") {
+      await db.update(table).set({ status: "draft" } as any).where(eq(table.id, targetId));
+    }
+  }
+  // 提交发布审批：草稿置 pending + 创建 PENDING 审批单（防重复）。
+  async function submitPublishApproval(opts: {
+    type: "config_publish" | "prompt_publish" | "price_publish";
+    targetType: string;
+    table: any;
+    entity: any;
+    requestedByAdmin: string;
+    payload?: any;
+    amount?: number | null;
+    reason?: string | null;
+  }): Promise<{ ok: boolean; error?: string; approval?: any }> {
+    if (opts.entity.status !== "draft") return { ok: false, error: "仅草稿状态可提交发布审批" };
+    const all = await db.select().from(approvals) as any[];
+    const dup = all.find((a) => a.status === "PENDING" && a.type === opts.type && String(a.targetId) === String(opts.entity.id));
+    if (dup) return { ok: false, error: "该版本已在审批中，请勿重复提交" };
+    await db.update(opts.table).set({ status: "pending" } as any).where(eq(opts.table.id, opts.entity.id));
+    const inserted = await db.insert(approvals).values({
+      type: opts.type,
+      targetType: opts.targetType,
+      targetId: String(opts.entity.id),
+      payload: opts.payload ? JSON.stringify(opts.payload) : null,
+      amount: opts.amount ?? null,
+      status: "PENDING",
+      reason: opts.reason ?? null,
+      requestedByAdmin: opts.requestedByAdmin,
+    } as any) as any[];
+    return { ok: true, approval: inserted[0] };
+  }
+
   app.get("/api/admin/approvals", requireAdmin, requirePermission("approvals", "read"), async (req: any, res) => {
     try {
       const all = await db.select().from(approvals) as any[];
@@ -3544,14 +3655,19 @@ ${originalText}
         return res.status(result.code).json(result.body);
       }
 
-      // 其它类型：Phase 1 暂为记录型审批（价格/配置/提示词发布等落地在 Phase 2）
+      // 发布类审批（配置/提示词/价格）：通过即真正发布，归档旧版本。
+      const publishResult = await executePublishApproval(ap.type, Number(ap.targetId), req.admin.username);
+      if (publishResult && !publishResult.ok) {
+        return res.status(400).json({ error: publishResult.error });
+      }
+
       await db.update(approvals).set({
         status: "APPROVED",
         approvedByAdmin: req.admin.username,
         decisionReason: req.body?.reason?.trim() || null,
         updatedAt: new Date(),
       } as any).where(eq(approvals.id, ap.id));
-      await logAudit(req.admin, "approval_approved", "approval", String(ap.id), { type: ap.type });
+      await logAudit(req.admin, "approval_approved", "approval", String(ap.id), { type: ap.type, targetId: ap.targetId });
       return res.json({ success: true });
     } catch (err: any) {
       console.error("Approval approve error:", err);
@@ -3574,6 +3690,9 @@ ${originalText}
         const result = await rejectRefundById(Number(ap.targetId), req.admin, req.body?.reason);
         return res.status(result.code).json(result.body);
       }
+
+      // 发布类审批被拒：目标版本从 pending 退回 draft，历史已发布版本不受影响。
+      await revertPendingToDraft(ap.type, Number(ap.targetId));
 
       await db.update(approvals).set({
         status: "REJECTED",
@@ -3843,21 +3962,36 @@ ${originalText}
     }
   });
 
+  // 提交发布审批（不再直接发布）：草稿 → pending + 创建 config_publish 审批单
   app.post("/api/admin/config/:id/publish", requireAdmin, requirePermission("site", "write"), async (req: any, res) => {
     try {
       const { id } = req.params;
       const rows = await db.select().from(siteConfigs).where(eq(siteConfigs.id, Number(id))) as any[];
       const cfg = rows[0];
       if (!cfg) return res.status(404).json({ error: "配置不存在" });
-      const siblings = (await db.select().from(siteConfigs).where(eq(siteConfigs.key, cfg.key))) as any[];
-      for (const s of siblings) {
-        if (s.status === "published" && s.id !== cfg.id) {
-          await db.update(siteConfigs).set({ status: "archived", updatedAt: new Date() } as any).where(eq(siteConfigs.id, s.id));
-        }
-      }
-      await db.update(siteConfigs).set({ status: "published", publishedByAdmin: req.admin.username, publishedAt: new Date(), updatedAt: new Date() } as any).where(eq(siteConfigs.id, cfg.id));
-      await logAudit(req.admin, "config_published", "site_config", cfg.key, { version: cfg.version });
-      return res.json({ success: true });
+      const result = await submitPublishApproval({
+        type: "config_publish", targetType: "site_config", table: siteConfigs, entity: cfg,
+        requestedByAdmin: req.admin.username, reason: req.body?.reason?.trim() || null,
+        payload: { key: cfg.key, version: cfg.version },
+      });
+      if (!result.ok) return res.status(400).json({ error: result.error });
+      await logAudit(req.admin, "config_publish_submitted", "site_config", cfg.key, { version: cfg.version, approvalId: result.approval.id });
+      return res.json({ success: true, approvalId: result.approval.id, message: "已提交发布审批，待复核人通过后生效" });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 回滚到某个历史版本（即时生效，需 site:write + 审计）：把该版本重新置为 published，归档当前已发布版本
+  app.post("/api/admin/config/:id/rollback", requireAdmin, requirePermission("site", "write"), async (req: any, res) => {
+    try {
+      const existing = await db.select().from(siteConfigs).where(eq(siteConfigs.id, Number(req.params.id))) as any[];
+      if (!existing[0]) return res.status(404).json({ error: "配置不存在" });
+      if (existing[0].status !== "archived") return res.status(400).json({ error: "仅已归档版本可回滚；发布新版本请提交发布审批" });
+      const result = await publishConfigVersion(Number(req.params.id), req.admin.username);
+      if (!result.ok) return res.status(404).json({ error: result.error });
+      await logAudit(req.admin, "config_rollback", "site_config", result.entity.key, { version: result.entity.version });
+      return res.json({ success: true, message: `已回滚到 ${result.entity.key} v${result.entity.version}` });
     } catch (err: any) {
       return res.status(500).json({ error: err.message });
     }
@@ -3983,21 +4117,154 @@ ${originalText}
     }
   });
 
+  // 提交发布审批（不再直接发布）：草稿 → pending + 创建 prompt_publish 审批单
   app.post("/api/admin/ai/prompts/:id/publish", requireAdmin, requirePermission("ai", "write"), async (req: any, res) => {
     try {
       const { id } = req.params;
       const rows = await db.select().from(promptVersions).where(eq(promptVersions.id, Number(id))) as any[];
       const prompt = rows[0];
       if (!prompt) return res.status(404).json({ error: "提示词版本不存在" });
-      const siblings = await db.select().from(promptVersions).where(eq(promptVersions.operation, prompt.operation)) as any[];
-      for (const s of siblings) {
-        if (s.status === "published" && s.id !== prompt.id) {
-          await db.update(promptVersions).set({ status: "archived" } as any).where(eq(promptVersions.id, s.id));
-        }
-      }
-      await db.update(promptVersions).set({ status: "published", publishedByAdmin: req.admin.username, publishedAt: new Date() } as any).where(eq(promptVersions.id, prompt.id));
-      await logAudit(req.admin, "prompt_published", "prompt", prompt.operation, { version: prompt.version });
-      return res.json({ success: true });
+      const result = await submitPublishApproval({
+        type: "prompt_publish", targetType: "prompt", table: promptVersions, entity: prompt,
+        requestedByAdmin: req.admin.username, reason: req.body?.reason?.trim() || null,
+        payload: { operation: prompt.operation, version: prompt.version },
+      });
+      if (!result.ok) return res.status(400).json({ error: result.error });
+      await logAudit(req.admin, "prompt_publish_submitted", "prompt", prompt.operation, { version: prompt.version, approvalId: result.approval.id });
+      return res.json({ success: true, approvalId: result.approval.id, message: "已提交发布审批，待复核人通过后生效" });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 回滚到某个历史提示词版本（即时生效，需 ai:write + 审计）
+  app.post("/api/admin/ai/prompts/:id/rollback", requireAdmin, requirePermission("ai", "write"), async (req: any, res) => {
+    try {
+      const existing = await db.select().from(promptVersions).where(eq(promptVersions.id, Number(req.params.id))) as any[];
+      if (!existing[0]) return res.status(404).json({ error: "提示词版本不存在" });
+      if (existing[0].status !== "archived") return res.status(400).json({ error: "仅已归档版本可回滚；发布新版本请提交发布审批" });
+      const result = await publishPromptVersion(Number(req.params.id), req.admin.username);
+      if (!result.ok) return res.status(404).json({ error: result.error });
+      await logAudit(req.admin, "prompt_rollback", "prompt", result.entity.operation, { version: result.entity.version });
+      return res.json({ success: true, message: `已回滚到 ${result.entity.operation} v${result.entity.version}` });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ===================== 商品与价格 (PRD §7 · 价格版本走发布审批闭环) =====================
+  // 返回商品 → 规格 → 价格版本的嵌套结构，便于后台一屏展示。
+  app.get("/api/admin/products", requireAdmin, requirePermission("products", "read"), async (_req, res) => {
+    try {
+      const [prods, allSkus, allPrices] = await Promise.all([
+        db.select().from(products) as Promise<any[]>,
+        db.select().from(skus) as Promise<any[]>,
+        db.select().from(priceVersions) as Promise<any[]>,
+      ]);
+      const tree = prods
+        .sort((a, b) => a.id - b.id)
+        .map((p) => ({
+          ...p,
+          skus: allSkus
+            .filter((s) => s.productId === p.id)
+            .sort((a, b) => a.id - b.id)
+            .map((s) => ({
+              ...s,
+              prices: allPrices
+                .filter((pv) => pv.skuId === s.id)
+                .sort((a, b) => b.version - a.version),
+            })),
+        }));
+      return res.json({ products: tree });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/admin/products", requireAdmin, requirePermission("products", "write"), async (req: any, res) => {
+    try {
+      const { code, name, description } = req.body;
+      if (!code?.trim() || !name?.trim()) return res.status(400).json({ error: "code 和 name 不能为空" });
+      const inserted = await db.insert(products).values({
+        code: code.trim(), name: name.trim(), description: description?.trim() || null,
+        status: "active", createdByAdmin: req.admin.username,
+      } as any) as any[];
+      await logAudit(req.admin, "product_created", "product", code.trim(), { name: name.trim() });
+      return res.json({ success: true, product: inserted[0] });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/admin/skus", requireAdmin, requirePermission("products", "write"), async (req: any, res) => {
+    try {
+      const { productId, code, name, targetRole } = req.body;
+      if (!productId || !code?.trim() || !name?.trim()) return res.status(400).json({ error: "productId、code、name 不能为空" });
+      const parent = await db.select().from(products).where(eq(products.id, Number(productId))) as any[];
+      if (!parent[0]) return res.status(404).json({ error: "所属商品不存在" });
+      const inserted = await db.insert(skus).values({
+        productId: Number(productId), code: code.trim(), name: name.trim(),
+        targetRole: targetRole?.trim() || null, status: "active", createdByAdmin: req.admin.username,
+      } as any) as any[];
+      await logAudit(req.admin, "sku_created", "sku", code.trim(), { productId: Number(productId), targetRole: targetRole?.trim() || null });
+      return res.json({ success: true, sku: inserted[0] });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 新建价格版本（草稿）。同一 SKU 版本号自增。
+  app.post("/api/admin/prices", requireAdmin, requirePermission("products", "write"), async (req: any, res) => {
+    try {
+      const { skuId, amount, currency, effectiveAt } = req.body;
+      if (!skuId || amount === undefined || amount === null) return res.status(400).json({ error: "skuId 和 amount 不能为空" });
+      const amt = Number(amount);
+      if (!Number.isInteger(amt) || amt < 0) return res.status(400).json({ error: "amount 必须为非负整数（单位：分）" });
+      const parent = await db.select().from(skus).where(eq(skus.id, Number(skuId))) as any[];
+      if (!parent[0]) return res.status(404).json({ error: "所属规格(SKU)不存在" });
+      const existing = await db.select().from(priceVersions).where(eq(priceVersions.skuId, Number(skuId))) as any[];
+      const nextVersion = existing.length ? Math.max(...existing.map((v: any) => v.version)) + 1 : 1;
+      const inserted = await db.insert(priceVersions).values({
+        skuId: Number(skuId), version: nextVersion, status: "draft", amount: amt,
+        currency: (currency?.trim() || "CNY"), effectiveAt: effectiveAt ? new Date(effectiveAt) : null,
+        editedByAdmin: req.admin.username,
+      } as any) as any[];
+      await logAudit(req.admin, "price_draft_saved", "price_version", String(inserted[0]?.id), { skuId: Number(skuId), amount: amt, version: nextVersion });
+      return res.json({ success: true, price: inserted[0] });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 提交价格发布审批（不再直接发布）：草稿 → pending + 创建 price_publish 审批单
+  app.post("/api/admin/prices/:id/publish", requireAdmin, requirePermission("products", "write"), async (req: any, res) => {
+    try {
+      const rows = await db.select().from(priceVersions).where(eq(priceVersions.id, Number(req.params.id))) as any[];
+      const pv = rows[0];
+      if (!pv) return res.status(404).json({ error: "价格版本不存在" });
+      const result = await submitPublishApproval({
+        type: "price_publish", targetType: "price_version", table: priceVersions, entity: pv,
+        requestedByAdmin: req.admin.username, reason: req.body?.reason?.trim() || null,
+        amount: pv.amount, payload: { skuId: pv.skuId, amount: pv.amount, version: pv.version },
+      });
+      if (!result.ok) return res.status(400).json({ error: result.error });
+      await logAudit(req.admin, "price_publish_submitted", "price_version", String(pv.id), { skuId: pv.skuId, amount: pv.amount, version: pv.version, approvalId: result.approval.id });
+      return res.json({ success: true, approvalId: result.approval.id, message: "已提交价格发布审批，待复核人通过后生效" });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 回滚到某个历史价格版本（即时生效，需 products:write + 审计）
+  app.post("/api/admin/prices/:id/rollback", requireAdmin, requirePermission("products", "write"), async (req: any, res) => {
+    try {
+      const existing = await db.select().from(priceVersions).where(eq(priceVersions.id, Number(req.params.id))) as any[];
+      if (!existing[0]) return res.status(404).json({ error: "价格版本不存在" });
+      if (existing[0].status !== "archived") return res.status(400).json({ error: "仅已归档版本可回滚；发布新版本请提交发布审批" });
+      const result = await publishPriceVersion(Number(req.params.id), req.admin.username);
+      if (!result.ok) return res.status(404).json({ error: result.error });
+      await logAudit(req.admin, "price_rollback", "price_version", String(result.entity.id), { skuId: result.entity.skuId, version: result.entity.version });
+      return res.json({ success: true, message: `已回滚到价格 v${result.entity.version}` });
     } catch (err: any) {
       return res.status(500).json({ error: err.message });
     }

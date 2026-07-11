@@ -75,6 +75,8 @@ export const payments = pgTable('payments', {
   qrCodeUrl: text('qr_code_url'),
   bankOrderNo: text('bank_order_no'),
   thirdPartyOrderNo: text('third_party_order_no'),
+  priceVersionId: integer('price_version_id'), // PRD §7 下单价格快照：当时生效的价格版本
+  priceSnapshot: integer('price_snapshot'), // cents，下单时的挂牌价快照（与实际扣款 amount 解耦）
   paidAt: timestamp('paid_at'),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
@@ -241,6 +243,46 @@ export const revenueAllocations = pgTable('revenue_allocations', {
   allocatedAmount: integer('allocated_amount').notNull(), // cents allocated to this task
   allocationMethod: text('allocation_method').notNull().default('single_100'), // single_100 | equal_split
   createdAt: timestamp('created_at').defaultNow(),
+});
+
+// PRD §7 商品与价格：商品(product) → 规格(sku) → 价格版本(price_version)。
+// 价格版本走发布审批闭环（draft → pending → published → archived），支持回滚到历史已发布版本。
+export const products = pgTable('products', {
+  id: serial('id').primaryKey(),
+  code: text('code').notNull().unique(),
+  name: text('name').notNull(),
+  description: text('description'),
+  status: text('status').notNull().default('active'), // active | inactive
+  createdByAdmin: text('created_by_admin'),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const skus = pgTable('skus', {
+  id: serial('id').primaryKey(),
+  productId: integer('product_id').references(() => products.id, { onDelete: 'cascade' }).notNull(),
+  code: text('code').notNull().unique(),
+  name: text('name').notNull(),
+  targetRole: text('target_role'), // 关联下单时的目标岗位（用于价格快照匹配），可空
+  status: text('status').notNull().default('active'), // active | inactive
+  createdByAdmin: text('created_by_admin'),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const priceVersions = pgTable('price_versions', {
+  id: serial('id').primaryKey(),
+  skuId: integer('sku_id').references(() => skus.id, { onDelete: 'cascade' }).notNull(),
+  version: integer('version').notNull().default(1),
+  status: text('status').notNull().default('draft'), // draft | pending | published | archived
+  amount: integer('amount').notNull(), // cents
+  currency: text('currency').notNull().default('CNY'),
+  effectiveAt: timestamp('effective_at'),
+  editedByAdmin: text('edited_by_admin'),
+  publishedByAdmin: text('published_by_admin'),
+  publishedAt: timestamp('published_at'),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
 });
 
 // PRD §12.6 审批中心 / §2.2 Maker-Checker 双人复核。

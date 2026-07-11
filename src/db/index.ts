@@ -2,7 +2,7 @@ import pg from "pg";
 import {
   users, resumeVersions, rewriteSuggestions, clarificationQuestions, userFeedbacks, eventLogs, payments, admins, refunds, auditLogs, costEvents,
   adminMfa, siteConfigs, aiProviders, aiModels, promptVersions, supportTickets, ticketReplies, notifications, riskFlags, revenueAllocations,
-  approvals,
+  approvals, products, skus, priceVersions,
 } from "./schema.ts";
 
 const { Pool } = pg;
@@ -44,6 +44,9 @@ const tableMap = new Map<any, string>([
   [riskFlags,               "risk_flags"],
   [revenueAllocations,      "revenue_allocations"],
   [approvals,               "approvals"],
+  [products,                "products"],
+  [skus,                    "skus"],
+  [priceVersions,           "price_versions"],
 ]);
 
 // ─── Column name helpers ──────────────────────────────────────────────────────
@@ -150,6 +153,15 @@ const fieldToCol: Record<string, string> = {
   type:              "type",
   payload:           "payload",
   decisionReason:    "decision_reason",
+
+  code:              "code",
+  description:       "description",
+  productId:         "product_id",
+  currency:          "currency",
+  effectiveAt:       "effective_at",
+  skuId:             "sku_id",
+  priceVersionId:    "price_version_id",
+  priceSnapshot:     "price_snapshot",
 };
 
 const colToField: Record<string, string> = {
@@ -253,6 +265,15 @@ const colToField: Record<string, string> = {
   type:                "type",
   payload:             "payload",
   decision_reason:     "decisionReason",
+
+  code:                "code",
+  description:         "description",
+  product_id:          "productId",
+  currency:            "currency",
+  effective_at:        "effectiveAt",
+  sku_id:              "skuId",
+  price_version_id:    "priceVersionId",
+  price_snapshot:      "priceSnapshot",
 };
 
 function colName(fieldObj: any): string {
