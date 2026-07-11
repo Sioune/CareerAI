@@ -58,6 +58,7 @@ const CJK_FONT_FAMILY = "'NotoSansSC', \"PingFang SC\", \"Hiragino Sans GB\", \"
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { db, eq, and, rawQuery } from "./src/db/index.ts";
+import { seedAllDevData } from "./src/seed-all-data.ts";
 import {
   users, resumeVersions, rewriteSuggestions, clarificationQuestions, userFeedbacks, eventLogs, payments, admins, refunds, auditLogs, costEvents,
   adminMfa, siteConfigs, aiProviders, aiModels, promptVersions, supportTickets, ticketReplies, notifications, riskFlags, revenueAllocations,
@@ -625,6 +626,7 @@ async function startServer() {
   initCjkFont().catch(() => {});
   seedDefaultAdmin().catch(() => {});
   seedPricingData().catch(() => {});
+  seedAllDevData().catch((e) => console.error("[SeedAll] failed:", e));
   // Phase 2B 财务闭环：先建表/加列/种子，再回填历史现金流水与权益（均幂等）。
   ensureFinanceTables()
     .then(() => backfillFinanceLedgers())
