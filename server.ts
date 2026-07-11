@@ -398,6 +398,48 @@ async function backfillFinanceLedgers() {
   }
 }
 
+// Idempotent: only inserts when all three pricing tables are empty.
+// Data mirrors the canonical dev-database records for products / skus / price_versions.
+async function seedPricingData() {
+  try {
+    const existingProducts = await executeWithRetry(() => db.select().from(products)) as any[];
+    if (existingProducts.length > 0) return; // already seeded
+
+    // ── 1. Products ──────────────────────────────────────────────────────────
+    await db.insert(products).values([
+      { id: 3, code: 'CVStandard',          name: '标准优化版',   description: '在保持原始表述风格的基础上，系统性增强关键词密度和量化成果表达。', status: 'active', createdByAdmin: 'admin' },
+      { id: 4, code: 'CVPro',               name: '高管改写版',   description: '采用 C-Level 领导力语言体系，突出 P&L 责任、跨职能影响力和战略执行深度。', status: 'active', createdByAdmin: 'admin' },
+      { id: 5, code: 'CVAITailor',          name: 'AI岗位定制版', description: '专为 AI/大模型方向岗位优化，深度突出技术判断力、产业落地经验和商业化能力。', status: 'active', createdByAdmin: 'admin' },
+      { id: 6, code: 'CoreShortageAnalysis',name: '核心差距分析', description: 'AI综合评估您的简历与目标岗位 JD 的匹配程度，给出量化分数，并列出核心差距', status: 'active', createdByAdmin: 'admin' },
+    ] as any);
+
+    // ── 2. SKUs ───────────────────────────────────────────────────────────────
+    await db.insert(skus).values([
+      { id: 3, productId: 3, code: 'CVL1',       name: '标准优化版简历',   targetRole: '通用版本，适合更新在线简历，或者群发', status: 'active', createdByAdmin: 'admin' },
+      { id: 6, productId: 4, code: 'CVL2',       name: '高管冲刺版',       targetRole: '适合定向给企业或者猎头使用，且申请职位属于高管以上级别', status: 'active', createdByAdmin: 'admin' },
+      { id: 7, productId: 5, code: 'CVL3',       name: 'AI岗位定制版简历', targetRole: '适合有明确目标岗位求职意向的定制化简历优化，充分体现专业度', status: 'active', createdByAdmin: 'admin' },
+      { id: 8, productId: 6, code: 'CSAnalysis', name: '核心差距清单列表', targetRole: '对比自身简历与行业HR筛选的核心差距', status: 'active', createdByAdmin: 'admin' },
+    ] as any);
+
+    // ── 3. Price Versions (published) ────────────────────────────────────────
+    await db.insert(priceVersions).values([
+      { id: 4, skuId: 3, version: 1, status: 'published', amount: 990,  currency: 'CNY', effectiveAt: new Date('2026-07-10T00:30:00Z'), editedByAdmin: 'admin', publishedByAdmin: 'siounex', publishedAt: new Date('2026-07-11T14:36:02.758Z') },
+      { id: 5, skuId: 6, version: 1, status: 'published', amount: 2990, currency: 'CNY', effectiveAt: new Date('2026-07-10T00:30:00Z'), editedByAdmin: 'admin', publishedByAdmin: 'siounex', publishedAt: new Date('2026-07-11T14:36:00.010Z') },
+      { id: 6, skuId: 7, version: 1, status: 'published', amount: 4990, currency: 'CNY', effectiveAt: new Date('2026-07-10T00:33:00Z'), editedByAdmin: 'admin', publishedByAdmin: 'siounex', publishedAt: new Date('2026-07-11T14:35:57.258Z') },
+      { id: 7, skuId: 8, version: 1, status: 'published', amount: 1990, currency: 'CNY', effectiveAt: new Date('2026-07-10T00:50:00Z'), editedByAdmin: 'admin', publishedByAdmin: 'admin',   publishedAt: new Date('2026-07-11T14:53:07.185Z') },
+    ] as any);
+
+    // Reset sequences so future admin inserts don't collide with seeded IDs
+    await db.execute(sql`SELECT setval(pg_get_serial_sequence('products',     'id'), (SELECT MAX(id) FROM products))`);
+    await db.execute(sql`SELECT setval(pg_get_serial_sequence('skus',         'id'), (SELECT MAX(id) FROM skus))`);
+    await db.execute(sql`SELECT setval(pg_get_serial_sequence('price_versions','id'), (SELECT MAX(id) FROM price_versions))`);
+
+    console.log('[Pricing] Seeded 4 products / 4 SKUs / 4 price versions.');
+  } catch (err) {
+    console.error('[Pricing] Failed to seed pricing data:', err);
+  }
+}
+
 async function seedDefaultAdmin() {
   try {
     const existing = await executeWithRetry(() => db.select().from(admins)) as any[];
@@ -582,6 +624,7 @@ async function startServer() {
 
   initCjkFont().catch(() => {});
   seedDefaultAdmin().catch(() => {});
+  seedPricingData().catch(() => {});
   // Phase 2B 财务闭环：先建表/加列/种子，再回填历史现金流水与权益（均幂等）。
   ensureFinanceTables()
     .then(() => backfillFinanceLedgers())
