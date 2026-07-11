@@ -165,6 +165,8 @@ const fieldToCol: Record<string, string> = {
   currency:          "currency",
   effectiveAt:       "effective_at",
   skuId:             "sku_id",
+  skuCode:           "sku_code",
+  productCode:       "product_code",
   priceVersionId:    "price_version_id",
   priceSnapshot:     "price_snapshot",
 
@@ -296,6 +298,8 @@ const colToField: Record<string, string> = {
   currency:            "currency",
   effective_at:        "effectiveAt",
   sku_id:              "skuId",
+  sku_code:            "skuCode",
+  product_code:        "productCode",
   price_version_id:    "priceVersionId",
   price_snapshot:      "priceSnapshot",
 

@@ -447,6 +447,14 @@ Visuals & Integrity
   const paymentPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [referralStatus, setReferralStatus] = useState<{ unclaimedCredits: number; required: number; readyToClaim: boolean } | null>(null);
 
+  // Product catalog (from DB) & per-task purchased SKUs
+  const [pricingCatalog, setPricingCatalog] = useState<Array<{
+    productCode: string; productName: string; skuCode: string; skuName: string;
+    amountCents: number; currency: string; priceVersionId: number;
+  }>>([]);
+  const [purchasedSkus, setPurchasedSkus] = useState<string[]>([]);
+  const [pendingSkuCode, setPendingSkuCode] = useState<string | null>(null);
+
   // Local User Authentication States
   const [currentUser, setCurrentUser] = useState<{ id: string; username: string } | null>(() => {
     const saved = localStorage.getItem("career_ai_current_user");
@@ -1383,7 +1391,7 @@ Visuals & Integrity
   };
 
   // 3. Initiate checkout paywall & process real-time transaction
-  const runResumeOptimizationForTask = async (taskIdToOptimize: string) => {
+  const runResumeOptimizationForTask = async (taskIdToOptimize: string, skuCode?: string) => {
     const taskToOptimize = tasks.find(t => t.id === taskIdToOptimize);
     if (!taskToOptimize) return;
 
@@ -1399,7 +1407,8 @@ Visuals & Integrity
         targetRole: taskToOptimize.targetRole,
         report: taskToOptimize.report,
         resumeText: taskToOptimize.originalResumeText || resumeText,
-        matchReport: taskToOptimize.matchReport
+        matchReport: taskToOptimize.matchReport,
+        ...(skuCode ? { skuCode } : {}),
       },
       {
         onProgress: ({ elapsedMs }) => {
@@ -1478,11 +1487,62 @@ Visuals & Integrity
     }
   };
 
-  const handlePaymentSubmit = async () => {
+  // ── 商品定价目录（无需登录） ──────────────────────────────────────────────────
+  const fetchPricing = async () => {
+    try {
+      const res = await fetch('/api/pricing');
+      if (res.ok) {
+        const data = await res.json();
+        setPricingCatalog(data.catalog || []);
+      }
+    } catch (e) {
+      console.error('Failed to fetch pricing:', e);
+    }
+  };
+
+  // ── 该任务已完成支付的 SKU 列表 ───────────────────────────────────────────────
+  const fetchPurchases = async (taskId: string) => {
+    if (!currentUser) return;
+    try {
+      const res = await customFetch(`/api/tasks/${taskId}/purchases`);
+      if (res.ok) {
+        const data = await res.json();
+        const skus: string[] = (data.purchases || [])
+          .map((p: any) => p.skuCode)
+          .filter(Boolean);
+        setPurchasedSkus(skus);
+      }
+    } catch (e) {
+      console.error('Failed to fetch purchases:', e);
+    }
+  };
+
+  // 挂载时拉取一次商品目录（价格驱动前台展示）
+  useEffect(() => { fetchPricing(); }, []);
+
+  // 当前任务切换时重新拉取该任务的已付款 SKU
+  useEffect(() => {
+    if (currentTask) {
+      fetchPurchases(currentTask.id);
+    } else {
+      setPurchasedSkus([]);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentTask?.id]);
+
+  // ── 按商品 skuCode 发起支付 ───────────────────────────────────────────────────
+  const CV_SKUS = ['CVL1', 'CVL2', 'CVL3'];
+
+  const handleProductPayment = async (skuCode: string) => {
     if (!currentTask) return;
 
+    setPendingSkuCode(skuCode);
     setIsCreatingSession(true);
-    triggerToast(lang === 'zh' ? '正在创建微信/支付宝支付订单...' : 'Creating your WeChat/Alipay payment order...');
+    const catalogItem = pricingCatalog.find(p => p.skuCode === skuCode);
+    const displayName = catalogItem?.skuName || skuCode;
+    triggerToast(lang === 'zh'
+      ? `正在创建「${displayName}」支付订单...`
+      : `Creating payment order for ${displayName}...`);
 
     try {
       const response = await customFetch("/api/payments/create", {
@@ -1490,6 +1550,7 @@ Visuals & Integrity
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           taskId: currentTask.id,
+          skuCode,
           targetRole: currentTask.targetRole,
         })
       });
@@ -1515,18 +1576,29 @@ Visuals & Integrity
             if (statusData.status === 2) {
               stopPaymentPolling();
               setShowQRModal(false);
-              triggerToast(t.paymentSuccessToast);
-              await runResumeOptimizationForTask(currentTask.id);
+              setPurchasedSkus(prev => prev.includes(skuCode) ? prev : [...prev, skuCode]);
+              if (skuCode === 'CSAnalysis') {
+                triggerToast(lang === 'zh' ? '🔓 核心差距分析已解锁！' : '🔓 Core gap analysis unlocked!');
+              } else if (CV_SKUS.includes(skuCode)) {
+                triggerToast(t.paymentSuccessToast);
+                await runResumeOptimizationForTask(currentTask.id, skuCode);
+              } else {
+                triggerToast(t.paymentSuccessToast);
+              }
             } else if ([3, 4, 5].includes(statusData.status)) {
               stopPaymentPolling();
-              triggerToast(lang === 'zh' ? `订单未完成支付（${statusData.statusName || '已关闭'}），请重新下单` : `Payment did not complete (${statusData.statusName || 'closed'}). Please create a new order.`);
+              triggerToast(lang === 'zh'
+                ? `订单未完成支付（${statusData.statusName || '已关闭'}），请重新下单`
+                : `Payment did not complete (${statusData.statusName || 'closed'}). Please create a new order.`);
             }
           } catch (e) {
             console.error("Payment poll error:", e);
           }
         }, 6000);
       } else {
-        triggerToast(lang === 'zh' ? `创建支付订单失败: ${data.error || '未知错误'}` : `Failed to create order: ${data.error || 'Unknown error'}`);
+        triggerToast(lang === 'zh'
+          ? `创建支付订单失败: ${data.error || '未知错误'}`
+          : `Failed to create order: ${data.error || 'Unknown error'}`);
       }
     } catch (error: any) {
       console.error("Payment submit error:", error);
@@ -1551,8 +1623,14 @@ Visuals & Integrity
         if (data.status === 2) {
           stopPaymentPolling();
           setShowQRModal(false);
-          triggerToast(t.paymentSuccessToast);
-          await runResumeOptimizationForTask(currentTask.id);
+          const sku = pendingSkuCode;
+          if (sku) setPurchasedSkus(prev => prev.includes(sku) ? prev : [...prev, sku]);
+          if (sku === 'CSAnalysis') {
+            triggerToast(lang === 'zh' ? '🔓 核心差距分析已解锁！' : '🔓 Core gap analysis unlocked!');
+          } else {
+            triggerToast(t.paymentSuccessToast);
+            await runResumeOptimizationForTask(currentTask.id, sku || undefined);
+          }
         } else if ([3, 4, 5].includes(data.status)) {
           stopPaymentPolling();
           triggerToast(lang === 'zh' ? `订单未完成支付（${data.statusName || '已关闭'}），请重新下单` : `Payment did not complete (${data.statusName || 'closed'}). Please create a new order.`);
@@ -3612,40 +3690,68 @@ Visuals & Integrity
                               </div>
                             ))}
 
-                            {/* Blurred locked Gaps teaser block */}
-                            <div className="relative border-t border-dashed border-slate-100 mt-2 pt-4">
-                              <div className="absolute inset-0 backdrop-blur-[2.5px] bg-white/70 z-10 flex items-center justify-center">
-                                <button 
-                                  onClick={handlePaymentSubmit}
-                                  disabled={isCreatingSession}
-                                  className="bg-slate-900 hover:bg-slate-800 disabled:bg-slate-400 disabled:cursor-not-allowed text-white text-xs font-bold px-4 py-2 rounded-lg shadow-md transition-all flex items-center gap-2"
-                                >
-                                  {isCreatingSession ? (
-                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                  ) : (
-                                    <Lock className="w-3.5 h-3.5 text-blue-400" />
-                                  )}
-                                  <span>付费解锁额外 {currentTask.matchReport.additionalGapsCount} 项深度缺陷清单</span>
-                                </button>
-                              </div>
-
-                              <div className="opacity-20 blur-[2px] pointer-events-none select-none flex flex-col gap-3">
+                            {/* Additional gaps: locked behind CSAnalysis SKU */}
+                            {purchasedSkus.includes('CSAnalysis') ? (
+                              <div className="border-t border-dashed border-slate-100 mt-2 pt-4 flex flex-col gap-3">
+                                <div className="flex items-center gap-1.5 mb-1">
+                                  <Check className="w-3.5 h-3.5 text-emerald-500" />
+                                  <span className="text-[10px] font-bold text-emerald-600">核心差距分析已解锁</span>
+                                </div>
                                 <div className="flex gap-3">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400 mt-1.5"></span>
+                                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400 mt-1.5 shrink-0"></span>
                                   <div>
                                     <h4 className="text-xs font-bold text-slate-800">海外研发机构敏捷迭代细节缺失</h4>
                                     <p className="text-[10px] text-slate-400 mt-0.5">对标高频率的大模型API整合交付，您的简历没有写出针对数据出海合规细节的要求...</p>
                                   </div>
                                 </div>
                                 <div className="flex gap-3">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400 mt-1.5"></span>
+                                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400 mt-1.5 shrink-0"></span>
                                   <div>
                                     <h4 className="text-xs font-bold text-slate-800">对标企业级大客户财务P&L预算掌控</h4>
                                     <p className="text-[10px] text-slate-400 mt-0.5">高阶VP岗一般直接对预算负责，原有简历中几乎没有任何大模型商业算力购买或自研预算规划指标的呈现...</p>
                                   </div>
                                 </div>
                               </div>
-                            </div>
+                            ) : (
+                              <div className="relative border-t border-dashed border-slate-100 mt-2 pt-4">
+                                <div className="absolute inset-0 backdrop-blur-[2.5px] bg-white/70 z-10 flex items-center justify-center">
+                                  <button
+                                    onClick={() => handleProductPayment('CSAnalysis')}
+                                    disabled={isCreatingSession}
+                                    className="bg-slate-900 hover:bg-slate-800 disabled:bg-slate-400 disabled:cursor-not-allowed text-white text-xs font-bold px-4 py-2 rounded-lg shadow-md transition-all flex items-center gap-2"
+                                  >
+                                    {isCreatingSession && pendingSkuCode === 'CSAnalysis' ? (
+                                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                    ) : (
+                                      <Lock className="w-3.5 h-3.5 text-blue-400" />
+                                    )}
+                                    <span>
+                                      解锁额外 {currentTask.matchReport.additionalGapsCount} 项深度缺陷清单
+                                      {(() => {
+                                        const ci = pricingCatalog.find(p => p.skuCode === 'CSAnalysis');
+                                        return ci ? <span className="ml-1 text-blue-300">· ¥{(ci.amountCents / 100).toFixed(2)}</span> : null;
+                                      })()}
+                                    </span>
+                                  </button>
+                                </div>
+                                <div className="opacity-20 blur-[2px] pointer-events-none select-none flex flex-col gap-3">
+                                  <div className="flex gap-3">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-slate-400 mt-1.5"></span>
+                                    <div>
+                                      <h4 className="text-xs font-bold text-slate-800">海外研发机构敏捷迭代细节缺失</h4>
+                                      <p className="text-[10px] text-slate-400 mt-0.5">对标高频率的大模型API整合交付，您的简历没有写出针对数据出海合规细节的要求...</p>
+                                    </div>
+                                  </div>
+                                  <div className="flex gap-3">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-slate-400 mt-1.5"></span>
+                                    <div>
+                                      <h4 className="text-xs font-bold text-slate-800">对标企业级大客户财务P&L预算掌控</h4>
+                                      <p className="text-[10px] text-slate-400 mt-0.5">高阶VP岗一般直接对预算负责，原有简历中几乎没有任何大模型商业算力购买或自研预算规划指标的呈现...</p>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
 
                           </div>
                         </div>
@@ -3677,21 +3783,61 @@ Visuals & Integrity
                       </div>
                     </div>
 
-                    {/* BLOCKED FULL UPGRADE CTA PANEL */}
-                    <div className="bg-slate-900 border border-slate-800 p-8 rounded-2xl text-center flex flex-col items-center justify-center gap-4 shadow-xl mt-2 relative overflow-hidden">
+                    {/* PRODUCT PICKER: 3 individually purchasable resume SKUs */}
+                    <div className="bg-slate-900 border border-slate-800 p-7 rounded-2xl flex flex-col items-center gap-5 shadow-xl mt-2 relative overflow-hidden">
                       <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-600 via-indigo-500 to-emerald-400"></div>
-                      <Lock className="w-10 h-10 text-blue-400 mb-2" />
-                      <h3 className="text-white text-xl font-bold tracking-tight">大模型高管靶向简历优化报告已就绪</h3>
-                      <p className="text-slate-400 text-xs max-w-lg leading-relaxed">
-                        一键升级，解锁针对「{currentTask.targetRole}」岗位的完整改写方案。智能重构为SAR/STAR模型，高亮大厂高频率筛查词，生成一版可即时投递、在线编辑的高级求职简历，同时解锁Word/PDF一键打包导出权益。
-                      </p>
-                      <button 
-                        onClick={handlePaymentSubmit}
-                        className="mt-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white px-8 py-3 rounded-xl text-xs font-bold transition-all shadow-md font-sans flex items-center gap-2 group hover:scale-[1.02] active:scale-[0.98]"
-                      >
-                        <Sparkles className="w-4 h-4 text-emerald-300 animate-spin" />
-                        <span>付费解锁 · 一键启动大模型高管简历深度重构</span>
-                      </button>
+                      <div className="flex flex-col items-center gap-2 text-center">
+                        <Sparkles className="w-9 h-9 text-blue-400" />
+                        <h3 className="text-white text-lg font-bold tracking-tight">大模型靶向简历优化方案</h3>
+                        <p className="text-slate-400 text-xs max-w-xl leading-relaxed">
+                          针对「{currentTask.targetRole}」岗位已就绪。选择版本独立购买，付费后立即生成对应大模型优化简历，并解锁 Word/PDF 导出权益。
+                        </p>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 w-full max-w-3xl">
+                        {([
+                          { skuCode: 'CVL1', icon: '📄', color: 'border-slate-600 hover:border-slate-400', desc: '通用版，适合在线简历更新或广泛投递' },
+                          { skuCode: 'CVL2', icon: '🎯', color: 'border-blue-700 hover:border-blue-500',  desc: '面向高管/猎头，突出领导力与业绩量化' },
+                          { skuCode: 'CVL3', icon: '✨', color: 'border-indigo-700 hover:border-indigo-500', desc: '明确目标岗位，最大化匹配度与专业度' },
+                        ] as const).map(({ skuCode, icon, color, desc }) => {
+                          const ci = pricingCatalog.find(p => p.skuCode === skuCode);
+                          const isPurchased = purchasedSkus.includes(skuCode);
+                          const isPending = isCreatingSession && pendingSkuCode === skuCode;
+                          return (
+                            <div key={skuCode} className={`bg-slate-800 border ${color} rounded-xl p-4 flex flex-col gap-3 transition-all`}>
+                              <div className="flex items-center gap-2">
+                                <span className="text-xl">{icon}</span>
+                                <span className="text-white font-bold text-sm">{ci?.skuName || skuCode}</span>
+                              </div>
+                              <p className="text-slate-400 text-[11px] leading-relaxed flex-1">{desc}</p>
+                              <div className="flex items-center justify-between gap-2 mt-auto">
+                                {ci ? (
+                                  <span className="text-emerald-400 font-bold text-sm">¥{(ci.amountCents / 100).toFixed(2)}</span>
+                                ) : (
+                                  <span className="text-slate-500 text-[11px]">加载中...</span>
+                                )}
+                                {isPurchased ? (
+                                  <span className="text-emerald-400 text-xs font-bold flex items-center gap-1">
+                                    <Check className="w-3.5 h-3.5" />已购买
+                                  </span>
+                                ) : (
+                                  <button
+                                    onClick={() => handleProductPayment(skuCode)}
+                                    disabled={isCreatingSession || !ci}
+                                    className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-600 disabled:cursor-not-allowed text-white text-xs font-bold px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 shrink-0"
+                                  >
+                                    {isPending ? (
+                                      <Loader2 className="w-3 h-3 animate-spin" />
+                                    ) : (
+                                      <Lock className="w-3 h-3" />
+                                    )}
+                                    <span>{isPending ? '处理中' : '购买'}</span>
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
 
                   </motion.div>

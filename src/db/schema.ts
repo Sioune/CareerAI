@@ -75,6 +75,8 @@ export const payments = pgTable('payments', {
   qrCodeUrl: text('qr_code_url'),
   bankOrderNo: text('bank_order_no'),
   thirdPartyOrderNo: text('third_party_order_no'),
+  skuCode: text('sku_code'),        // 购买的 SKU code（如 CVL1 / CVL2 / CVL3 / CSAnalysis）
+  productCode: text('product_code'), // 对应商品 code（如 CVStandard / CoreShortageAnalysis）
   priceVersionId: integer('price_version_id'), // PRD §7 下单价格快照：当时生效的价格版本
   priceSnapshot: integer('price_snapshot'), // cents，下单时的挂牌价快照（与实际扣款 amount 解耦）
   paidAt: timestamp('paid_at'),

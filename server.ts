@@ -361,6 +361,8 @@ async function ensureFinanceTables() {
 
     await rawQuery(`ALTER TABLE cost_events ADD COLUMN IF NOT EXISTS cost_micro_cents BIGINT NOT NULL DEFAULT 0`);
     await rawQuery(`ALTER TABLE cost_events ADD COLUMN IF NOT EXISTS price_version_id INTEGER`);
+    await rawQuery(`ALTER TABLE payments ADD COLUMN IF NOT EXISTS sku_code TEXT`);
+    await rawQuery(`ALTER TABLE payments ADD COLUMN IF NOT EXISTS product_code TEXT`);
 
     await rawQuery(`CREATE UNIQUE INDEX IF NOT EXISTS ux_entitlement_ledger_ref ON entitlement_ledger (entry_type, ref_type, ref_id)`);
     await rawQuery(`CREATE UNIQUE INDEX IF NOT EXISTS ux_finance_ledger_ref ON finance_ledger (entry_type, ref_type, ref_id)`);
@@ -728,8 +730,65 @@ async function startServer() {
     }
   });
 
+  // ─── 商品定价公开接口 ──────────────────────────────────────────────────────────
+  // 返回所有已发布价格，供前端展示和下单使用（无需登录）
+  app.get("/api/pricing", async (_req, res) => {
+    try {
+      const [prods, allSkus, allPrices] = await Promise.all([
+        db.select().from(products) as Promise<any[]>,
+        db.select().from(skus) as Promise<any[]>,
+        db.select().from(priceVersions) as Promise<any[]>,
+      ]);
+      const catalog = allSkus
+        .filter((s: any) => s.status === "active")
+        .map((s: any) => {
+          const product = prods.find((p: any) => p.id === s.productId);
+          const published = allPrices
+            .filter((pv: any) => pv.skuId === s.id && pv.status === "published")
+            .sort((a: any, b: any) => b.version - a.version)[0];
+          if (!published || !product) return null;
+          return {
+            productCode: product.code,
+            productName: product.name,
+            skuCode: s.code,
+            skuName: s.name,
+            targetRole: s.targetRole || null,
+            amountCents: published.amount,
+            currency: published.currency || "CNY",
+            priceVersionId: published.id,
+          };
+        })
+        .filter(Boolean);
+      return res.json({ catalog });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 查询用户在某任务上已成功支付的商品列表（需登录）
+  app.get("/api/tasks/:taskId/purchases", async (req, res) => {
+    try {
+      const user = await getDbUserFromHeader(req.headers.authorization);
+      if (!user) return res.status(401).json({ error: "未登录" });
+      const { taskId } = req.params;
+      const rows = await db.select().from(payments)
+        .where(eq(payments.userId, user.id)) as any[];
+      const paid = rows
+        .filter((p: any) => p.taskId === String(taskId) && p.status === 2)
+        .map((p: any) => ({
+          skuCode: p.skuCode || null,
+          productCode: p.productCode || null,
+          amountCents: p.amount,
+          paidAt: p.paidAt,
+          businessOrderNo: p.businessOrderNo,
+        }));
+      return res.json({ purchases: paid });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
   // ─── Real payment endpoints (工商银行支付服务网关) ───────────────────────────
-  const RESUME_UNLOCK_PRICE_CENTS = 1; // ¥0.01（测试价，与前端 priceVal 保持一致）— TODO: 测试完成后改回 2990
 
   function getPublicBaseUrl(req: express.Request): string {
     const domains = process.env.REPLIT_DOMAINS?.split(",").map((d) => d.trim()).filter(Boolean);
@@ -748,39 +807,54 @@ async function startServer() {
         return res.status(503).json({ error: "支付服务未配置，请联系管理员" });
       }
 
-      const { taskId, targetRole } = req.body;
+      const { taskId, skuCode, targetRole } = req.body;
       if (!taskId) return res.status(400).json({ error: "缺少任务 ID" });
+      if (!skuCode) return res.status(400).json({ error: "缺少商品 SKU" });
+
+      // ── 从 DB 查找已发布价格（skuCode 精确匹配） ──────────────────────────────
+      let amountCents: number;
+      let priceVersionId: number | null = null;
+      let priceSnapshot: number | null = null;
+      let resolvedProductCode: string | null = null;
+      let resolvedSkuName: string = skuCode;
+      try {
+        const allSkusRows = (await db.select().from(skus)) as any[];
+        const matchedSku = allSkusRows.find((s: any) => s.code === skuCode && s.status === "active");
+        if (!matchedSku) {
+          return res.status(400).json({ error: `SKU "${skuCode}" 不存在或已下架` });
+        }
+        resolvedSkuName = matchedSku.name || skuCode;
+        const pvs = (await db.select().from(priceVersions).where(eq(priceVersions.skuId, matchedSku.id))) as any[];
+        const published = pvs.filter((v: any) => v.status === "published").sort((a: any, b: any) => b.version - a.version)[0];
+        if (!published) {
+          return res.status(400).json({ error: `SKU "${skuCode}" 暂无已发布价格` });
+        }
+        amountCents = published.amount as number;
+        priceVersionId = published.id as number;
+        priceSnapshot = published.amount as number;
+        // resolve product code
+        const allProdsRows = (await db.select().from(products)) as any[];
+        const prod = allProdsRows.find((p: any) => p.id === matchedSku.productId);
+        if (prod) resolvedProductCode = prod.code || null;
+      } catch (lookupErr: any) {
+        console.error("[payments] SKU/price lookup failed:", lookupErr.message);
+        return res.status(500).json({ error: "价格查询失败，请稍后重试" });
+      }
 
       const businessOrderNo = `CAREERAI_${Date.now()}_${user.id}_${Math.random().toString(36).slice(2, 8)}`;
       const notifyUrl = `${getPublicBaseUrl(req)}/api/payments/callback`;
+      const orderSubject = `CareerAI ${resolvedSkuName}${targetRole ? " - " + targetRole : ""}`;
 
       const orderData = await createPaymentOrder({
         businessOrderNo,
-        amount: RESUME_UNLOCK_PRICE_CENTS,
-        subject: `CareerAI 高管简历重构 - ${targetRole || "定制简历"}`,
-        body: `目标岗位：${targetRole || "未指定"}`,
+        amount: amountCents,
+        subject: orderSubject,
+        body: `SKU: ${skuCode}${targetRole ? " | 岗位: " + targetRole : ""}`,
         businessName: "CareerAI",
         notifyUrl,
         expiredSeconds: 1800,
-        attach: JSON.stringify({ userId: user.id, taskId }),
+        attach: JSON.stringify({ userId: user.id, taskId, skuCode }),
       });
-
-      // PRD §7 下单价格快照：记录当时生效的价格版本（若已配置）。仅作快照，不改变实际扣款金额。
-      let priceVersionId: number | null = null;
-      let priceSnapshot: number | null = null;
-      try {
-        if (targetRole) {
-          const matchedSkus = (await db.select().from(skus).where(eq(skus.targetRole, targetRole))) as any[];
-          const activeSku = matchedSkus.find((s) => s.status === "active");
-          if (activeSku) {
-            const pvs = (await db.select().from(priceVersions).where(eq(priceVersions.skuId, activeSku.id))) as any[];
-            const published = pvs.filter((v) => v.status === "published").sort((a, b) => b.version - a.version)[0];
-            if (published) { priceVersionId = published.id; priceSnapshot = published.amount; }
-          }
-        }
-      } catch (snapErr: any) {
-        console.warn("[payments] price snapshot lookup failed (non-fatal):", snapErr.message);
-      }
 
       await db.insert(payments).values({
         userId: user.id,
@@ -788,7 +862,9 @@ async function startServer() {
         businessOrderNo,
         paymentOrderNo: orderData.paymentOrderNo,
         targetRole: targetRole || null,
-        amount: RESUME_UNLOCK_PRICE_CENTS,
+        amount: amountCents,
+        skuCode,
+        productCode: resolvedProductCode,
         priceVersionId,
         priceSnapshot,
         status: orderData.status ?? 1,
@@ -803,7 +879,9 @@ async function startServer() {
         status: orderData.status,
         statusName: orderData.statusName,
         expiredAt: orderData.expiredAt,
-        amount: RESUME_UNLOCK_PRICE_CENTS,
+        amount: amountCents,
+        skuCode,
+        productCode: resolvedProductCode,
       });
     } catch (err: any) {
       console.error("Create payment order error:", err);
@@ -1142,7 +1220,7 @@ async function startServer() {
 
   // API Route: Generate optimized resume
   app.post("/api/optimize-resume", async (req, res) => {
-    const { taskId, targetRole, report, resumeText, matchReport } = req.body;
+    const { taskId, targetRole, report, resumeText, matchReport, skuCode } = req.body;
 
     if (!targetRole || !resumeText) {
       return res.status(400).json({ error: "targetRole and resumeText are required" });
@@ -1156,13 +1234,20 @@ async function startServer() {
     if (taskId) {
       const taskPayments = await db.select().from(payments)
         .where(eq(payments.userId, dbUser.id)) as any[];
-      const hasPaid = taskPayments.some(
+      const paidForTask = taskPayments.filter(
         (p: any) => p.taskId === String(taskId) && p.status === 2
       );
+      // If a specific skuCode is requested, verify payment for that exact SKU.
+      // Otherwise (legacy/referral path) accept any paid record for the task.
+      const CV_SKUS = ["CVL1", "CVL2", "CVL3"];
+      const hasPaid = skuCode
+        ? paidForTask.some((p: any) => p.skuCode === skuCode)
+        : paidForTask.some((p: any) => CV_SKUS.includes(p.skuCode) || !p.skuCode);
       if (!hasPaid) {
         return res.status(402).json({
           error: "该功能需付费解锁，请先完成支付后再生成优化简历",
-          code: "payment_required"
+          code: "payment_required",
+          requiredSku: skuCode || null,
         });
       }
       // 付费闸门通过 = 任务履约：确认履约收入 + 消耗权益 + 写收入分配（均幂等，仅首次生效）。
