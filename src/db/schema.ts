@@ -1,5 +1,5 @@
 import { relations } from 'drizzle-orm';
-import { integer, pgTable, serial, text, timestamp, boolean } from 'drizzle-orm/pg-core';
+import { integer, pgTable, serial, text, timestamp, boolean, bigint } from 'drizzle-orm/pg-core';
 
 export const users = pgTable('users', {
   id: serial('id').primaryKey(),
@@ -128,7 +128,9 @@ export const costEvents = pgTable('cost_events', {
   operation: text('operation').notNull(),
   tokensIn: integer('tokens_in').default(0),
   tokensOut: integer('tokens_out').default(0),
-  costCents: integer('cost_cents').notNull().default(0),
+  costCents: integer('cost_cents').notNull().default(0), // rounded 分（展示用；小额调用会向下取整为 0）
+  costMicroCents: bigint('cost_micro_cents', { mode: 'number' }).notNull().default(0), // 1 分 = 1,000,000 微分（PRD §8.4：成本保留高精度，汇总时才取整）
+  priceVersionId: integer('price_version_id'), // 计费时使用的 model_prices 版本（可空，回退到常量时为 null）
   createdAt: timestamp('created_at').defaultNow(),
 });
 
@@ -300,6 +302,76 @@ export const approvals = pgTable('approvals', {
   requestedByAdmin: text('requested_by_admin'),
   approvedByAdmin: text('approved_by_admin'),
   decisionReason: text('decision_reason'), // 审批/拒绝备注
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PRD §3.3 三类账本 + §8 财务闭环（Phase 2B）
+// 账本一律「追加式、不可篡改」：只 INSERT，绝不 UPDATE/DELETE 历史流水，也不直接改余额。
+// 余额/汇总全部由明细求和派生。幂等靠 UNIQUE(entry_type, ref_type, ref_id) + ON CONFLICT DO NOTHING。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 权益账本（PRD §3.3）：发放/消耗/退回/过期/冻结/人工调整逐笔记录。
+// 本应用为 1:1（一次支付解锁一个任务）模型：grant=支付成功或推荐解锁，consume=优化简历。
+// 可用权益 = Σgrant − Σconsume − Σexpire − Σfreeze + Σrefund_return（派生，不落库）。
+export const entitlementLedger = pgTable('entitlement_ledger', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  entryType: text('entry_type').notNull(), // grant | consume | refund_return | expire | freeze | adjust
+  amount: integer('amount').notNull(), // 权益份数，带符号（grant 为 +，consume 为 -）
+  refType: text('ref_type'), // payment | task | referral | manual
+  refId: text('ref_id'),
+  note: text('note'),
+  createdByAdmin: text('created_by_admin'), // 人工调整时记录操作人
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+// 资金/经营账本（PRD §3.7 / §8.7）：金额单位=分，带符号（方向见 PRD §8.7）。
+// 现金口径与履约口径共用一张流水表，用 entry_type 区分账户，汇总时按 entry_type 分组（不整表求和）。
+export const financeLedger = pgTable('finance_ledger', {
+  id: serial('id').primaryKey(),
+  entryType: text('entry_type').notNull(), // PAYMENT_RECEIVED | DISCOUNT | REFUND | PAYMENT_FEE | REVENUE_ALLOCATED | REVENUE_REVERSAL | ADJUSTMENT
+  amountCents: integer('amount_cents').notNull(), // 带符号：收入为 +，退款/费用/冲销为 -
+  paymentId: integer('payment_id'),
+  refundId: integer('refund_id'),
+  taskId: text('task_id'),
+  refType: text('ref_type'), // payment | refund | allocation | manual
+  refId: text('ref_id'),
+  priceVersionId: integer('price_version_id'), // 入账时的价格版本快照（来自 payments）
+  note: text('note'),
+  source: text('source'), // real | estimated（手续费等示意口径标注为 estimated）
+  createdByAdmin: text('created_by_admin'), // 人工调整（ADJUSTMENT）时记录操作人
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+// 模型单价表（PRD §3.4 / §8.3）：带生效时间，历史成本按当时单价计。追加式：新单价=新行，旧行不改。
+// 单价为「示意口径」（source=illustrative），非真实供应商账单。
+export const modelPrices = pgTable('model_prices', {
+  id: serial('id').primaryKey(),
+  provider: text('provider').notNull(), // gemini
+  model: text('model').notNull(), // gemini-3.5-flash
+  inputPerMillion: integer('input_per_million').notNull().default(0), // 分 / 1M input tokens
+  outputPerMillion: integer('output_per_million').notNull().default(0), // 分 / 1M output tokens
+  currency: text('currency').notNull().default('CNY'),
+  source: text('source').notNull().default('illustrative'), // illustrative | official | contract | invoice
+  effectiveAt: timestamp('effective_at').notNull().defaultNow(),
+  createdByAdmin: text('created_by_admin'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+// 对账与关账（PRD §8.8）：按业务日一行的状态表（非账本），status 可 UPDATE。
+// 关账 = 生成当日报表快照 + 差异清单 + 锁定状态；重开需财务复核并记录原因。
+export const reconciliations = pgTable('reconciliations', {
+  id: serial('id').primaryKey(),
+  bizDate: text('biz_date').notNull().unique(), // YYYY-MM-DD（业务时区）
+  status: text('status').notNull().default('OPEN'), // OPEN | REVIEWING | CLOSED
+  summary: text('summary'), // JSON：当日支付/退款/账本/毛利汇总快照
+  discrepancies: text('discrepancies'), // JSON：差异清单
+  closedByAdmin: text('closed_by_admin'),
+  closedAt: timestamp('closed_at'),
+  reopenReason: text('reopen_reason'),
+  reopenedByAdmin: text('reopened_by_admin'),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });

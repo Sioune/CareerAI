@@ -126,7 +126,7 @@ const NAV: NavGroup[] = [
   ]},
   { label: '用户与客户', pages: [
     { key: 'users', label: '用户列表', module: 'users' },
-    { key: 'benefits', label: '权益账本', module: 'users', planned: true },
+    { key: 'benefits', label: '权益账本', module: 'users' },
     { key: 'privacy', label: '隐私请求', module: 'users', planned: true },
     { key: 'tickets', label: '客服工单', module: 'tickets' },
   ]},
@@ -145,8 +145,8 @@ const NAV: NavGroup[] = [
   ]},
   { label: '财务分析', pages: [
     { key: 'finance', label: '账本 · Token成本 · 毛利', module: 'finance' },
-    { key: 'allocation', label: '收入分配', module: 'finance', planned: true },
-    { key: 'reconcile', label: '对账 · 结算报表', module: 'finance', planned: true },
+    { key: 'allocation', label: '收入分配', module: 'finance' },
+    { key: 'reconcile', label: '对账 · 结算报表', module: 'finance' },
   ]},
   { label: '网站运营', pages: [
     { key: 'site', label: '品牌 · 页面/CMS · 法律', module: 'site' },
@@ -717,10 +717,12 @@ function ReferralsTab() {
 
 function FinanceTab() {
   const [data, setData] = useState<any>(null);
+  const [summary, setSummary] = useState<any>(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
     apiFetch('/api/admin/finance/costs').then(setData).catch((e) => setError(e.message));
+    apiFetch('/api/admin/finance/summary').then(setSummary).catch(() => {});
   }, []);
 
   if (error) return <p className="text-red-600 text-sm">{error}</p>;
@@ -728,15 +730,29 @@ function FinanceTab() {
 
   return (
     <div>
-      <h2 className="text-lg font-bold text-slate-900 mb-4">财务与 AI 成本</h2>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-        <Card label="累计收入" value={fmtMoney(data.totalRevenueCents)} />
-        <Card label="AI 成本估算" value={fmtMoney(data.totalCostCents)} sub={`输入 ${data.totalTokensIn} / 输出 ${data.totalTokensOut} tokens`} />
-        <Card label="毛利" value={fmtMoney(data.grossMarginCents)} sub={data.grossMarginPct !== null ? `毛利率 ${data.grossMarginPct}%` : undefined} />
-        <Card label="AI 调用次数" value={String(data.recentEvents.length)} />
-      </div>
+      <h2 className="text-lg font-bold text-slate-900 mb-4">财务闭环 · 账本 / Token 成本 / 毛利</h2>
 
-      <h3 className="font-semibold text-sm mb-2 text-slate-700">按功能类型成本分布</h3>
+      {summary && (
+        <>
+          <h3 className="font-semibold text-sm mb-2 text-slate-700">现金口径（资金账本汇总）</h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+            <Card label="现金收入" value={fmtMoney(summary.cashInCents)} sub="PAYMENT_RECEIVED" />
+            <Card label="退款流出" value={fmtMoney(summary.refundCents)} sub="REFUND" />
+            <Card label="渠道手续费(估)" value={fmtMoney(summary.feeCents)} sub="示意口径 ≈0.6%" />
+            <Card label="净现金" value={fmtMoney(summary.netCashCents)} sub="现金收入−退款−手续费" />
+          </div>
+          <h3 className="font-semibold text-sm mb-2 text-slate-700">履约口径与毛利</h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+            <Card label="已确认履约收入(净)" value={fmtMoney(summary.recognizedNetCents)} sub={`已冲销 ${fmtMoney(summary.reversalCents)}`} />
+            <Card label="待确认收入(递延)" value={fmtMoney(summary.deferredCents)} sub="已收现金但未履约" />
+            <Card label="AI Token 成本" value={fmtMoney(summary.totalCostCents)} sub={`精确 ${(summary.totalCostMicroCents / 1e6).toFixed(4)} 分`} />
+            <Card label="毛利(履约口径)" value={fmtMoney(summary.grossMarginCents)} sub={summary.grossMarginPct !== null ? `毛利率 ${summary.grossMarginPct}%` : '暂无已确认收入'} />
+          </div>
+        </>
+      )}
+
+      <h3 className="font-semibold text-sm mb-1 text-slate-700">按功能类型成本分布</h3>
+      <p className="text-xs text-slate-400 mb-2">累计 {data.recentEvents.length} 次调用 · 输入 {data.totalTokensIn} / 输出 {data.totalTokensOut} tokens</p>
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden mb-6">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-slate-600 text-xs">
@@ -1661,6 +1677,315 @@ function ProductsTab() {
   );
 }
 
+function BenefitsTab() {
+  const [data, setData] = useState<any>(null);
+  const [error, setError] = useState('');
+  const [msg, setMsg] = useState('');
+  const [userId, setUserId] = useState('');
+  const [amount, setAmount] = useState('');
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(() => {
+    apiFetch('/api/admin/finance/entitlements').then(setData).catch((e) => setError(e.message));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setMsg(''); setError(''); setBusy(true);
+    try {
+      await apiFetch('/api/admin/finance/entitlements/adjust', {
+        method: 'POST',
+        body: JSON.stringify({ userId: Number(userId), amount: Number(amount), note: note.trim() || undefined }),
+      });
+      setMsg('调整已记入权益账本'); setUserId(''); setAmount(''); setNote('');
+      load();
+    } catch (err: any) { setError(err.message); } finally { setBusy(false); }
+  };
+
+  if (error && !data) return <p className="text-red-600 text-sm">{error}</p>;
+  if (!data) return <p className="text-slate-500 text-sm">加载中...</p>;
+
+  const typeLabel: Record<string, string> = {
+    grant: '发放', consume: '消耗', refund_return: '退回', expire: '过期', freeze: '冻结', adjust: '人工调整',
+  };
+
+  return (
+    <div>
+      <h2 className="text-lg font-bold text-slate-900 mb-4">权益账本</h2>
+      <p className="text-xs text-slate-400 mb-4">追加式账本：可用余额 = Σ发放 − Σ消耗 ± 调整（不直接改余额，全部由流水派生）。</p>
+
+      <div className="grid md:grid-cols-3 gap-6">
+        <div className="md:col-span-2">
+          <h3 className="font-semibold text-sm mb-2 text-slate-700">用户可用权益</h3>
+          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden mb-6">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-slate-600 text-xs">
+                <tr>
+                  <th className="text-left px-3 py-2">用户</th>
+                  <th className="text-left px-3 py-2">可用余额</th>
+                  <th className="text-left px-3 py-2">累计发放</th>
+                  <th className="text-left px-3 py-2">累计消耗</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.balances.map((b: any) => (
+                  <tr key={b.userId} className="border-t border-slate-100">
+                    <td className="px-3 py-2">{b.uid || b.email || `#${b.userId}`}</td>
+                    <td className="px-3 py-2 font-semibold">{b.balance}</td>
+                    <td className="px-3 py-2 text-slate-500">{b.granted}</td>
+                    <td className="px-3 py-2 text-slate-500">{b.consumed}</td>
+                  </tr>
+                ))}
+                {data.balances.length === 0 && (
+                  <tr><td colSpan={4} className="text-center text-slate-400 py-6">暂无数据</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div>
+          <h3 className="font-semibold text-sm mb-2 text-slate-700">人工调整</h3>
+          <form onSubmit={submit} className="bg-white rounded-xl border border-slate-200 p-4 space-y-3">
+            <div>
+              <label className="block text-xs text-slate-600 mb-1">用户 ID</label>
+              <input className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" value={userId} onChange={(e) => setUserId(e.target.value)} placeholder="如 2" />
+            </div>
+            <div>
+              <label className="block text-xs text-slate-600 mb-1">数量（带符号，+发放 / −扣减）</label>
+              <input className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="如 1 或 -1" />
+            </div>
+            <div>
+              <label className="block text-xs text-slate-600 mb-1">备注</label>
+              <input className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" value={note} onChange={(e) => setNote(e.target.value)} placeholder="如 客诉补偿" />
+            </div>
+            {msg && <p className="text-xs text-green-600">{msg}</p>}
+            {error && <p className="text-xs text-red-600">{error}</p>}
+            <button type="submit" disabled={busy} className="w-full bg-slate-900 text-white rounded-lg py-2 text-sm font-semibold disabled:opacity-50">
+              {busy ? '提交中...' : '记入账本'}
+            </button>
+          </form>
+        </div>
+      </div>
+
+      <h3 className="font-semibold text-sm mb-2 text-slate-700">最近流水</h3>
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-slate-600 text-xs">
+            <tr>
+              <th className="text-left px-3 py-2">时间</th>
+              <th className="text-left px-3 py-2">用户</th>
+              <th className="text-left px-3 py-2">类型</th>
+              <th className="text-left px-3 py-2">数量</th>
+              <th className="text-left px-3 py-2">来源</th>
+              <th className="text-left px-3 py-2">备注</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.recent.map((r: any) => (
+              <tr key={r.id} className="border-t border-slate-100">
+                <td className="px-3 py-2 text-slate-500">{fmtDate(r.createdAt)}</td>
+                <td className="px-3 py-2">{r.uid || r.email || `#${r.userId}`}</td>
+                <td className="px-3 py-2">{typeLabel[r.entryType] || r.entryType}</td>
+                <td className={`px-3 py-2 font-semibold ${r.amount < 0 ? 'text-red-600' : 'text-green-600'}`}>{r.amount > 0 ? `+${r.amount}` : r.amount}</td>
+                <td className="px-3 py-2 text-slate-400 text-xs">{r.refType ? `${r.refType}${r.refId ? ':' + r.refId : ''}` : '-'}</td>
+                <td className="px-3 py-2 text-slate-400 text-xs">{r.createdByAdmin ? `[${r.createdByAdmin}] ` : ''}{r.note || '-'}</td>
+              </tr>
+            ))}
+            {data.recent.length === 0 && (
+              <tr><td colSpan={6} className="text-center text-slate-400 py-6">暂无数据</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function AllocationTab() {
+  const [data, setData] = useState<any>(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    apiFetch('/api/admin/finance/allocations').then(setData).catch((e) => setError(e.message));
+  }, []);
+
+  if (error) return <p className="text-red-600 text-sm">{error}</p>;
+  if (!data) return <p className="text-slate-500 text-sm">加载中...</p>;
+
+  return (
+    <div>
+      <h2 className="text-lg font-bold text-slate-900 mb-4">收入分配</h2>
+      <p className="text-xs text-slate-400 mb-4">单次购买：支付净额在实际履约（生成优化简历）时 100% 确认到该任务；退款按额反向冲销，不删除原分配。</p>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <Card label="累计已分配" value={fmtMoney(data.totalAllocatedCents)} />
+        <Card label="已确认履约收入(毛)" value={fmtMoney(data.recognizedGrossCents)} />
+        <Card label="已冲销(退款)" value={fmtMoney(data.reversalCents)} />
+        <Card label="待确认收入(递延)" value={fmtMoney(data.deferredCents)} />
+      </div>
+
+      <h3 className="font-semibold text-sm mb-2 text-slate-700">分配明细</h3>
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-slate-600 text-xs">
+            <tr>
+              <th className="text-left px-3 py-2">时间</th>
+              <th className="text-left px-3 py-2">订单号</th>
+              <th className="text-left px-3 py-2">任务</th>
+              <th className="text-left px-3 py-2">毛额</th>
+              <th className="text-left px-3 py-2">分配额</th>
+              <th className="text-left px-3 py-2">方式</th>
+              <th className="text-left px-3 py-2">支付状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.allocations.map((a: any) => (
+              <tr key={a.id} className="border-t border-slate-100">
+                <td className="px-3 py-2 text-slate-500">{fmtDate(a.createdAt)}</td>
+                <td className="px-3 py-2 font-mono text-xs">{a.businessOrderNo || '-'}</td>
+                <td className="px-3 py-2 font-mono text-xs">{a.taskId ? String(a.taskId).slice(0, 12) : '-'}</td>
+                <td className="px-3 py-2">{fmtMoney(a.grossAmount || 0)}</td>
+                <td className="px-3 py-2 font-semibold">{fmtMoney(a.allocatedAmount || 0)}</td>
+                <td className="px-3 py-2 text-slate-400 text-xs">{a.allocationMethod || '-'}</td>
+                <td className="px-3 py-2 text-slate-500">{a.paymentStatusName || '-'}</td>
+              </tr>
+            ))}
+            {data.allocations.length === 0 && (
+              <tr><td colSpan={7} className="text-center text-slate-400 py-6">暂无分配记录（用户完成付费并生成优化简历后产生）</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function ReconcileTab({ adminRole }: { adminRole: string }) {
+  const todayShanghai = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
+  const [bizDate, setBizDate] = useState(todayShanghai);
+  const [result, setResult] = useState<any>(null);
+  const [list, setList] = useState<any[]>([]);
+  const [error, setError] = useState('');
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+  const canWrite = hasPermission(adminRole as any, 'finance', 'write');
+
+  const loadList = useCallback(() => {
+    apiFetch('/api/admin/finance/reconciliations').then((d) => setList(d.reconciliations)).catch((e) => setError(e.message));
+  }, []);
+  useEffect(() => { loadList(); }, [loadList]);
+
+  const run = async () => {
+    setError(''); setMsg(''); setResult(null); setBusy(true);
+    try {
+      const d = await apiFetch('/api/admin/finance/reconcile', { method: 'POST', body: JSON.stringify({ bizDate }) });
+      setResult(d);
+    } catch (err: any) { setError(err.message); } finally { setBusy(false); }
+  };
+
+  const close = async () => {
+    setError(''); setMsg(''); setBusy(true);
+    try {
+      await apiFetch(`/api/admin/finance/reconcile/${bizDate}/close`, { method: 'POST' });
+      setMsg(`${bizDate} 已关账并锁定`); await run(); loadList();
+    } catch (err: any) { setError(err.message); } finally { setBusy(false); }
+  };
+
+  const reopen = async (d: string) => {
+    const reason = window.prompt(`重开 ${d} 需填写原因（将记入审计日志）：`);
+    if (!reason || !reason.trim()) return;
+    setError(''); setMsg(''); setBusy(true);
+    try {
+      await apiFetch(`/api/admin/finance/reconcile/${d}/reopen`, { method: 'POST', body: JSON.stringify({ reason: reason.trim() }) });
+      setMsg(`${d} 已重开`); loadList();
+      if (d === bizDate) run();
+    } catch (err: any) { setError(err.message); } finally { setBusy(false); }
+  };
+
+  const s = result?.summary;
+
+  return (
+    <div>
+      <h2 className="text-lg font-bold text-slate-900 mb-4">对账 · 结算报表</h2>
+      <p className="text-xs text-slate-400 mb-4">按业务日（Asia/Shanghai）比对「支付/退款源表」与「资金账本」；关账 = 快照 + 锁定，重开需财务复核并记录原因。</p>
+
+      <div className="bg-white rounded-xl border border-slate-200 p-4 mb-6 flex flex-wrap items-end gap-3">
+        <div>
+          <label className="block text-xs text-slate-600 mb-1">业务日</label>
+          <input type="date" className="border border-slate-300 rounded-lg px-3 py-2 text-sm" value={bizDate} onChange={(e) => setBizDate(e.target.value)} />
+        </div>
+        <button onClick={run} disabled={busy} className="bg-slate-900 text-white rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-50">运行对账</button>
+        {result && !result.locked && canWrite && (
+          <button onClick={close} disabled={busy} className="bg-emerald-600 text-white rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-50">关账并锁定</button>
+        )}
+        {result?.locked && <span className="text-xs px-2 py-1 rounded-full bg-slate-100 text-slate-500">已关账（只读）</span>}
+      </div>
+      {msg && <p className="text-sm text-green-600 mb-3">{msg}</p>}
+      {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
+
+      {s && (
+        <>
+          <div className="mb-2">
+            {s.balanced
+              ? <span className="text-sm px-2 py-1 rounded-full bg-green-100 text-green-700">✓ 平账</span>
+              : <span className="text-sm px-2 py-1 rounded-full bg-red-100 text-red-700">✗ 存在差异</span>}
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+            <Card label="支付成功笔数" value={String(s.paymentCount)} />
+            <Card label="支付源表金额" value={fmtMoney(s.paymentsSum)} sub={`账本 ${fmtMoney(s.ledgerReceivedSum)}`} />
+            <Card label="退款成功笔数" value={String(s.refundCount)} />
+            <Card label="退款源表金额" value={fmtMoney(s.refundsSum)} sub={`账本 ${fmtMoney(s.ledgerRefundSum)}`} />
+          </div>
+          {result.discrepancies && !s.balanced && (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-6 text-xs text-red-700">
+              <p className="font-semibold mb-1">差异清单</p>
+              <pre className="whitespace-pre-wrap">{JSON.stringify(result.discrepancies, null, 2)}</pre>
+            </div>
+          )}
+        </>
+      )}
+
+      <h3 className="font-semibold text-sm mb-2 text-slate-700">已保存的对账/关账记录</h3>
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-slate-600 text-xs">
+            <tr>
+              <th className="text-left px-3 py-2">业务日</th>
+              <th className="text-left px-3 py-2">状态</th>
+              <th className="text-left px-3 py-2">平账</th>
+              <th className="text-left px-3 py-2">关账人</th>
+              <th className="text-left px-3 py-2">关账时间</th>
+              <th className="text-left px-3 py-2">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {list.map((r: any) => (
+              <tr key={r.id} className="border-t border-slate-100">
+                <td className="px-3 py-2 font-mono text-xs">{r.bizDate}</td>
+                <td className="px-3 py-2">{r.status === 'CLOSED' ? '已关账' : r.status === 'REVIEWING' ? '复核中' : '开放'}</td>
+                <td className="px-3 py-2">{r.summary ? (r.summary.balanced ? '✓' : '✗') : '-'}</td>
+                <td className="px-3 py-2 text-slate-500">{r.closedByAdmin || '-'}</td>
+                <td className="px-3 py-2 text-slate-500">{fmtDate(r.closedAt)}</td>
+                <td className="px-3 py-2">
+                  {r.status === 'CLOSED' && canWrite && (
+                    <button onClick={() => reopen(r.bizDate)} className="text-xs text-blue-600 hover:underline">重开</button>
+                  )}
+                </td>
+              </tr>
+            ))}
+            {list.length === 0 && (
+              <tr><td colSpan={6} className="text-center text-slate-400 py-6">暂无关账记录</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function PlannedTab({ title }: { title: string }) {
   return (
     <div>
@@ -1729,15 +2054,15 @@ export default function AdminApp() {
         {page === 'audit' && <AuditTab />}
         {page === 'security' && <SecurityTab />}
         {page === 'monitor' && <PlannedTab title="实时监控" />}
-        {page === 'benefits' && <PlannedTab title="权益账本" />}
+        {page === 'benefits' && <BenefitsTab />}
         {page === 'privacy' && <PlannedTab title="隐私请求" />}
         {page === 'results' && <PlannedTab title="结果版本" />}
         {page === 'qc' && <PlannedTab title="质量抽检" />}
         {page === 'failures' && <PlannedTab title="失败队列" />}
         {page === 'files' && <PlannedTab title="文件管理" />}
         {page === 'products' && <ProductsTab />}
-        {page === 'allocation' && <PlannedTab title="收入分配" />}
-        {page === 'reconcile' && <PlannedTab title="对账 · 结算报表" />}
+        {page === 'allocation' && <AllocationTab />}
+        {page === 'reconcile' && <ReconcileTab adminRole={adminRole} />}
         {page === 'seo' && <PlannedTab title="SEO" />}
         {page === 'routing' && <PlannedTab title="路由 · 评测" />}
         {page === 'jd' && <PlannedTab title="JD来源" />}

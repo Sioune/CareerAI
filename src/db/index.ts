@@ -3,6 +3,7 @@ import {
   users, resumeVersions, rewriteSuggestions, clarificationQuestions, userFeedbacks, eventLogs, payments, admins, refunds, auditLogs, costEvents,
   adminMfa, siteConfigs, aiProviders, aiModels, promptVersions, supportTickets, ticketReplies, notifications, riskFlags, revenueAllocations,
   approvals, products, skus, priceVersions,
+  entitlementLedger, financeLedger, modelPrices, reconciliations,
 } from "./schema.ts";
 
 const { Pool } = pg;
@@ -47,6 +48,10 @@ const tableMap = new Map<any, string>([
   [products,                "products"],
   [skus,                    "skus"],
   [priceVersions,           "price_versions"],
+  [entitlementLedger,       "entitlement_ledger"],
+  [financeLedger,           "finance_ledger"],
+  [modelPrices,             "model_prices"],
+  [reconciliations,         "reconciliations"],
 ]);
 
 // ─── Column name helpers ──────────────────────────────────────────────────────
@@ -162,6 +167,25 @@ const fieldToCol: Record<string, string> = {
   skuId:             "sku_id",
   priceVersionId:    "price_version_id",
   priceSnapshot:     "price_snapshot",
+
+  // Phase 2B 财务闭环
+  entryType:         "entry_type",
+  refType:           "ref_type",
+  refId:             "ref_id",
+  note:              "note",
+  amountCents:       "amount_cents",
+  refundId:          "refund_id",
+  source:            "source",
+  inputPerMillion:   "input_per_million",
+  outputPerMillion:  "output_per_million",
+  costMicroCents:    "cost_micro_cents",
+  bizDate:           "biz_date",
+  summary:           "summary",
+  discrepancies:     "discrepancies",
+  closedByAdmin:     "closed_by_admin",
+  closedAt:          "closed_at",
+  reopenReason:      "reopen_reason",
+  reopenedByAdmin:   "reopened_by_admin",
 };
 
 const colToField: Record<string, string> = {
@@ -274,6 +298,25 @@ const colToField: Record<string, string> = {
   sku_id:              "skuId",
   price_version_id:    "priceVersionId",
   price_snapshot:      "priceSnapshot",
+
+  // Phase 2B 财务闭环
+  entry_type:          "entryType",
+  ref_type:            "refType",
+  ref_id:              "refId",
+  note:                "note",
+  amount_cents:        "amountCents",
+  refund_id:           "refundId",
+  source:              "source",
+  input_per_million:   "inputPerMillion",
+  output_per_million:  "outputPerMillion",
+  cost_micro_cents:    "costMicroCents",
+  biz_date:            "bizDate",
+  summary:             "summary",
+  discrepancies:       "discrepancies",
+  closed_by_admin:     "closedByAdmin",
+  closed_at:           "closedAt",
+  reopen_reason:       "reopenReason",
+  reopened_by_admin:   "reopenedByAdmin",
 };
 
 function colName(fieldObj: any): string {
@@ -338,7 +381,7 @@ async function runSelect(tableName: string, condition: any): Promise<any[]> {
   return rows.map(rowToJs);
 }
 
-async function runInsert(tableName: string, data: Record<string, any>): Promise<any[]> {
+async function runInsert(tableName: string, data: Record<string, any>, options?: { onConflictDoNothing?: boolean }): Promise<any[]> {
   const cols: string[] = [];
   const placeholders: string[] = [];
   const values: any[] = [];
@@ -350,9 +393,16 @@ async function runInsert(tableName: string, data: Record<string, any>): Promise<
     placeholders.push(`$${i++}`);
     values.push(val);
   }
-  const query = `INSERT INTO ${tableName} (${cols.join(", ")}) VALUES (${placeholders.join(", ")}) RETURNING *`;
+  const conflictClause = options?.onConflictDoNothing ? " ON CONFLICT DO NOTHING" : "";
+  const query = `INSERT INTO ${tableName} (${cols.join(", ")}) VALUES (${placeholders.join(", ")})${conflictClause} RETURNING *`;
   const { rows } = await pool.query(query, values);
   return rows.map(rowToJs);
+}
+
+// Escape hatch for raw SQL (idempotent DDL, unique-key existence checks, SUM aggregations)
+// that the minimal query builder above does not express. Returns the node-postgres result.
+export async function rawQuery(sql: string, params: any[] = []): Promise<{ rows: any[]; rowCount: number }> {
+  return pool.query(sql, params) as any;
 }
 
 async function runUpdate(tableName: string, updateData: Record<string, any>, condition: any): Promise<{ success: boolean }> {
@@ -394,10 +444,10 @@ function makeSelectChain(table: any, condition: any = null) {
   return chain;
 }
 
-function makeInsertChain(table: any, data: Record<string, any>) {
+function makeInsertChain(table: any, data: Record<string, any>, options?: { onConflictDoNothing?: boolean }) {
   const exec = (): Promise<any[]> => {
     const tableName = tableMap.get(table) ?? "unknown";
-    return runInsert(tableName, data);
+    return runInsert(tableName, data, options);
   };
   const chain = exec() as any;
   chain.returning = () => chain;
@@ -431,7 +481,7 @@ export const db = {
     from: (table: any) => makeSelectChain(table),
   }),
   insert: (table: any) => ({
-    values: (data: any) => makeInsertChain(table, data),
+    values: (data: any, options?: { onConflictDoNothing?: boolean }) => makeInsertChain(table, data, options),
   }),
   update: (table: any) => ({
     set: (data: any) => ({

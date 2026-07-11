@@ -3,3 +3,4 @@
 - [CareerAI real payment gateway](careerai-payment-gateway.md) — WeChat/Alipay via ICBC merchant gateway, HMAC-signed, no simulated success path; poll/callback only.
 - [CareerAI DB wrapper table registration](careerai-db-wrapper-tables.md) — new schema.ts tables must also be added to src/db/index.ts tableMap/fieldToCol/colToField or queries silently fail with "relation unknown".
 - [CareerAI admin back-office](careerai-admin-backoffice.md) — real (non-mock) admin module at /admin scoped to phase-1 subset of a much larger enterprise PRD; RBAC/audit/CMS deferred.
+- [CareerAI finance closure model](careerai-finance-closure.md) — revenue recognized at fulfillment (not payment); append-only ledgers keyed by UNIQUE(entry_type,ref_type,ref_id); micro-cent cost; Asia/Shanghai bizDate gotchas.

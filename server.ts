@@ -57,11 +57,12 @@ function getCjkFontFaceStyle(): string {
 const CJK_FONT_FAMILY = "'NotoSansSC', \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", \"Noto Sans CJK SC\", Arial, sans-serif";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import { db, eq, and } from "./src/db/index.ts";
+import { db, eq, and, rawQuery } from "./src/db/index.ts";
 import {
   users, resumeVersions, rewriteSuggestions, clarificationQuestions, userFeedbacks, eventLogs, payments, admins, refunds, auditLogs, costEvents,
   adminMfa, siteConfigs, aiProviders, aiModels, promptVersions, supportTickets, ticketReplies, notifications, riskFlags, revenueAllocations,
   approvals, products, skus, priceVersions,
+  entitlementLedger, financeLedger, modelPrices, reconciliations,
 } from "./src/db/schema.ts";
 import { createPaymentOrder, queryPaymentStatus, createRefund, isPaymentConfigured } from "./src/lib/payment-client.ts";
 import { hasPermission, ROLES as ADMIN_ROLE_LIST, type PermModule } from "./src/shared/permissions.ts";
@@ -193,18 +194,41 @@ async function logAudit(admin: any, action: string, targetType?: string, targetI
   }
 }
 
-// Approximate Gemini pricing (USD per 1M tokens), converted to CNY cents. Adjust as real billing data becomes available.
+// Approximate Gemini pricing (USD per 1M tokens), converted to CNY cents. 「示意口径」（非真实供应商账单）。
+// 这两个常量仅作为 model_prices 表未命中时的兜底；正常情况下走 model_prices 的生效单价（PRD §8.3）。
 const GEMINI_INPUT_COST_PER_1M_CENTS_CNY = 70; // ~$0.10/1M input tokens, illustrative
 const GEMINI_OUTPUT_COST_PER_1M_CENTS_CNY = 280; // ~$0.40/1M output tokens, illustrative
+
+// 渠道支付手续费率——「示意口径」估算，非真实结算费率（PRD §8.2/§8.7 允许 usage_source=estimated）。
+const CHANNEL_FEE_RATE = 0.006; // ≈0.6%，微信/支付宝常见量级；仅供毛利趋势参考，可后续用渠道账单校正。
+
+// 按调用时间点取生效的模型单价（PRD §3.4「历史成本继续使用当时价格」）。未命中回退到常量。
+async function getEffectiveModelPrice(provider: string, model: string): Promise<{ id: number | null; inputPerMillion: number; outputPerMillion: number }> {
+  try {
+    const res = await rawQuery(
+      `SELECT id, input_per_million, output_per_million FROM model_prices
+       WHERE provider = $1 AND model = $2 AND effective_at <= NOW()
+       ORDER BY effective_at DESC LIMIT 1`,
+      [provider, model],
+    );
+    if (res.rows.length > 0) {
+      const r = res.rows[0];
+      return { id: Number(r.id), inputPerMillion: Number(r.input_per_million), outputPerMillion: Number(r.output_per_million) };
+    }
+  } catch (err) {
+    console.error("[Cost] model price lookup failed, using fallback constants:", err);
+  }
+  return { id: null, inputPerMillion: GEMINI_INPUT_COST_PER_1M_CENTS_CNY, outputPerMillion: GEMINI_OUTPUT_COST_PER_1M_CENTS_CNY };
+}
 
 async function logAiCostEvent(taskId: string | undefined, model: string, operation: string, usage: any) {
   try {
     const tokensIn = usage?.promptTokenCount || 0;
     const tokensOut = usage?.candidatesTokenCount || 0;
-    const costCents = Math.round(
-      (tokensIn / 1_000_000) * GEMINI_INPUT_COST_PER_1M_CENTS_CNY +
-      (tokensOut / 1_000_000) * GEMINI_OUTPUT_COST_PER_1M_CENTS_CNY
-    );
+    const price = await getEffectiveModelPrice("gemini", model);
+    // 微分 = 分 × 1,000,000。tokens × (分/百万tokens) 恰为整数微分，避免小额调用被 Math.round 抹成 0（PRD §8.4）。
+    const costMicroCents = tokensIn * price.inputPerMillion + tokensOut * price.outputPerMillion;
+    const costCents = Math.round(costMicroCents / 1_000_000);
     await db.insert(costEvents).values({
       taskId: taskId || null,
       provider: "gemini",
@@ -213,9 +237,162 @@ async function logAiCostEvent(taskId: string | undefined, model: string, operati
       tokensIn,
       tokensOut,
       costCents,
+      costMicroCents,
+      priceVersionId: price.id,
     } as any);
   } catch (err) {
     console.error("[Cost] Failed to log AI cost event:", err);
+  }
+}
+
+// ─── Phase 2B 财务闭环：账本写入唯一入口（追加式 + 幂等）─────────────────────────
+// 幂等靠 UNIQUE(entry_type, ref_type, ref_id) + ON CONFLICT DO NOTHING，
+// 因为支付成功可能同时由异步回调与主动轮询触发；退款成功可能由执行与回调重复触发。
+
+// 支付成功：现金入账 + 渠道手续费（估算）+ 发放解锁权益。履约收入不在此确认（见 recordTaskFulfillment）。
+async function recordPaymentSuccess(order: any) {
+  if (!order || order.status !== 2) return;
+  const paymentId = order.id;
+  const amount = order.amount || 0;
+  try {
+    await db.insert(financeLedger).values({
+      entryType: "PAYMENT_RECEIVED", amountCents: amount, paymentId, taskId: order.taskId || null,
+      refType: "payment", refId: String(paymentId), priceVersionId: order.priceVersionId || null,
+      source: "real", note: order.statusName || null,
+    }, { onConflictDoNothing: true });
+
+    if (amount > 0) {
+      const feeCents = Math.round(amount * CHANNEL_FEE_RATE);
+      if (feeCents > 0) {
+        await db.insert(financeLedger).values({
+          entryType: "PAYMENT_FEE", amountCents: -feeCents, paymentId, taskId: order.taskId || null,
+          refType: "payment", refId: String(paymentId), source: "estimated",
+          note: `渠道手续费（示意口径估算 ≈ ${(CHANNEL_FEE_RATE * 100).toFixed(2)}%）`,
+        }, { onConflictDoNothing: true });
+      }
+    }
+
+    await db.insert(entitlementLedger).values({
+      userId: order.userId, entryType: "grant", amount: 1,
+      refType: "payment", refId: String(paymentId),
+      note: amount === 0 ? "推荐奖励免费解锁" : "支付成功发放",
+    }, { onConflictDoNothing: true });
+  } catch (err) {
+    console.error("[Finance] recordPaymentSuccess failed:", err);
+  }
+}
+
+// 履约确认：任务实际被优化（付费闸门通过）时，确认履约收入 + 消耗权益 + 写收入分配（PRD §8.5 单次购买 100%）。
+async function recordTaskFulfillment(userId: number, taskId: string) {
+  if (!taskId) return;
+  try {
+    const paidRows = await db.select().from(payments).where(eq(payments.userId, userId)) as any[];
+    const order = paidRows.find((p: any) => p.taskId === String(taskId) && p.status === 2);
+    if (!order) return; // 未付费不确认收入
+    const amount = order.amount || 0;
+
+    // 消耗 1 份权益（幂等：同一任务只消耗一次）
+    await db.insert(entitlementLedger).values({
+      userId, entryType: "consume", amount: -1, refType: "task", refId: String(taskId), note: "优化简历履约",
+    }, { onConflictDoNothing: true });
+
+    // 收入分配：单次购买净额 100% 分配到该履约任务（幂等：revenue_allocations.payment_id 唯一）
+    await db.insert(revenueAllocations).values({
+      paymentId: order.id, taskId: String(taskId), grossAmount: amount, allocatedAmount: amount, allocationMethod: "single_100",
+    }, { onConflictDoNothing: true });
+
+    // 资金账本：履约收入确认
+    await db.insert(financeLedger).values({
+      entryType: "REVENUE_ALLOCATED", amountCents: amount, paymentId: order.id, taskId: String(taskId),
+      refType: "payment", refId: String(order.id), priceVersionId: order.priceVersionId || null, source: "real",
+    }, { onConflictDoNothing: true });
+  } catch (err) {
+    console.error("[Finance] recordTaskFulfillment failed:", err);
+  }
+}
+
+// 退款成功：现金流出 + 已确认履约收入按退款额反向冲销（PRD §8.5/§8.7：不删除原分配，用反向流水）。
+async function recordRefundSuccess(refund: any) {
+  if (!refund) return;
+  const refundId = refund.id;
+  const amount = refund.amount || 0;
+  try {
+    const orderRows = await db.select().from(payments).where(eq(payments.id, refund.paymentId)) as any[];
+    const order = orderRows[0];
+    await db.insert(financeLedger).values({
+      entryType: "REFUND", amountCents: -amount, paymentId: refund.paymentId, refundId,
+      taskId: order?.taskId || null, refType: "refund", refId: String(refundId), source: "real", note: refund.reason || null,
+    }, { onConflictDoNothing: true });
+
+    if (order) {
+      const allocated = await db.select().from(revenueAllocations).where(eq(revenueAllocations.paymentId, order.id)) as any[];
+      if (allocated.length > 0) {
+        await db.insert(financeLedger).values({
+          entryType: "REVENUE_REVERSAL", amountCents: -amount, paymentId: order.id, refundId,
+          taskId: order.taskId || null, refType: "refund", refId: String(refundId), source: "real", note: "退款冲销履约收入",
+        }, { onConflictDoNothing: true });
+      }
+    }
+  } catch (err) {
+    console.error("[Finance] recordRefundSuccess failed:", err);
+  }
+}
+
+// 建表（幂等）：CREATE TABLE IF NOT EXISTS + 幂等唯一索引 + cost_events 加列 + 种子模型单价。
+// drizzle-kit push 在本项目不可用，运行库走 DATABASE_URL，用 rawQuery 直接建表。
+async function ensureFinanceTables() {
+  try {
+    await rawQuery(`CREATE TABLE IF NOT EXISTS entitlement_ledger (
+      id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL, entry_type TEXT NOT NULL, amount INTEGER NOT NULL,
+      ref_type TEXT, ref_id TEXT, note TEXT, created_by_admin TEXT, created_at TIMESTAMP DEFAULT NOW())`);
+    await rawQuery(`CREATE TABLE IF NOT EXISTS finance_ledger (
+      id SERIAL PRIMARY KEY, entry_type TEXT NOT NULL, amount_cents INTEGER NOT NULL, payment_id INTEGER, refund_id INTEGER,
+      task_id TEXT, ref_type TEXT, ref_id TEXT, price_version_id INTEGER, note TEXT, source TEXT,
+      created_by_admin TEXT, created_at TIMESTAMP DEFAULT NOW())`);
+    await rawQuery(`CREATE TABLE IF NOT EXISTS model_prices (
+      id SERIAL PRIMARY KEY, provider TEXT NOT NULL, model TEXT NOT NULL,
+      input_per_million INTEGER NOT NULL DEFAULT 0, output_per_million INTEGER NOT NULL DEFAULT 0,
+      currency TEXT NOT NULL DEFAULT 'CNY', source TEXT NOT NULL DEFAULT 'illustrative',
+      effective_at TIMESTAMP NOT NULL DEFAULT NOW(), created_by_admin TEXT, created_at TIMESTAMP DEFAULT NOW())`);
+    await rawQuery(`CREATE TABLE IF NOT EXISTS reconciliations (
+      id SERIAL PRIMARY KEY, biz_date TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'OPEN',
+      summary TEXT, discrepancies TEXT, closed_by_admin TEXT, closed_at TIMESTAMP,
+      reopen_reason TEXT, reopened_by_admin TEXT, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW())`);
+
+    await rawQuery(`ALTER TABLE cost_events ADD COLUMN IF NOT EXISTS cost_micro_cents BIGINT NOT NULL DEFAULT 0`);
+    await rawQuery(`ALTER TABLE cost_events ADD COLUMN IF NOT EXISTS price_version_id INTEGER`);
+
+    await rawQuery(`CREATE UNIQUE INDEX IF NOT EXISTS ux_entitlement_ledger_ref ON entitlement_ledger (entry_type, ref_type, ref_id)`);
+    await rawQuery(`CREATE UNIQUE INDEX IF NOT EXISTS ux_finance_ledger_ref ON finance_ledger (entry_type, ref_type, ref_id)`);
+    await rawQuery(`CREATE UNIQUE INDEX IF NOT EXISTS ux_revenue_allocations_payment ON revenue_allocations (payment_id)`);
+    await rawQuery(`CREATE UNIQUE INDEX IF NOT EXISTS ux_model_prices_effective ON model_prices (provider, model, effective_at)`);
+
+    // 种子：示意口径的 Gemini 单价，生效时间设为很早以覆盖全部历史调用。
+    await rawQuery(
+      `INSERT INTO model_prices (provider, model, input_per_million, output_per_million, currency, source, effective_at)
+       VALUES ($1,$2,$3,$4,'CNY','illustrative', TIMESTAMP '2020-01-01 00:00:00')
+       ON CONFLICT (provider, model, effective_at) DO NOTHING`,
+      ["gemini", "gemini-3.5-flash", GEMINI_INPUT_COST_PER_1M_CENTS_CNY, GEMINI_OUTPUT_COST_PER_1M_CENTS_CNY],
+    );
+  } catch (err) {
+    console.error("[Finance] ensureFinanceTables failed:", err);
+  }
+}
+
+// 启动回填（幂等）：为历史「已支付」订单与「已退款」退款单补记现金流水与权益，使对账在历史日也平账。
+// 只补现金口径与权益发放，不臆测历史任务是否已履约（履约收入仅在实际优化时确认）。
+async function backfillFinanceLedgers() {
+  try {
+    const paidOrders = await db.select().from(payments) as any[];
+    for (const order of paidOrders.filter((p: any) => p.status === 2)) {
+      await recordPaymentSuccess(order);
+    }
+    const allRefunds = await db.select().from(refunds) as any[];
+    for (const refund of allRefunds.filter((r: any) => r.status === 2)) {
+      await recordRefundSuccess(refund);
+    }
+  } catch (err) {
+    console.error("[Finance] backfillFinanceLedgers failed:", err);
   }
 }
 
@@ -403,6 +580,10 @@ async function startServer() {
 
   initCjkFont().catch(() => {});
   seedDefaultAdmin().catch(() => {});
+  // Phase 2B 财务闭环：先建表/加列/种子，再回填历史现金流水与权益（均幂等）。
+  ensureFinanceTables()
+    .then(() => backfillFinanceLedgers())
+    .catch((e) => console.error("[Finance] startup init failed:", e));
 
   app.use(express.json({ limit: "10mb" }));
 
@@ -535,6 +716,9 @@ async function startServer() {
           statusName: "推荐奖励免费解锁",
           paidAt: new Date(),
         } as any);
+        // 免费解锁也是一次「支付成功」：记 0 元现金流水 + 发放解锁权益（履约收入仍在优化时确认，且为 0）。
+        const createdRows = await db.select().from(payments).where(eq(payments.businessOrderNo, referralOrderNo)) as any[];
+        if (createdRows[0]) recordPaymentSuccess(createdRows[0]).catch(() => {});
       }
 
       return res.json({ success: true, referredUids });
@@ -662,6 +846,7 @@ async function startServer() {
             .where(eq(payments.businessOrderNo, businessOrderNo));
           if (live.status === 2 && order.status !== 2 && order.userId) {
             evaluateRiskRules(order.userId).catch(() => {});
+            recordPaymentSuccess({ ...order, status: 2 }).catch(() => {}); // 幂等：现金入账+权益发放
           }
         }
         return res.json({ status: live.status, statusName: live.statusName, paidAt: live.paidAt });
@@ -708,6 +893,7 @@ async function startServer() {
           .where(eq(payments.businessOrderNo, businessOrderNo));
         if (status === 2 && order.status !== 2 && order.userId) {
           evaluateRiskRules(order.userId).catch(() => {});
+          recordPaymentSuccess({ ...order, status: 2 }).catch(() => {}); // 幂等：现金入账+权益发放
         }
       }
 
@@ -979,6 +1165,8 @@ async function startServer() {
           code: "payment_required"
         });
       }
+      // 付费闸门通过 = 任务履约：确认履约收入 + 消耗权益 + 写收入分配（均幂等，仅首次生效）。
+      recordTaskFulfillment(dbUser.id, String(taskId)).catch(() => {});
     }
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -3392,6 +3580,7 @@ ${originalText}
     } as any).where(eq(refunds.id, refund.id));
 
     if (refundResult.status === 2) {
+      recordRefundSuccess({ ...refund, status: 2 }).catch(() => {}); // 幂等：退款现金流出 + 履约收入冲销
       const allRefundsForPayment = await db.select().from(refunds).where(eq(refunds.paymentId, order.id)) as any[];
       const totalRefunded = allRefundsForPayment
         .filter((r: any) => r.id === refund.id ? true : r.status === 2)
@@ -3725,6 +3914,7 @@ ${originalText}
       } as any).where(eq(refunds.id, refund.id));
 
       if (notify.status === 2) {
+        recordRefundSuccess({ ...refund, status: 2 }).catch(() => {}); // 幂等：退款现金流出 + 履约收入冲销
         const paymentRows = await db.select().from(payments).where(eq(payments.id, refund.paymentId)) as any[];
         const payment = paymentRows[0];
         if (payment) {
@@ -3886,6 +4076,275 @@ ${originalText}
       });
     } catch (err: any) {
       console.error("Admin finance costs error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ===================== Phase 2B 财务闭环（账本 / 收入分配 / 对账关账）=====================
+
+  // 业务日（Asia/Shanghai）YYYY-MM-DD
+  function bizDateOf(ts: any): string | null {
+    if (!ts) return null;
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return null;
+    return d.toLocaleDateString("en-CA", { timeZone: "Asia/Shanghai" });
+  }
+
+  // 账本按 entry_type 汇总（分）。绝不整表求和：现金口径与履约口径共表，方向/含义不同。
+  async function summarizeFinanceLedger() {
+    const rows = await db.select().from(financeLedger) as any[];
+    const byType: Record<string, { count: number; amountCents: number }> = {};
+    for (const r of rows) {
+      const k = r.entryType || "unknown";
+      if (!byType[k]) byType[k] = { count: 0, amountCents: 0 };
+      byType[k].count += 1;
+      byType[k].amountCents += r.amountCents || 0;
+    }
+    const g = (k: string) => byType[k]?.amountCents || 0;
+    const cashInCents = g("PAYMENT_RECEIVED");
+    const refundCents = -g("REFUND");           // 存负值，取正
+    const feeCents = -g("PAYMENT_FEE");         // 估算，取正
+    const recognizedGrossCents = g("REVENUE_ALLOCATED");
+    const reversalCents = -g("REVENUE_REVERSAL");
+    const recognizedNetCents = recognizedGrossCents - reversalCents;
+    const netCashCents = cashInCents - refundCents - feeCents;
+    const deferredCents = (cashInCents - refundCents) - recognizedNetCents; // 待确认（递延）
+    return { byType, cashInCents, refundCents, feeCents, recognizedGrossCents, reversalCents, recognizedNetCents, netCashCents, deferredCents };
+  }
+
+  async function totalCostMicroCents(): Promise<number> {
+    const res = await rawQuery(`SELECT COALESCE(SUM(cost_micro_cents),0) AS micro FROM cost_events`);
+    return Number(res.rows[0]?.micro || 0);
+  }
+
+  // 财务汇总卡片（现金口径 + 履约口径 + 毛利）
+  app.get("/api/admin/finance/summary", requireAdmin, requirePermission("finance", "read"), async (req, res) => {
+    try {
+      const s = await summarizeFinanceLedger();
+      const microCost = await totalCostMicroCents();
+      const totalCostCents = Math.round(microCost / 1_000_000);
+      const grossMarginCents = s.recognizedNetCents - totalCostCents; // 履约口径毛利
+      const grossMarginPct = s.recognizedNetCents > 0
+        ? Math.round((grossMarginCents / s.recognizedNetCents) * 1000) / 10 : null;
+      const cashMarginCents = s.netCashCents - totalCostCents;
+      return res.json({
+        ...s,
+        totalCostCents,
+        totalCostMicroCents: microCost,
+        grossMarginCents,
+        grossMarginPct,
+        cashMarginCents,
+        feeNote: "渠道手续费为示意口径估算（≈0.6%），非真实结算费率",
+      });
+    } catch (err: any) {
+      console.error("Finance summary error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 权益账本：按用户派生可用余额 + 最近流水
+  app.get("/api/admin/finance/entitlements", requireAdmin, requirePermission("finance", "read"), async (req, res) => {
+    try {
+      const rows = await db.select().from(entitlementLedger) as any[];
+      const allUsers = await db.select().from(users) as any[];
+      const usersById = new Map(allUsers.map((u: any) => [u.id, u]));
+      const balances: Record<number, { userId: number; uid: string; email: string; balance: number; granted: number; consumed: number }> = {};
+      for (const r of rows) {
+        if (!balances[r.userId]) {
+          const u = usersById.get(r.userId);
+          balances[r.userId] = { userId: r.userId, uid: u?.uid || "", email: u?.email || "", balance: 0, granted: 0, consumed: 0 };
+        }
+        balances[r.userId].balance += r.amount || 0;
+        if ((r.amount || 0) > 0) balances[r.userId].granted += r.amount;
+        else balances[r.userId].consumed += -(r.amount || 0);
+      }
+      const recent = rows
+        .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+        .slice(0, 100)
+        .map((r: any) => ({ ...r, uid: usersById.get(r.userId)?.uid || "", email: usersById.get(r.userId)?.email || "" }));
+      return res.json({ balances: Object.values(balances).sort((a, b) => b.balance - a.balance), recent });
+    } catch (err: any) {
+      console.error("Finance entitlements error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 权益人工调整（追加式 adjust 流水，不改历史；带符号）
+  app.post("/api/admin/finance/entitlements/adjust", requireAdmin, requirePermission("finance", "write"), async (req: any, res) => {
+    try {
+      const { userId, amount, note } = req.body || {};
+      const uid = Number(userId);
+      const amt = Number(amount);
+      if (!uid || !Number.isFinite(amt) || amt === 0) return res.status(400).json({ error: "userId 与非零 amount 必填" });
+      const userRows = await db.select().from(users).where(eq(users.id, uid)) as any[];
+      if (!userRows[0]) return res.status(404).json({ error: "用户不存在" });
+      await db.insert(entitlementLedger).values({
+        userId: uid, entryType: "adjust", amount: amt, refType: "manual", refId: null,
+        note: note?.trim() || null, createdByAdmin: req.admin.username,
+      } as any);
+      await logAudit(req.admin, "entitlement_adjusted", "user", String(uid), { amount: amt, note: note?.trim() || null });
+      return res.json({ success: true });
+    } catch (err: any) {
+      console.error("Finance entitlement adjust error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 收入分配明细（revenue_allocations + 履约/冲销流水汇总）
+  app.get("/api/admin/finance/allocations", requireAdmin, requirePermission("finance", "read"), async (req, res) => {
+    try {
+      const allocs = await db.select().from(revenueAllocations) as any[];
+      const allPayments = await db.select().from(payments) as any[];
+      const paymentsById = new Map(allPayments.map((p: any) => [p.id, p]));
+      const rows = allocs
+        .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+        .map((a: any) => {
+          const p = paymentsById.get(a.paymentId);
+          return { ...a, businessOrderNo: p?.businessOrderNo || "", userId: p?.userId || null, paymentStatus: p?.status ?? null, paymentStatusName: p?.statusName || "" };
+        });
+      const s = await summarizeFinanceLedger();
+      return res.json({
+        allocations: rows,
+        totalAllocatedCents: allocs.reduce((sum: number, a: any) => sum + (a.allocatedAmount || 0), 0),
+        recognizedGrossCents: s.recognizedGrossCents,
+        reversalCents: s.reversalCents,
+        recognizedNetCents: s.recognizedNetCents,
+        deferredCents: s.deferredCents,
+      });
+    } catch (err: any) {
+      console.error("Finance allocations error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 对账计算（不落状态）：比对「支付/退款源表」与「资金账本对应流水」，产出快照 + 差异清单
+  async function computeReconciliation(bizDate: string) {
+    const allPayments = await db.select().from(payments) as any[];
+    const allRefunds = await db.select().from(refunds) as any[];
+    const ledger = await db.select().from(financeLedger) as any[];
+
+    const dayPaid = allPayments.filter((p: any) => p.status === 2 && bizDateOf(p.paidAt) === bizDate);
+    const dayPaidIds = new Set(dayPaid.map((p: any) => p.id));
+    const ledgerReceived = ledger.filter((l: any) => l.entryType === "PAYMENT_RECEIVED" && dayPaidIds.has(l.paymentId));
+    const ledgerReceivedPaymentIds = new Set(ledgerReceived.map((l: any) => l.paymentId));
+    const paymentsSum = dayPaid.reduce((s: number, p: any) => s + (p.amount || 0), 0);
+    const ledgerReceivedSum = ledgerReceived.reduce((s: number, l: any) => s + (l.amountCents || 0), 0);
+    const missingLedgerPaymentIds = dayPaid.filter((p: any) => !ledgerReceivedPaymentIds.has(p.id)).map((p: any) => p.id);
+
+    const dayRefunds = allRefunds.filter((r: any) => r.status === 2 && bizDateOf(r.updatedAt) === bizDate);
+    const dayRefundIds = new Set(dayRefunds.map((r: any) => r.id));
+    const ledgerRefunds = ledger.filter((l: any) => l.entryType === "REFUND" && dayRefundIds.has(l.refundId));
+    const ledgerRefundIds = new Set(ledgerRefunds.map((l: any) => l.refundId));
+    const refundsSum = dayRefunds.reduce((s: number, r: any) => s + (r.amount || 0), 0);
+    const ledgerRefundSum = -ledgerRefunds.reduce((s: number, l: any) => s + (l.amountCents || 0), 0);
+    const missingLedgerRefundIds = dayRefunds.filter((r: any) => !ledgerRefundIds.has(r.id)).map((r: any) => r.id);
+
+    const discrepancies = {
+      paymentAmountMismatch: paymentsSum !== ledgerReceivedSum,
+      refundAmountMismatch: refundsSum !== ledgerRefundSum,
+      missingLedgerPaymentIds,
+      missingLedgerRefundIds,
+    };
+    const balanced =
+      paymentsSum === ledgerReceivedSum &&
+      refundsSum === ledgerRefundSum &&
+      missingLedgerPaymentIds.length === 0 &&
+      missingLedgerRefundIds.length === 0;
+    const summary = {
+      bizDate,
+      paymentCount: dayPaid.length,
+      paymentsSum,
+      ledgerReceivedSum,
+      refundCount: dayRefunds.length,
+      refundsSum,
+      ledgerRefundSum,
+      balanced,
+      computedAt: new Date().toISOString(),
+    };
+    return { summary, discrepancies, balanced };
+  }
+
+  // 对账列表（含已保存状态）
+  app.get("/api/admin/finance/reconciliations", requireAdmin, requirePermission("finance", "read"), async (req, res) => {
+    try {
+      const rows = await db.select().from(reconciliations) as any[];
+      rows.sort((a: any, b: any) => (a.bizDate < b.bizDate ? 1 : -1));
+      return res.json({ reconciliations: rows.map((r: any) => ({
+        ...r,
+        summary: r.summary ? JSON.parse(r.summary) : null,
+        discrepancies: r.discrepancies ? JSON.parse(r.discrepancies) : null,
+      })) });
+    } catch (err: any) {
+      console.error("Reconciliations list error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 运行某业务日对账（即时计算，不锁定；若已关账则只读返回）
+  app.post("/api/admin/finance/reconcile", requireAdmin, requirePermission("finance", "read"), async (req: any, res) => {
+    try {
+      const bizDate = (req.body?.bizDate || "").trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(bizDate)) return res.status(400).json({ error: "bizDate 需为 YYYY-MM-DD" });
+      const existing = await db.select().from(reconciliations).where(eq(reconciliations.bizDate, bizDate)) as any[];
+      if (existing[0]?.status === "CLOSED") {
+        return res.json({
+          bizDate, status: "CLOSED", locked: true,
+          summary: existing[0].summary ? JSON.parse(existing[0].summary) : null,
+          discrepancies: existing[0].discrepancies ? JSON.parse(existing[0].discrepancies) : null,
+        });
+      }
+      const { summary, discrepancies, balanced } = await computeReconciliation(bizDate);
+      return res.json({ bizDate, status: existing[0]?.status || "OPEN", locked: false, balanced, summary, discrepancies });
+    } catch (err: any) {
+      console.error("Reconcile compute error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 关账：快照当日报表 + 差异清单，并锁定状态（PRD §8.8）
+  app.post("/api/admin/finance/reconcile/:bizDate/close", requireAdmin, requirePermission("finance", "write"), async (req: any, res) => {
+    try {
+      const bizDate = req.params.bizDate;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(bizDate)) return res.status(400).json({ error: "bizDate 需为 YYYY-MM-DD" });
+      const existing = await db.select().from(reconciliations).where(eq(reconciliations.bizDate, bizDate)) as any[];
+      if (existing[0]?.status === "CLOSED") return res.status(409).json({ error: "该业务日已关账" });
+      const { summary, discrepancies } = await computeReconciliation(bizDate);
+      const payload = {
+        status: "CLOSED",
+        summary: JSON.stringify(summary),
+        discrepancies: JSON.stringify(discrepancies),
+        closedByAdmin: req.admin.username,
+        closedAt: new Date(),
+        updatedAt: new Date(),
+      };
+      if (existing[0]) {
+        await db.update(reconciliations).set(payload as any).where(eq(reconciliations.bizDate, bizDate));
+      } else {
+        await db.insert(reconciliations).values({ bizDate, ...payload } as any);
+      }
+      await logAudit(req.admin, "reconciliation_closed", "reconciliation", bizDate, { balanced: summary.balanced });
+      return res.json({ success: true, bizDate, status: "CLOSED", summary, discrepancies });
+    } catch (err: any) {
+      console.error("Reconcile close error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 重开：需财务复核并记录原因（PRD §8.8）
+  app.post("/api/admin/finance/reconcile/:bizDate/reopen", requireAdmin, requirePermission("finance", "write"), async (req: any, res) => {
+    try {
+      const bizDate = req.params.bizDate;
+      const reason = (req.body?.reason || "").trim();
+      if (!reason) return res.status(400).json({ error: "重开必须填写原因" });
+      const existing = await db.select().from(reconciliations).where(eq(reconciliations.bizDate, bizDate)) as any[];
+      if (!existing[0] || existing[0].status !== "CLOSED") return res.status(409).json({ error: "仅可重开已关账的业务日" });
+      await db.update(reconciliations).set({
+        status: "OPEN", reopenReason: reason, reopenedByAdmin: req.admin.username, updatedAt: new Date(),
+      } as any).where(eq(reconciliations.bizDate, bizDate));
+      await logAudit(req.admin, "reconciliation_reopened", "reconciliation", bizDate, { reason });
+      return res.json({ success: true, bizDate, status: "OPEN" });
+    } catch (err: any) {
+      console.error("Reconcile reopen error:", err);
       return res.status(500).json({ error: err.message });
     }
   });
