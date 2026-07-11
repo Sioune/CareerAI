@@ -35,7 +35,8 @@ import {
   ShieldAlert,
   ShieldCheck,
   TrendingUp,
-  BookOpen
+  BookOpen,
+  Clock
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
@@ -3246,16 +3247,32 @@ Visuals & Integrity
                   </div>
                   
                   {/* Status Indicator Pill */}
-                  <div className="flex items-center gap-2 bg-white px-4 py-2 rounded-xl border border-slate-200 shadow-sm text-xs font-semibold text-slate-700">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-                    <span>
-                      {currentTask.status === 'researched' && t.pillResearched}
-                      {currentTask.status === 'matching' && t.pillMatching}
-                      {currentTask.status === 'matched' && t.pillMatched}
-                      {currentTask.status === 'upgraded' && t.pillUpgraded}
-                      {currentTask.status === 'finalized' && t.pillFinalized}
-                    </span>
-                  </div>
+                  {(() => {
+                    const hasCvVersion = currentTask.status === 'finalized' && resumeVersions.length > 0;
+                    const isPendingGeneration = currentTask.status === 'finalized' && resumeVersions.length === 0;
+                    return (
+                      <div className={`flex items-center gap-2 px-4 py-2 rounded-xl border shadow-sm text-xs font-semibold transition-all ${
+                        hasCvVersion
+                          ? 'bg-white border-slate-200 text-slate-700'
+                          : isPendingGeneration
+                          ? 'bg-slate-50 border-slate-200 text-slate-400'
+                          : 'bg-white border-slate-200 text-slate-700'
+                      }`}>
+                        {isPendingGeneration
+                          ? <Clock className="w-4 h-4 text-slate-400" />
+                          : <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                        }
+                        <span>
+                          {currentTask.status === 'researched' && t.pillResearched}
+                          {currentTask.status === 'matching' && t.pillMatching}
+                          {currentTask.status === 'matched' && t.pillMatched}
+                          {currentTask.status === 'upgraded' && t.pillUpgraded}
+                          {hasCvVersion && t.pillFinalized}
+                          {isPendingGeneration && (lang === 'zh' ? '待生成靶向优化简历' : 'Resume Pending Generation')}
+                        </span>
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* TABS STAGE RENDERS */}
@@ -4860,13 +4877,24 @@ Visuals & Integrity
                       </div>
 
                       <div className="flex items-center gap-1.5 mt-2.5 pt-2.5 border-t border-slate-100 flex-wrap">
-                        <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${task.status === 'finalized' ? 'bg-emerald-50 text-emerald-700' : 'bg-blue-50 text-blue-700'}`}>
-                          {task.status === 'researched' && t.pillResearched}
-                          {task.status === 'matching' && t.pillMatching}
-                          {task.status === 'matched' && t.pillMatched}
-                          {task.status === 'upgraded' && t.pillUpgraded}
-                          {task.status === 'finalized' && t.pillFinalized}
-                        </span>
+                        {(() => {
+                          const hasCvSku = (['CVL1','CVL2','CVL3'] as string[]).some(s => ((task as any).purchasedSkus || []).includes(s));
+                          const pendingGen = task.status === 'finalized' && !hasCvSku;
+                          return (
+                            <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${
+                              task.status === 'finalized' && hasCvSku ? 'bg-emerald-50 text-emerald-700' :
+                              pendingGen ? 'bg-slate-100 text-slate-400' :
+                              'bg-blue-50 text-blue-700'
+                            }`}>
+                              {task.status === 'researched' && t.pillResearched}
+                              {task.status === 'matching' && t.pillMatching}
+                              {task.status === 'matched' && t.pillMatched}
+                              {task.status === 'upgraded' && t.pillUpgraded}
+                              {task.status === 'finalized' && hasCvSku && t.pillFinalized}
+                              {pendingGen && (lang === 'zh' ? '待生成靶向优化简历' : 'Resume Pending')}
+                            </span>
+                          );
+                        })()}
                         {/* 已购 SKU 徽章 */}
                         {((task as any).purchasedSkus || []).includes('CSAnalysis') && (
                           <span title={lang === 'zh' ? '核心差距分析已解锁' : 'Gap Analysis Unlocked'} className="text-[8px] font-bold px-1.5 py-0.5 rounded bg-rose-50 text-rose-600 border border-rose-100">
