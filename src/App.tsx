@@ -1500,7 +1500,7 @@ Visuals & Integrity
     }
   };
 
-  // ── 该任务已完成支付的 SKU 列表 ───────────────────────────────────────────────
+  // ── 该任务已完成支付的 SKU 列表（权威数据源：payments 表）─────────────────────
   const fetchPurchases = async (taskId: string) => {
     if (!currentUser) return;
     try {
@@ -1511,6 +1511,31 @@ Visuals & Integrity
           .map((p: any) => p.skuCode)
           .filter(Boolean);
         setPurchasedSkus(skus);
+
+        // 若 payments 表有比 task 对象更新的 SKU，同步写回 task（跨设备/跨会话恢复）
+        if (skus.length > 0) {
+          const taskKey = currentUser
+            ? `career_ai_tasks_${currentUser.id}`
+            : "career_ai_tasks_guest";
+          const savedRaw = localStorage.getItem(taskKey);
+          if (savedRaw) {
+            try {
+              const freshTasks = JSON.parse(savedRaw) as any[];
+              const taskObj = freshTasks.find((t: any) => t.id === taskId);
+              const existing: string[] = taskObj?.purchasedSkus || [];
+              const hasNew = skus.some((s) => !existing.includes(s));
+              if (hasNew) {
+                const merged = Array.from(new Set([...existing, ...skus]));
+                const updated = freshTasks.map((t: any) =>
+                  t.id === taskId
+                    ? { ...t, purchasedSkus: merged, lastUpdatedAt: new Date().toISOString() }
+                    : t
+                );
+                await saveTasks(updated);
+              }
+            } catch {}
+          }
+        }
       }
     } catch (e) {
       console.error('Failed to fetch purchases:', e);
@@ -1520,15 +1545,39 @@ Visuals & Integrity
   // 挂载时拉取一次商品目录（价格驱动前台展示）
   useEffect(() => { fetchPricing(); }, []);
 
-  // 当前任务切换时重新拉取该任务的已付款 SKU
+  // 当前任务切换时：① 立即从 task 对象恢复（零延迟） ② 再从支付表刷新（权威数据源）
   useEffect(() => {
     if (currentTask) {
+      // 先用 task 里已持久化的 purchasedSkus 立即还原状态（避免 UI 闪烁/锁屏）
+      const savedSkus: string[] = (currentTask as any).purchasedSkus || [];
+      setPurchasedSkus(savedSkus);
+      // 再从 payments 表拉取最新状态（跨设备/跨会话补全）
       fetchPurchases(currentTask.id);
     } else {
       setPurchasedSkus([]);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTask?.id]);
+
+  // ── 购买成功后将 skuCode 写入 task 对象（历史记录持久化核心）────────────────────
+  const persistSkuPurchase = async (taskId: string, skuCode: string) => {
+    const taskKey = currentUser
+      ? `career_ai_tasks_${currentUser.id}`
+      : "career_ai_tasks_guest";
+    const savedRaw = localStorage.getItem(taskKey);
+    let freshTasks: any[] = tasks;
+    try { if (savedRaw) freshTasks = JSON.parse(savedRaw); } catch {}
+    const taskObj = freshTasks.find((t: any) => t.id === taskId);
+    const existing: string[] = taskObj?.purchasedSkus || [];
+    if (existing.includes(skuCode)) return; // 已持久化，无需重复写入
+    const merged = [...existing, skuCode];
+    const updated = freshTasks.map((t: any) =>
+      t.id === taskId
+        ? { ...t, purchasedSkus: merged, lastUpdatedAt: new Date().toISOString() }
+        : t
+    );
+    await saveTasks(updated);
+  };
 
   // ── 按商品 skuCode 发起支付 ───────────────────────────────────────────────────
   const CV_SKUS = ['CVL1', 'CVL2', 'CVL3'];
@@ -1576,7 +1625,10 @@ Visuals & Integrity
             if (statusData.status === 2) {
               stopPaymentPolling();
               setShowQRModal(false);
+              // 1. 更新 React state（立即反映解锁状态）
               setPurchasedSkus(prev => prev.includes(skuCode) ? prev : [...prev, skuCode]);
+              // 2. 写入 task 对象 → localStorage + DB（历史记录持久化）
+              await persistSkuPurchase(currentTask.id, skuCode);
               if (skuCode === 'CSAnalysis') {
                 triggerToast(lang === 'zh' ? '🔓 核心差距分析已解锁！' : '🔓 Core gap analysis unlocked!');
               } else if (CV_SKUS.includes(skuCode)) {
@@ -1624,7 +1676,12 @@ Visuals & Integrity
           stopPaymentPolling();
           setShowQRModal(false);
           const sku = pendingSkuCode;
-          if (sku) setPurchasedSkus(prev => prev.includes(sku) ? prev : [...prev, sku]);
+          if (sku) {
+            // 1. 更新 React state
+            setPurchasedSkus(prev => prev.includes(sku) ? prev : [...prev, sku]);
+            // 2. 写入 task 对象 → localStorage + DB（历史记录持久化）
+            await persistSkuPurchase(currentTask.id, sku);
+          }
           if (sku === 'CSAnalysis') {
             triggerToast(lang === 'zh' ? '🔓 核心差距分析已解锁！' : '🔓 Core gap analysis unlocked!');
           } else {
@@ -4743,8 +4800,23 @@ Visuals & Integrity
                       <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">{task.createdAt}</div>
                       <h4 className="text-xs font-bold text-slate-900 truncate pr-6">{task.targetRole}</h4>
                       <p className="text-[10px] text-slate-500 mt-1">{task.industry} | {task.location}</p>
-                      
-                      <div className="flex items-center gap-2 mt-3 pt-2.5 border-t border-slate-100">
+
+                      {/* 步骤进度指示器 */}
+                      <div className="flex items-center gap-1 mt-2">
+                        <span title={lang === 'zh' ? '岗位调研' : 'Job Research'} className={`text-[8px] font-bold px-1.5 py-0.5 rounded ${task.report ? 'bg-sky-100 text-sky-700' : 'bg-slate-100 text-slate-400'}`}>
+                          {lang === 'zh' ? '调研' : 'Research'}
+                        </span>
+                        <span className="text-slate-200 text-[8px]">›</span>
+                        <span title={lang === 'zh' ? '简历匹配评分' : 'Resume Match'} className={`text-[8px] font-bold px-1.5 py-0.5 rounded ${task.matchReport ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-400'}`}>
+                          {lang === 'zh' ? '匹配' : 'Match'}
+                        </span>
+                        <span className="text-slate-200 text-[8px]">›</span>
+                        <span title={lang === 'zh' ? '靶向精修简历' : 'Optimized Resume'} className={`text-[8px] font-bold px-1.5 py-0.5 rounded ${task.status === 'finalized' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-400'}`}>
+                          {lang === 'zh' ? '简历' : 'Resume'}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 mt-2.5 pt-2.5 border-t border-slate-100 flex-wrap">
                         <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${task.status === 'finalized' ? 'bg-emerald-50 text-emerald-700' : 'bg-blue-50 text-blue-700'}`}>
                           {task.status === 'researched' && t.pillResearched}
                           {task.status === 'matching' && t.pillMatching}
@@ -4752,8 +4824,17 @@ Visuals & Integrity
                           {task.status === 'upgraded' && t.pillUpgraded}
                           {task.status === 'finalized' && t.pillFinalized}
                         </span>
+                        {/* 已购 SKU 徽章 */}
+                        {((task as any).purchasedSkus || []).includes('CSAnalysis') && (
+                          <span title={lang === 'zh' ? '核心差距分析已解锁' : 'Gap Analysis Unlocked'} className="text-[8px] font-bold px-1.5 py-0.5 rounded bg-rose-50 text-rose-600 border border-rose-100">
+                            {lang === 'zh' ? '缺陷分析' : 'Gap Analysis'}
+                          </span>
+                        )}
+                        {(['CVL1','CVL2','CVL3'] as string[]).filter(s => ((task as any).purchasedSkus || []).includes(s)).map(s => (
+                          <span key={s} title={s} className="text-[8px] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-100">{s}</span>
+                        ))}
                         {task.matchReport && (
-                          <span className="text-[10px] font-mono text-slate-400 ml-auto">{lang === 'zh' ? '评分' : 'Score'} {task.matchReport.matchScore}</span>
+                          <span className="text-[9px] font-mono text-slate-400 ml-auto">{lang === 'zh' ? '评分' : 'Score'} {task.matchReport.matchScore}</span>
                         )}
                       </div>
                     </div>
