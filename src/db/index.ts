@@ -2,6 +2,7 @@ import pg from "pg";
 import {
   users, resumeVersions, rewriteSuggestions, clarificationQuestions, userFeedbacks, eventLogs, payments, admins, refunds, auditLogs, costEvents,
   adminMfa, siteConfigs, aiProviders, aiModels, promptVersions, supportTickets, ticketReplies, notifications, riskFlags, revenueAllocations,
+  approvals,
 } from "./schema.ts";
 
 const { Pool } = pg;
@@ -42,6 +43,7 @@ const tableMap = new Map<any, string>([
   [notifications,           "notifications"],
   [riskFlags,               "risk_flags"],
   [revenueAllocations,      "revenue_allocations"],
+  [approvals,               "approvals"],
 ]);
 
 // ─── Column name helpers ──────────────────────────────────────────────────────
@@ -90,7 +92,6 @@ const fieldToCol: Record<string, string> = {
   targetType:       "target_type",
   targetId:         "target_id",
   detail:           "detail",
-  taskId:           "task_id",
   provider:         "provider",
   model:            "model",
   operation:        "operation",
@@ -145,6 +146,10 @@ const fieldToCol: Record<string, string> = {
   grossAmount:       "gross_amount",
   allocatedAmount:   "allocated_amount",
   allocationMethod:  "allocation_method",
+
+  type:              "type",
+  payload:           "payload",
+  decisionReason:    "decision_reason",
 };
 
 const colToField: Record<string, string> = {
@@ -244,6 +249,10 @@ const colToField: Record<string, string> = {
   gross_amount:        "grossAmount",
   allocated_amount:    "allocatedAmount",
   allocation_method:   "allocationMethod",
+
+  type:                "type",
+  payload:             "payload",
+  decision_reason:     "decisionReason",
 };
 
 function colName(fieldObj: any): string {

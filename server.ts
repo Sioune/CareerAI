@@ -61,8 +61,10 @@ import { db, eq, and } from "./src/db/index.ts";
 import {
   users, resumeVersions, rewriteSuggestions, clarificationQuestions, userFeedbacks, eventLogs, payments, admins, refunds, auditLogs, costEvents,
   adminMfa, siteConfigs, aiProviders, aiModels, promptVersions, supportTickets, ticketReplies, notifications, riskFlags, revenueAllocations,
+  approvals,
 } from "./src/db/schema.ts";
 import { createPaymentOrder, queryPaymentStatus, createRefund, isPaymentConfigured } from "./src/lib/payment-client.ts";
+import { hasPermission, ROLES as ADMIN_ROLE_LIST, type PermModule } from "./src/shared/permissions.ts";
 import speakeasy from "speakeasy";
 import QRCode from "qrcode";
 
@@ -150,7 +152,8 @@ async function requireAdmin(req: any, res: any, next: any) {
   next();
 }
 
-const ADMIN_ROLES: string[] = ["super_admin", "operations", "finance", "customer_service", "auditor"];
+// PRD §2.1：8 个后台角色（单一事实来源在 src/shared/permissions.ts）
+const ADMIN_ROLES: string[] = [...ADMIN_ROLE_LIST];
 
 function requireRole(...roles: string[]) {
   return (req: any, res: any, next: any) => {
@@ -158,6 +161,18 @@ function requireRole(...roles: string[]) {
     if (req.admin.role === "super_admin") return next();
     if (!roles.includes(req.admin.role)) {
       return res.status(403).json({ error: "权限不足，无法执行该操作" });
+    }
+    next();
+  };
+}
+
+// PRD §2.3 + §14.4：模块级权限矩阵，服务端强制校验（最小可见原则）。
+// 与前端导航共用 src/shared/permissions.ts，避免前后端漂移。
+function requirePermission(module: PermModule, action: "read" | "write") {
+  return (req: any, res: any, next: any) => {
+    if (!req.admin) return res.status(401).json({ error: "未授权" });
+    if (!hasPermission(req.admin.role, module, action)) {
+      return res.status(403).json({ error: "权限不足，无法访问该模块" });
     }
     next();
   };
@@ -3128,7 +3143,7 @@ ${originalText}
   });
 
   // API Route: Business overview / dashboard
-  app.get("/api/admin/overview", requireAdmin, async (req, res) => {
+  app.get("/api/admin/overview", requireAdmin, requirePermission("overview", "read"), async (req, res) => {
     try {
       const allUsers = await db.select().from(users) as any[];
       const allPayments = await db.select().from(payments) as any[];
@@ -3168,7 +3183,7 @@ ${originalText}
   });
 
   // API Route: User list (search + pagination-lite)
-  app.get("/api/admin/users", requireAdmin, async (req, res) => {
+  app.get("/api/admin/users", requireAdmin, requirePermission("users", "read"), async (req, res) => {
     try {
       const search = String(req.query.search || "").trim().toLowerCase();
       const allUsers = await db.select().from(users) as any[];
@@ -3204,7 +3219,7 @@ ${originalText}
   });
 
   // API Route: User detail
-  app.get("/api/admin/users/:uid", requireAdmin, async (req, res) => {
+  app.get("/api/admin/users/:uid", requireAdmin, requirePermission("users", "read"), async (req, res) => {
     try {
       const { uid } = req.params;
       const rows = await db.select().from(users).where(eq(users.uid, uid)) as any[];
@@ -3241,7 +3256,7 @@ ${originalText}
   });
 
   // API Route: Task list (from resume versions, joined with owning user)
-  app.get("/api/admin/tasks", requireAdmin, async (req, res) => {
+  app.get("/api/admin/tasks", requireAdmin, requirePermission("tasks", "read"), async (req, res) => {
     try {
       const search = String(req.query.search || "").trim().toLowerCase();
       const allResumeVersions = await db.select().from(resumeVersions) as any[];
@@ -3275,7 +3290,7 @@ ${originalText}
   });
 
   // API Route: Payment list
-  app.get("/api/admin/payments", requireAdmin, async (req, res) => {
+  app.get("/api/admin/payments", requireAdmin, requirePermission("payments", "read"), async (req, res) => {
     try {
       const statusFilter = req.query.status ? Number(req.query.status) : undefined;
       const allPayments = await db.select().from(payments) as any[];
@@ -3298,7 +3313,7 @@ ${originalText}
   });
 
   // API Route: Refund list
-  app.get("/api/admin/refunds", requireAdmin, async (req, res) => {
+  app.get("/api/admin/refunds", requireAdmin, requirePermission("payments", "read"), async (req, res) => {
     try {
       const allRefunds = await db.select().from(refunds) as any[];
       const allPayments = await db.select().from(payments) as any[];
@@ -3321,8 +3336,104 @@ ${originalText}
     }
   });
 
+  // ─── Refund money-path helpers (shared by 退款页 与 审批中心) ──────────────────
+  // 退款执行的唯一代码路径：财务/超管 + 非发起人（UAT-12），无论从哪个入口触发。返回 { code, body }。
+  async function approveRefundById(refundId: number, admin: any, req: any): Promise<{ code: number; body: any }> {
+    if (admin.role !== "finance" && admin.role !== "super_admin") {
+      return { code: 403, body: { error: "退款执行仅限财务或超级管理员" } };
+    }
+    const rows = await db.select().from(refunds).where(eq(refunds.id, refundId)) as any[];
+    const refund = rows[0];
+    if (!refund) return { code: 404, body: { error: "退款申请不存在" } };
+    if (refund.status !== 0) return { code: 400, body: { error: "该退款申请已被处理" } };
+    if (refund.requestedByAdmin === admin.username && admin.role !== "super_admin") {
+      return { code: 403, body: { error: "退款需要由发起人以外的管理员复核，不能自行审批" } };
+    }
+
+    const orderRows = await db.select().from(payments).where(eq(payments.id, refund.paymentId)) as any[];
+    const order = orderRows[0];
+    if (!order) return { code: 404, body: { error: "关联订单不存在" } };
+
+    const notifyUrl = `${getPublicBaseUrl(req)}/api/admin/refunds/callback`;
+    const refundResult = await createRefund({
+      businessOrderNo: order.businessOrderNo,
+      paymentOrderNo: order.paymentOrderNo,
+      refundAmount: refund.amount,
+      reason: refund.reason || "",
+      notifyUrl,
+    });
+
+    await db.update(refunds).set({
+      refundOrderNo: refundResult.refundOrderNo,
+      status: refundResult.status ?? 1,
+      statusName: refundResult.statusName ?? "处理中",
+      processedByAdmin: admin.username,
+      approvedByAdmin: admin.username,
+      updatedAt: new Date(),
+    } as any).where(eq(refunds.id, refund.id));
+
+    if (refundResult.status === 2) {
+      const allRefundsForPayment = await db.select().from(refunds).where(eq(refunds.paymentId, order.id)) as any[];
+      const totalRefunded = allRefundsForPayment
+        .filter((r: any) => r.id === refund.id ? true : r.status === 2)
+        .reduce((s: number, r: any) => s + r.amount, 0);
+      if (totalRefunded >= order.amount) {
+        await db.update(payments).set({ status: 6, statusName: "已退款", updatedAt: new Date() } as any).where(eq(payments.id, order.id));
+      }
+    }
+
+    await resolveApprovalForRefund(refund.id, "APPROVED", admin.username, null);
+    await logAudit(admin, "refund_approved", "payment", order.businessOrderNo, { refundId: refund.id, amount: refund.amount, refundOrderNo: refundResult.refundOrderNo });
+    if (order.userId) evaluateRiskRules(order.userId).catch(() => {});
+    return { code: 200, body: { success: true, gatewayResult: refundResult } };
+  }
+
+  async function rejectRefundById(refundId: number, admin: any, reason?: string): Promise<{ code: number; body: any }> {
+    if (admin.role !== "finance" && admin.role !== "super_admin") {
+      return { code: 403, body: { error: "退款审批仅限财务或超级管理员" } };
+    }
+    const rows = await db.select().from(refunds).where(eq(refunds.id, refundId)) as any[];
+    const refund = rows[0];
+    if (!refund) return { code: 404, body: { error: "退款申请不存在" } };
+    if (refund.status !== 0) return { code: 400, body: { error: "该退款申请已被处理" } };
+    // Maker-Checker：发起人不得处理自己提交的退款申请（超管除外），与批准保持一致。
+    if (refund.requestedByAdmin && refund.requestedByAdmin === admin.username && admin.role !== "super_admin") {
+      return { code: 403, body: { error: "不能审批自己发起的退款申请" } };
+    }
+
+    await db.update(refunds).set({
+      status: 4,
+      statusName: "已拒绝",
+      approvedByAdmin: admin.username,
+      rejectionReason: reason?.trim() || null,
+      updatedAt: new Date(),
+    } as any).where(eq(refunds.id, refund.id));
+
+    await resolveApprovalForRefund(refund.id, "REJECTED", admin.username, reason?.trim() || null);
+    await logAudit(admin, "refund_rejected", "refund", String(refund.id), { reason: reason?.trim() });
+    return { code: 200, body: { success: true } };
+  }
+
+  // 将退款关联的审批单同步为终态，保证「审批中心」与「退款页」状态一致。
+  async function resolveApprovalForRefund(refundId: number, status: "APPROVED" | "REJECTED", adminUsername: string, decisionReason: string | null) {
+    try {
+      const all = await db.select().from(approvals).where(eq(approvals.targetId, String(refundId))) as any[];
+      const pending = all.filter((a: any) => a.type === "refund" && a.status === "PENDING");
+      for (const ap of pending) {
+        await db.update(approvals).set({
+          status,
+          approvedByAdmin: adminUsername,
+          decisionReason,
+          updatedAt: new Date(),
+        } as any).where(eq(approvals.id, ap.id));
+      }
+    } catch (e) {
+      console.error("resolveApprovalForRefund error:", e);
+    }
+  }
+
   // API Route: Maker-Checker step 1 — finance submits a refund REQUEST (no gateway call yet, requires a second admin to approve)
-  app.post("/api/admin/payments/:businessOrderNo/refund", requireAdmin, requireRole("finance"), async (req: any, res) => {
+  app.post("/api/admin/payments/:businessOrderNo/refund", requireAdmin, requirePermission("payments", "write"), async (req: any, res) => {
     try {
       if (!isPaymentConfigured()) {
         return res.status(503).json({ error: "支付服务未配置" });
@@ -3355,9 +3466,21 @@ ${originalText}
         statusName: "待审批",
         requestedByAdmin: req.admin.username,
       } as any) as any[];
+      const newRefund = Array.isArray(inserted) ? inserted[0] : inserted;
+
+      // 生成审批单，进入「审批中心」等待复核（PRD §12.6）
+      await db.insert(approvals).values({
+        type: "refund",
+        targetType: "refund",
+        targetId: String(newRefund.id),
+        amount,
+        status: "PENDING",
+        reason: reason.trim(),
+        requestedByAdmin: req.admin.username,
+      } as any);
 
       await logAudit(req.admin, "refund_requested", "payment", businessOrderNo, { amount, reason: reason.trim() });
-      return res.json({ success: true, refund: Array.isArray(inserted) ? inserted[0] : inserted, pendingApproval: true });
+      return res.json({ success: true, refund: newRefund, pendingApproval: true });
     } catch (err: any) {
       console.error("Admin refund request error:", err);
       return res.status(502).json({ error: err.message || "退款申请失败，请稍后重试" });
@@ -3367,50 +3490,8 @@ ${originalText}
   // API Route: Maker-Checker step 2a — a different finance/super_admin approves and the gateway call actually fires
   app.post("/api/admin/refunds/:id/approve", requireAdmin, requireRole("finance"), async (req: any, res) => {
     try {
-      const { id } = req.params;
-      const rows = await db.select().from(refunds).where(eq(refunds.id, Number(id))) as any[];
-      const refund = rows[0];
-      if (!refund) return res.status(404).json({ error: "退款申请不存在" });
-      if (refund.status !== 0) return res.status(400).json({ error: "该退款申请已被处理" });
-      if (refund.requestedByAdmin === req.admin.username && req.admin.role !== "super_admin") {
-        return res.status(403).json({ error: "退款需要由发起人以外的管理员复核，不能自行审批" });
-      }
-
-      const orderRows = await db.select().from(payments).where(eq(payments.id, refund.paymentId)) as any[];
-      const order = orderRows[0];
-      if (!order) return res.status(404).json({ error: "关联订单不存在" });
-
-      const notifyUrl = `${getPublicBaseUrl(req)}/api/admin/refunds/callback`;
-      const refundResult = await createRefund({
-        businessOrderNo: order.businessOrderNo,
-        paymentOrderNo: order.paymentOrderNo,
-        refundAmount: refund.amount,
-        reason: refund.reason || "",
-        notifyUrl,
-      });
-
-      await db.update(refunds).set({
-        refundOrderNo: refundResult.refundOrderNo,
-        status: refundResult.status ?? 1,
-        statusName: refundResult.statusName ?? "处理中",
-        processedByAdmin: req.admin.username,
-        approvedByAdmin: req.admin.username,
-        updatedAt: new Date(),
-      } as any).where(eq(refunds.id, refund.id));
-
-      if (refundResult.status === 2) {
-        const allRefundsForPayment = await db.select().from(refunds).where(eq(refunds.paymentId, order.id)) as any[];
-        const totalRefunded = allRefundsForPayment
-          .filter((r: any) => r.id === refund.id ? true : r.status === 2)
-          .reduce((s: number, r: any) => s + r.amount, 0);
-        if (totalRefunded >= order.amount) {
-          await db.update(payments).set({ status: 6, statusName: "已退款", updatedAt: new Date() } as any).where(eq(payments.id, order.id));
-        }
-      }
-
-      await logAudit(req.admin, "refund_approved", "payment", order.businessOrderNo, { refundId: refund.id, amount: refund.amount, refundOrderNo: refundResult.refundOrderNo });
-      if (order.userId) evaluateRiskRules(order.userId).catch(() => {});
-      return res.json({ success: true, gatewayResult: refundResult });
+      const result = await approveRefundById(Number(req.params.id), req.admin, req);
+      return res.status(result.code).json(result.body);
     } catch (err: any) {
       console.error("Admin refund approve error:", err);
       return res.status(502).json({ error: err.message || "退款审批失败，请稍后重试" });
@@ -3420,25 +3501,90 @@ ${originalText}
   // API Route: Maker-Checker step 2b — reject a pending refund request
   app.post("/api/admin/refunds/:id/reject", requireAdmin, requireRole("finance"), async (req: any, res) => {
     try {
-      const { id } = req.params;
-      const { reason } = req.body;
-      const rows = await db.select().from(refunds).where(eq(refunds.id, Number(id))) as any[];
-      const refund = rows[0];
-      if (!refund) return res.status(404).json({ error: "退款申请不存在" });
-      if (refund.status !== 0) return res.status(400).json({ error: "该退款申请已被处理" });
-
-      await db.update(refunds).set({
-        status: 4,
-        statusName: "已拒绝",
-        approvedByAdmin: req.admin.username,
-        rejectionReason: reason?.trim() || null,
-        updatedAt: new Date(),
-      } as any).where(eq(refunds.id, refund.id));
-
-      await logAudit(req.admin, "refund_rejected", "refund", String(refund.id), { reason: reason?.trim() });
-      return res.json({ success: true });
+      const result = await rejectRefundById(Number(req.params.id), req.admin, req.body?.reason);
+      return res.status(result.code).json(result.body);
     } catch (err: any) {
       console.error("Admin refund reject error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ===================== 审批中心 (PRD §12.6 Maker-Checker 统一入口) =====================
+  app.get("/api/admin/approvals", requireAdmin, requirePermission("approvals", "read"), async (req: any, res) => {
+    try {
+      const all = await db.select().from(approvals) as any[];
+      const status = req.query.status as string | undefined;
+      let list = status ? all.filter((a) => a.status === status) : all;
+      // 运营/客服仅可见自身发起；财务/审计/超管可见全部（PRD §2.3 审批中心行）
+      const role = req.admin.role;
+      if (role !== "super_admin" && role !== "finance" && role !== "auditor") {
+        list = list.filter((a) => a.requestedByAdmin === req.admin.username);
+      }
+      list.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      return res.json({ approvals: list, total: list.length });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/admin/approvals/:id/approve", requireAdmin, requirePermission("approvals", "write"), async (req: any, res) => {
+    try {
+      const rows = await db.select().from(approvals).where(eq(approvals.id, Number(req.params.id))) as any[];
+      const ap = rows[0];
+      if (!ap) return res.status(404).json({ error: "审批单不存在" });
+      if (ap.status !== "PENDING") return res.status(400).json({ error: "该审批单已处理" });
+      // Maker-Checker：发起人不得审批自己提交的申请（超管除外）。UI 已隐藏按钮，此处服务端强制。
+      if (ap.requestedByAdmin && ap.requestedByAdmin === req.admin.username && req.admin.role !== "super_admin") {
+        return res.status(403).json({ error: "不能审批自己发起的申请" });
+      }
+
+      // 退款类审批统一走资金链路 helper（财务/超管 + 非发起人），并自动同步审批单终态
+      if (ap.type === "refund") {
+        const result = await approveRefundById(Number(ap.targetId), req.admin, req);
+        return res.status(result.code).json(result.body);
+      }
+
+      // 其它类型：Phase 1 暂为记录型审批（价格/配置/提示词发布等落地在 Phase 2）
+      await db.update(approvals).set({
+        status: "APPROVED",
+        approvedByAdmin: req.admin.username,
+        decisionReason: req.body?.reason?.trim() || null,
+        updatedAt: new Date(),
+      } as any).where(eq(approvals.id, ap.id));
+      await logAudit(req.admin, "approval_approved", "approval", String(ap.id), { type: ap.type });
+      return res.json({ success: true });
+    } catch (err: any) {
+      console.error("Approval approve error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/admin/approvals/:id/reject", requireAdmin, requirePermission("approvals", "write"), async (req: any, res) => {
+    try {
+      const rows = await db.select().from(approvals).where(eq(approvals.id, Number(req.params.id))) as any[];
+      const ap = rows[0];
+      if (!ap) return res.status(404).json({ error: "审批单不存在" });
+      if (ap.status !== "PENDING") return res.status(400).json({ error: "该审批单已处理" });
+      // Maker-Checker：发起人不得处理自己提交的申请（超管除外）。UI 已隐藏按钮，此处服务端强制。
+      if (ap.requestedByAdmin && ap.requestedByAdmin === req.admin.username && req.admin.role !== "super_admin") {
+        return res.status(403).json({ error: "不能审批自己发起的申请" });
+      }
+
+      if (ap.type === "refund") {
+        const result = await rejectRefundById(Number(ap.targetId), req.admin, req.body?.reason);
+        return res.status(result.code).json(result.body);
+      }
+
+      await db.update(approvals).set({
+        status: "REJECTED",
+        approvedByAdmin: req.admin.username,
+        decisionReason: req.body?.reason?.trim() || null,
+        updatedAt: new Date(),
+      } as any).where(eq(approvals.id, ap.id));
+      await logAudit(req.admin, "approval_rejected", "approval", String(ap.id), { type: ap.type, reason: req.body?.reason?.trim() });
+      return res.json({ success: true });
+    } catch (err: any) {
+      console.error("Approval reject error:", err);
       return res.status(500).json({ error: err.message });
     }
   });
@@ -3478,7 +3624,7 @@ ${originalText}
   });
 
   // API Route: Referral ledger (all referral conversions across users)
-  app.get("/api/admin/referrals", requireAdmin, async (req, res) => {
+  app.get("/api/admin/referrals", requireAdmin, requirePermission("growth", "read"), async (req, res) => {
     try {
       const allLogs = await db.select().from(eventLogs).where(eq(eventLogs.eventType, "referral_conversion")) as any[];
       const allUsers = await db.select().from(users) as any[];
@@ -3503,7 +3649,7 @@ ${originalText}
     }
   });
 
-  app.get("/api/admin/feedback-summary", requireAdmin, async (req, res) => {
+  app.get("/api/admin/feedback-summary", requireAdmin, requirePermission("users", "read"), async (req, res) => {
     // Collect all feedbacks from memory cache
     const all: any[] = [];
     for (const [taskId, list] of userFeedbacksCache.entries()) {
@@ -3540,7 +3686,7 @@ ${originalText}
     });
   });
 
-  app.get("/api/admin/conversion-funnel", requireAdmin, async (req, res) => {
+  app.get("/api/admin/conversion-funnel", requireAdmin, requirePermission("growth", "read"), async (req, res) => {
     let dbFileUploads = 0;
     let dbJdAnalyzed = 0;
     let dbReportsGenerated = 0;
@@ -3579,7 +3725,7 @@ ${originalText}
   });
 
   // API Route: Audit log (read-only, for compliance / traceability)
-  app.get("/api/admin/audit-logs", requireAdmin, requireRole("auditor"), async (req, res) => {
+  app.get("/api/admin/audit-logs", requireAdmin, requirePermission("audit", "read"), async (req, res) => {
     try {
       const all = await db.select().from(auditLogs) as any[];
       const sorted = all.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -3591,7 +3737,7 @@ ${originalText}
   });
 
   // API Route: AI cost accounting & margin analysis (finance module)
-  app.get("/api/admin/finance/costs", requireAdmin, requireRole("finance"), async (req, res) => {
+  app.get("/api/admin/finance/costs", requireAdmin, requirePermission("finance", "read"), async (req, res) => {
     try {
       const allCosts = await db.select().from(costEvents) as any[];
       const totalCostCents = allCosts.reduce((s: number, c: any) => s + (c.costCents || 0), 0);
@@ -3626,7 +3772,7 @@ ${originalText}
   });
 
   // API Route: Admin account management (RBAC) — super_admin only
-  app.get("/api/admin/accounts", requireAdmin, requireRole("super_admin"), async (req, res) => {
+  app.get("/api/admin/accounts", requireAdmin, requirePermission("rbac", "read"), async (req, res) => {
     try {
       const all = await db.select().from(admins) as any[];
       return res.json({ accounts: all.map((a: any) => ({ id: a.id, username: a.username, role: a.role, createdAt: a.createdAt })) });
@@ -3635,7 +3781,7 @@ ${originalText}
     }
   });
 
-  app.post("/api/admin/accounts", requireAdmin, requireRole("super_admin"), async (req: any, res) => {
+  app.post("/api/admin/accounts", requireAdmin, requirePermission("rbac", "write"), async (req: any, res) => {
     try {
       const { username, password, role } = req.body;
       if (!username?.trim() || !password?.trim()) return res.status(400).json({ error: "用户名和密码不能为空" });
@@ -3651,7 +3797,7 @@ ${originalText}
     }
   });
 
-  app.patch("/api/admin/accounts/:id/role", requireAdmin, requireRole("super_admin"), async (req: any, res) => {
+  app.patch("/api/admin/accounts/:id/role", requireAdmin, requirePermission("rbac", "write"), async (req: any, res) => {
     try {
       const { id } = req.params;
       const { role } = req.body;
@@ -3665,7 +3811,7 @@ ${originalText}
   });
 
   // ===================== Site Config / CMS (versioned, publish/rollback) =====================
-  app.get("/api/admin/config", requireAdmin, async (req, res) => {
+  app.get("/api/admin/config", requireAdmin, requirePermission("site", "read"), async (req, res) => {
     try {
       const all = await db.select().from(siteConfigs) as any[];
       const key = req.query.key as string | undefined;
@@ -3677,7 +3823,7 @@ ${originalText}
     }
   });
 
-  app.post("/api/admin/config", requireAdmin, requireRole("operations"), async (req: any, res) => {
+  app.post("/api/admin/config", requireAdmin, requirePermission("site", "write"), async (req: any, res) => {
     try {
       const { key, value } = req.body;
       if (!key?.trim() || value === undefined) return res.status(400).json({ error: "key 和 value 不能为空" });
@@ -3697,7 +3843,7 @@ ${originalText}
     }
   });
 
-  app.post("/api/admin/config/:id/publish", requireAdmin, requireRole("operations"), async (req: any, res) => {
+  app.post("/api/admin/config/:id/publish", requireAdmin, requirePermission("site", "write"), async (req: any, res) => {
     try {
       const { id } = req.params;
       const rows = await db.select().from(siteConfigs).where(eq(siteConfigs.id, Number(id))) as any[];
@@ -3729,7 +3875,7 @@ ${originalText}
   });
 
   // ===================== AI Providers / Models / Prompt Versions =====================
-  app.get("/api/admin/ai/providers", requireAdmin, async (req, res) => {
+  app.get("/api/admin/ai/providers", requireAdmin, requirePermission("ai", "read"), async (req, res) => {
     try {
       const providers = await db.select().from(aiProviders) as any[];
       return res.json({ providers });
@@ -3738,7 +3884,7 @@ ${originalText}
     }
   });
 
-  app.post("/api/admin/ai/providers", requireAdmin, requireRole("super_admin"), async (req: any, res) => {
+  app.post("/api/admin/ai/providers", requireAdmin, requirePermission("ai", "write"), async (req: any, res) => {
     try {
       const { name, displayName, apiKeyEnvVar } = req.body;
       if (!name?.trim() || !displayName?.trim() || !apiKeyEnvVar?.trim()) return res.status(400).json({ error: "缺少必填字段" });
@@ -3750,7 +3896,7 @@ ${originalText}
     }
   });
 
-  app.get("/api/admin/ai/models", requireAdmin, async (req, res) => {
+  app.get("/api/admin/ai/models", requireAdmin, requirePermission("ai", "read"), async (req, res) => {
     try {
       const models = await db.select().from(aiModels) as any[];
       return res.json({ models });
@@ -3759,7 +3905,7 @@ ${originalText}
     }
   });
 
-  app.post("/api/admin/ai/models", requireAdmin, requireRole("super_admin"), async (req: any, res) => {
+  app.post("/api/admin/ai/models", requireAdmin, requirePermission("ai", "write"), async (req: any, res) => {
     try {
       const { providerId, modelName, operation, priceInputPerMillion, priceOutputPerMillion, isDefault } = req.body;
       if (!providerId || !modelName?.trim() || !operation?.trim()) return res.status(400).json({ error: "缺少必填字段" });
@@ -3784,7 +3930,7 @@ ${originalText}
     }
   });
 
-  app.patch("/api/admin/ai/models/:id", requireAdmin, requireRole("super_admin"), async (req: any, res) => {
+  app.patch("/api/admin/ai/models/:id", requireAdmin, requirePermission("ai", "write"), async (req: any, res) => {
     try {
       const { id } = req.params;
       const { enabled, isDefault, priceInputPerMillion, priceOutputPerMillion } = req.body;
@@ -3811,7 +3957,7 @@ ${originalText}
     }
   });
 
-  app.get("/api/admin/ai/prompts", requireAdmin, async (req, res) => {
+  app.get("/api/admin/ai/prompts", requireAdmin, requirePermission("ai", "read"), async (req, res) => {
     try {
       const all = await db.select().from(promptVersions) as any[];
       const operation = req.query.operation as string | undefined;
@@ -3823,7 +3969,7 @@ ${originalText}
     }
   });
 
-  app.post("/api/admin/ai/prompts", requireAdmin, requireRole("super_admin"), async (req: any, res) => {
+  app.post("/api/admin/ai/prompts", requireAdmin, requirePermission("ai", "write"), async (req: any, res) => {
     try {
       const { operation, content } = req.body;
       if (!operation?.trim() || !content?.trim()) return res.status(400).json({ error: "operation 和 content 不能为空" });
@@ -3837,7 +3983,7 @@ ${originalText}
     }
   });
 
-  app.post("/api/admin/ai/prompts/:id/publish", requireAdmin, requireRole("super_admin"), async (req: any, res) => {
+  app.post("/api/admin/ai/prompts/:id/publish", requireAdmin, requirePermission("ai", "write"), async (req: any, res) => {
     try {
       const { id } = req.params;
       const rows = await db.select().from(promptVersions).where(eq(promptVersions.id, Number(id))) as any[];
@@ -3858,7 +4004,7 @@ ${originalText}
   });
 
   // ===================== Support Tickets (customer service) =====================
-  app.get("/api/admin/tickets", requireAdmin, requireRole("customer_service"), async (req, res) => {
+  app.get("/api/admin/tickets", requireAdmin, requirePermission("tickets", "read"), async (req, res) => {
     try {
       const all = await db.select().from(supportTickets) as any[];
       const status = req.query.status as string | undefined;
@@ -3870,7 +4016,7 @@ ${originalText}
     }
   });
 
-  app.get("/api/admin/tickets/:id", requireAdmin, requireRole("customer_service"), async (req, res) => {
+  app.get("/api/admin/tickets/:id", requireAdmin, requirePermission("tickets", "read"), async (req, res) => {
     try {
       const rows = await db.select().from(supportTickets).where(eq(supportTickets.id, Number(req.params.id))) as any[];
       const ticket = rows[0];
@@ -3899,7 +4045,7 @@ ${originalText}
     }
   });
 
-  app.post("/api/admin/tickets/:id/reply", requireAdmin, requireRole("customer_service"), async (req: any, res) => {
+  app.post("/api/admin/tickets/:id/reply", requireAdmin, requirePermission("tickets", "write"), async (req: any, res) => {
     try {
       const { id } = req.params;
       const { message, status } = req.body;
@@ -3915,7 +4061,7 @@ ${originalText}
     }
   });
 
-  app.patch("/api/admin/tickets/:id/status", requireAdmin, requireRole("customer_service"), async (req: any, res) => {
+  app.patch("/api/admin/tickets/:id/status", requireAdmin, requirePermission("tickets", "write"), async (req: any, res) => {
     try {
       const { status } = req.body;
       if (!["open", "in_progress", "resolved", "closed"].includes(status)) return res.status(400).json({ error: "无效状态" });
@@ -3928,7 +4074,7 @@ ${originalText}
   });
 
   // ===================== Notifications Center =====================
-  app.get("/api/admin/notifications", requireAdmin, async (req, res) => {
+  app.get("/api/admin/notifications", requireAdmin, requirePermission("site", "read"), async (req, res) => {
     try {
       const all = await db.select().from(notifications) as any[];
       all.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -3938,7 +4084,7 @@ ${originalText}
     }
   });
 
-  app.post("/api/admin/notifications", requireAdmin, requireRole("operations"), async (req: any, res) => {
+  app.post("/api/admin/notifications", requireAdmin, requirePermission("site", "write"), async (req: any, res) => {
     try {
       const { title, body, audience, targetUid } = req.body;
       if (!title?.trim() || !body?.trim()) return res.status(400).json({ error: "title 和 body 不能为空" });
@@ -3970,7 +4116,7 @@ ${originalText}
   });
 
   // ===================== Risk Control =====================
-  app.get("/api/admin/risk-flags", requireAdmin, requireRole("operations"), async (req, res) => {
+  app.get("/api/admin/risk-flags", requireAdmin, requirePermission("growth", "read"), async (req, res) => {
     try {
       const all = await db.select().from(riskFlags) as any[];
       const status = req.query.status as string | undefined;
@@ -3982,7 +4128,7 @@ ${originalText}
     }
   });
 
-  app.patch("/api/admin/risk-flags/:id", requireAdmin, requireRole("operations"), async (req: any, res) => {
+  app.patch("/api/admin/risk-flags/:id", requireAdmin, requirePermission("growth", "write"), async (req: any, res) => {
     try {
       const { status } = req.body;
       if (!["open", "reviewed", "dismissed"].includes(status)) return res.status(400).json({ error: "无效状态" });

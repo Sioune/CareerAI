@@ -12,3 +12,5 @@ description: Adding a new Drizzle schema table in this project does not automati
 2. Add it to `tableMap` with its snake_case table name.
 3. Add each of its camelCase fields to both `fieldToCol` and `colToField`.
 Skipping any of these silently breaks that table's queries even though the schema/table itself is fine.
+
+**Also: the table must physically exist in Postgres — and `drizzle-kit push` does NOT work here.** The runtime connects via `DATABASE_URL` (a real node-postgres pool), but `src/db/drizzle.config.ts` reads a *different* set of vars (`SQL_HOST`/`SQL_DB_NAME`/`SQL_ADMIN_USER`/`SQL_ADMIN_PASSWORD`) which are unset, so `drizzle-kit push` throws `SQL_HOST must be set`. Create the new table with a direct idempotent `CREATE TABLE IF NOT EXISTS` (snake_case columns matching schema.ts) run against `DATABASE_URL` — the `executeSql` sandbox callback targets that same DB. Prefer this over a full `drizzle-kit push` anyway, since push diffs the whole schema and can try to alter/drop unrelated existing tables. A missing physical table surfaces as `relation "<name>" does not exist` (distinct from the `"unknown"` registration bug above).

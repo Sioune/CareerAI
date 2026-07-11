@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, type FormEvent } from 'react';
+import { hasPermission, ROLES as ALL_ROLES, ROLE_LABEL, type PermModule } from '../shared/permissions.ts';
 
 const TOKEN_KEY = 'careerai_admin_token';
 
@@ -101,51 +102,107 @@ function LoginScreen({ onLoggedIn }: { onLoggedIn: () => void }) {
   );
 }
 
-type Tab = 'overview' | 'users' | 'tasks' | 'payments' | 'refunds' | 'referrals' | 'finance' | 'audit' | 'accounts' | 'config' | 'ai' | 'tickets' | 'notifications' | 'risk' | 'security';
+type PageKey =
+  | 'overview' | 'todos' | 'monitor'
+  | 'users' | 'benefits' | 'privacy' | 'tickets'
+  | 'tasks' | 'results' | 'qc' | 'failures' | 'files'
+  | 'products' | 'orders' | 'refunds' | 'referrals'
+  | 'finance' | 'allocation' | 'reconcile'
+  | 'site' | 'notifications' | 'seo'
+  | 'ai' | 'routing' | 'jd'
+  | 'funnel' | 'campaigns' | 'risk' | 'blacklist'
+  | 'accounts' | 'audit' | 'system' | 'security';
 
-const ROLE_LABEL: Record<string, string> = {
-  super_admin: '超级管理员',
-  operations: '运营',
-  finance: '财务',
-  customer_service: '客服',
-  auditor: '审计',
-};
+interface NavPage { key: PageKey; label: string; module: PermModule | null; planned?: boolean; alwaysVisible?: boolean; }
+interface NavGroup { label: string; pages: NavPage[]; }
 
-function Nav({ tab, setTab, onLogout, adminName, adminRole }: { tab: Tab; setTab: (t: Tab) => void; onLogout: () => void; adminName: string; adminRole: string }) {
-  const isSuper = adminRole === 'super_admin';
-  const items: { key: Tab; label: string; roles?: string[] }[] = [
-    { key: 'overview', label: '经营概览' },
-    { key: 'users', label: '用户管理' },
-    { key: 'tasks', label: '任务列表' },
-    { key: 'payments', label: '支付管理' },
-    { key: 'refunds', label: '退款管理', roles: ['finance'] },
-    { key: 'referrals', label: '推荐/权益' },
-    { key: 'finance', label: '财务与AI成本', roles: ['finance'] },
-    { key: 'audit', label: '审计日志', roles: ['auditor'] },
-    { key: 'tickets', label: '工单中心', roles: ['customer_service'] },
-    { key: 'risk', label: '风控中心', roles: ['operations'] },
-    { key: 'notifications', label: '通知中心', roles: ['operations'] },
-    { key: 'config', label: '站点配置', roles: ['operations'] },
-    { key: 'ai', label: 'AI模型/提示词', roles: ['operations'] },
-    { key: 'accounts', label: '管理员账号', roles: ['super_admin'] },
-    { key: 'security', label: '安全设置' },
-  ];
-  const visible = items.filter((it) => !it.roles || isSuper || it.roles.includes(adminRole));
+// PRD §3.1 后台一级导航（9 模块）。planned = Phase 2/3 规划中占位；
+// module=null + alwaysVisible = 个人自助页（如 MFA），不受模块权限限制。
+const NAV: NavGroup[] = [
+  { label: '经营总览', pages: [
+    { key: 'overview', label: '业务看板', module: 'overview' },
+    { key: 'todos', label: '审批 · 待办与异常', module: 'approvals' },
+    { key: 'monitor', label: '实时监控', module: 'overview', planned: true },
+  ]},
+  { label: '用户与客户', pages: [
+    { key: 'users', label: '用户列表', module: 'users' },
+    { key: 'benefits', label: '权益账本', module: 'users', planned: true },
+    { key: 'privacy', label: '隐私请求', module: 'users', planned: true },
+    { key: 'tickets', label: '客服工单', module: 'tickets' },
+  ]},
+  { label: '任务与结果', pages: [
+    { key: 'tasks', label: '任务列表', module: 'tasks' },
+    { key: 'results', label: '结果版本', module: 'tasks', planned: true },
+    { key: 'qc', label: '质量抽检', module: 'tasks', planned: true },
+    { key: 'failures', label: '失败队列', module: 'tasks', planned: true },
+    { key: 'files', label: '文件管理', module: 'tasks', planned: true },
+  ]},
+  { label: '商业化', pages: [
+    { key: 'products', label: '商品与价格', module: 'products', planned: true },
+    { key: 'orders', label: '订单与支付', module: 'payments' },
+    { key: 'refunds', label: '退款', module: 'payments' },
+    { key: 'referrals', label: '优惠 · 推荐', module: 'growth' },
+  ]},
+  { label: '财务分析', pages: [
+    { key: 'finance', label: '账本 · Token成本 · 毛利', module: 'finance' },
+    { key: 'allocation', label: '收入分配', module: 'finance', planned: true },
+    { key: 'reconcile', label: '对账 · 结算报表', module: 'finance', planned: true },
+  ]},
+  { label: '网站运营', pages: [
+    { key: 'site', label: '品牌 · 页面/CMS · 法律', module: 'site' },
+    { key: 'notifications', label: '公告 · 通知模板', module: 'site' },
+    { key: 'seo', label: 'SEO', module: 'site', planned: true },
+  ]},
+  { label: 'AI与数据源', pages: [
+    { key: 'ai', label: '供应商 · 模型 · 提示词', module: 'ai' },
+    { key: 'routing', label: '路由 · 评测', module: 'ai', planned: true },
+    { key: 'jd', label: 'JD来源', module: 'ai', planned: true },
+  ]},
+  { label: '增长与风控', pages: [
+    { key: 'funnel', label: '漏斗 · 渠道', module: 'growth', planned: true },
+    { key: 'campaigns', label: '活动', module: 'growth', planned: true },
+    { key: 'risk', label: '风险规则', module: 'growth' },
+    { key: 'blacklist', label: '黑名单', module: 'growth', planned: true },
+  ]},
+  { label: '系统与安全', pages: [
+    { key: 'accounts', label: '管理员 · RBAC', module: 'rbac' },
+    { key: 'audit', label: '审计日志', module: 'audit' },
+    { key: 'system', label: 'Webhook · 队列 · 健康 · 集成', module: 'system', planned: true },
+    { key: 'security', label: '我的安全设置', module: null, alwaysVisible: true },
+  ]},
+];
+
+function pageVisible(p: NavPage, role: string): boolean {
+  if (p.alwaysVisible) return true;
+  if (!p.module) return false;
+  return hasPermission(role, p.module, 'read');
+}
+
+function Nav({ page, setPage, onLogout, adminName, adminRole }: { page: PageKey; setPage: (p: PageKey) => void; onLogout: () => void; adminName: string; adminRole: string }) {
+  const groups = NAV
+    .map((g) => ({ ...g, pages: g.pages.filter((p) => pageVisible(p, adminRole)) }))
+    .filter((g) => g.pages.length > 0);
   return (
-    <div className="w-56 shrink-0 bg-slate-900 text-slate-100 min-h-screen flex flex-col">
+    <div className="w-60 shrink-0 bg-slate-900 text-slate-100 min-h-screen flex flex-col">
       <div className="p-4 border-b border-slate-700">
         <p className="font-bold text-lg">CareerAI</p>
         <p className="text-xs text-slate-400">后台管理系统</p>
       </div>
-      <nav className="flex-1 py-2">
-        {visible.map((it) => (
-          <button
-            key={it.key}
-            onClick={() => setTab(it.key)}
-            className={`w-full text-left px-4 py-2.5 text-sm ${tab === it.key ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-800'}`}
-          >
-            {it.label}
-          </button>
+      <nav className="flex-1 py-2 overflow-y-auto">
+        {groups.map((g) => (
+          <div key={g.label} className="mb-1">
+            <p className="px-4 pt-3 pb-1 text-[11px] uppercase tracking-wide text-slate-500">{g.label}</p>
+            {g.pages.map((p) => (
+              <button
+                key={p.key}
+                onClick={() => setPage(p.key)}
+                className={`w-full text-left px-4 py-2 text-sm flex items-center justify-between ${page === p.key ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-800'}`}
+              >
+                <span>{p.label}</span>
+                {p.planned && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-300">规划中</span>}
+              </button>
+            ))}
+          </div>
         ))}
       </nav>
       <div className="p-4 border-t border-slate-700 text-xs text-slate-400">
@@ -1223,8 +1280,6 @@ function SecurityTab() {
   );
 }
 
-const ALL_ROLES = ['super_admin', 'operations', 'finance', 'customer_service', 'auditor'];
-
 function AccountsTab() {
   const [rows, setRows] = useState<any[]>([]);
   const [error, setError] = useState('');
@@ -1323,11 +1378,140 @@ function AccountsTab() {
   );
 }
 
+const APPROVAL_STATUS_LABEL: Record<string, string> = {
+  PENDING: '待审批', APPROVED: '已通过', REJECTED: '已拒绝', CANCELED: '已取消', EXPIRED: '已过期',
+};
+const APPROVAL_TYPE_LABEL: Record<string, string> = {
+  refund: '退款', price_publish: '价格发布', config_publish: '配置发布', prompt_publish: '提示词发布',
+  account_adjust: '账务调整', bulk_export: '批量导出', key_rotation: '密钥轮换', bulk_delete: '批量删除', other: '其他',
+};
+
+function ApprovalsTab({ adminUsername, adminRole }: { adminUsername: string; adminRole: string }) {
+  const [rows, setRows] = useState<any[]>([]);
+  const [total, setTotal] = useState(0);
+  const [error, setError] = useState('');
+  const [rejectTarget, setRejectTarget] = useState<any>(null);
+  const [rejectReason, setRejectReason] = useState('');
+  const [busyId, setBusyId] = useState<number | null>(null);
+
+  const canDecide = hasPermission(adminRole, 'approvals', 'write');
+
+  const load = useCallback(() => {
+    apiFetch('/api/admin/approvals').then((d) => { setRows(d.approvals || []); setTotal(d.total || 0); }).catch((e) => setError(e.message));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const canActOn = (r: any) => r.status === 'PENDING' && canDecide && (adminRole === 'super_admin' || r.requestedByAdmin !== adminUsername);
+
+  const approve = async (id: number) => {
+    setBusyId(id); setError('');
+    try { await apiFetch(`/api/admin/approvals/${id}/approve`, { method: 'POST' }); load(); }
+    catch (e: any) { setError(e.message); }
+    finally { setBusyId(null); }
+  };
+  const submitReject = async () => {
+    if (!rejectTarget) return;
+    setBusyId(rejectTarget.id);
+    try {
+      await apiFetch(`/api/admin/approvals/${rejectTarget.id}/reject`, { method: 'POST', body: JSON.stringify({ reason: rejectReason }) });
+      setRejectTarget(null); setRejectReason(''); load();
+    } catch (e: any) { setError(e.message); }
+    finally { setBusyId(null); }
+  };
+
+  return (
+    <div>
+      <h2 className="text-lg font-bold text-slate-900 mb-1">审批中心 ({total})</h2>
+      <p className="text-xs text-slate-400 mb-3">Maker-Checker 双人复核：高风险动作统一在此审批。发起人不能审批自己提交的申请（超级管理员除外）。</p>
+      {error && <p className="text-red-600 text-sm mb-2">{error}</p>}
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-slate-600 text-xs">
+            <tr>
+              <th className="text-left px-3 py-2">#</th>
+              <th className="text-left px-3 py-2">类型</th>
+              <th className="text-left px-3 py-2">对象</th>
+              <th className="text-left px-3 py-2">金额</th>
+              <th className="text-left px-3 py-2">原因</th>
+              <th className="text-left px-3 py-2">状态</th>
+              <th className="text-left px-3 py-2">发起人</th>
+              <th className="text-left px-3 py-2">审批人</th>
+              <th className="text-left px-3 py-2">时间</th>
+              <th className="text-left px-3 py-2"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id} className="border-t border-slate-100">
+                <td className="px-3 py-2 text-slate-400">{r.id}</td>
+                <td className="px-3 py-2">{APPROVAL_TYPE_LABEL[r.type] || r.type}</td>
+                <td className="px-3 py-2 text-slate-500 font-mono text-xs">{r.targetType ? `${r.targetType}#${r.targetId}` : (r.targetId ?? '-')}</td>
+                <td className="px-3 py-2">{typeof r.amount === 'number' ? fmtMoney(r.amount) : '-'}</td>
+                <td className="px-3 py-2 text-slate-500">{r.reason || '-'}</td>
+                <td className="px-3 py-2">
+                  {r.status === 'PENDING' ? <span className="text-amber-600">待审批</span>
+                    : r.status === 'APPROVED' ? <span className="text-emerald-600">已通过</span>
+                    : r.status === 'REJECTED' ? <span className="text-slate-400">已拒绝</span>
+                    : <span className="text-slate-400">{APPROVAL_STATUS_LABEL[r.status] || r.status}</span>}
+                </td>
+                <td className="px-3 py-2 text-slate-500">{r.requestedByAdmin || '-'}</td>
+                <td className="px-3 py-2 text-slate-500">{r.approvedByAdmin || '-'}</td>
+                <td className="px-3 py-2 text-slate-500">{fmtDate(r.createdAt)}</td>
+                <td className="px-3 py-2 whitespace-nowrap">
+                  {r.status === 'PENDING' && (
+                    canActOn(r) ? (
+                      <>
+                        <button disabled={busyId === r.id} onClick={() => approve(r.id)} className="text-emerald-600 hover:underline mr-3 disabled:opacity-50">通过</button>
+                        <button disabled={busyId === r.id} onClick={() => { setRejectTarget(r); setRejectReason(''); }} className="text-red-600 hover:underline disabled:opacity-50">拒绝</button>
+                      </>
+                    ) : (
+                      <span className="text-xs text-slate-400">{canDecide ? '待他人审批' : '只读'}</span>
+                    )
+                  )}
+                </td>
+              </tr>
+            ))}
+            {rows.length === 0 && (
+              <tr><td colSpan={10} className="text-center text-slate-400 py-6">暂无待办</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {rejectTarget && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={() => setRejectTarget(null)}>
+          <div className="bg-white rounded-xl max-w-sm w-full p-6" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-bold mb-4">拒绝审批单 #{rejectTarget.id}</h3>
+            <label className="block text-sm text-slate-600 mb-1">拒绝原因</label>
+            <textarea className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm mb-3" value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} rows={3} />
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setRejectTarget(null)} className="px-4 py-2 text-sm rounded-lg border border-slate-300">取消</button>
+              <button onClick={submitReject} disabled={busyId === rejectTarget.id} className="px-4 py-2 text-sm rounded-lg bg-red-600 text-white disabled:opacity-50">确认拒绝</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PlannedTab({ title }: { title: string }) {
+  return (
+    <div>
+      <h2 className="text-lg font-bold text-slate-900 mb-2">{title}</h2>
+      <div className="bg-white rounded-xl border border-dashed border-slate-300 p-10 text-center">
+        <p className="text-slate-400 text-sm">该模块为 PRD 规划中的页面，将在后续阶段（Phase 2/3）实现。</p>
+        <p className="text-slate-300 text-xs mt-2">当前阶段（Phase 1）仅落地信息架构与权限骨架。</p>
+      </div>
+    </div>
+  );
+}
+
 export default function AdminApp() {
   const [authed, setAuthed] = useState<boolean | null>(null);
   const [adminName, setAdminName] = useState('');
   const [adminRole, setAdminRole] = useState('');
-  const [tab, setTab] = useState<Tab>('overview');
+  const [page, setPage] = useState<PageKey>('overview');
 
   const checkAuth = useCallback(() => {
     if (!localStorage.getItem(TOKEN_KEY)) {
@@ -1335,7 +1519,16 @@ export default function AdminApp() {
       return;
     }
     apiFetch('/api/admin/me')
-      .then((d) => { setAdminName(d.username); setAdminRole(d.role); setAuthed(true); })
+      .then((d) => {
+        setAdminName(d.username); setAdminRole(d.role); setAuthed(true);
+        // 若当前页对该角色不可见，回落到第一个可见页
+        const allPages = NAV.flatMap((g) => g.pages);
+        setPage((cur) => {
+          const curPage = allPages.find((p) => p.key === cur);
+          if (curPage && pageVisible(curPage, d.role)) return cur;
+          return allPages.find((p) => pageVisible(p, d.role))?.key ?? 'overview';
+        });
+      })
       .catch(() => { localStorage.removeItem(TOKEN_KEY); setAuthed(false); });
   }, []);
 
@@ -1351,23 +1544,41 @@ export default function AdminApp() {
 
   return (
     <div className="flex min-h-screen bg-slate-50">
-      <Nav tab={tab} setTab={setTab} onLogout={logout} adminName={adminName} adminRole={adminRole} />
-      <div className="flex-1 p-6">
-        {tab === 'overview' && <OverviewTab />}
-        {tab === 'users' && <UsersTab />}
-        {tab === 'tasks' && <TasksTab />}
-        {tab === 'payments' && <PaymentsTab />}
-        {tab === 'refunds' && <RefundsTab adminUsername={adminName} adminRole={adminRole} />}
-        {tab === 'referrals' && <ReferralsTab />}
-        {tab === 'finance' && <FinanceTab />}
-        {tab === 'audit' && <AuditTab />}
-        {tab === 'accounts' && <AccountsTab />}
-        {tab === 'config' && <ConfigTab />}
-        {tab === 'ai' && <AiTab />}
-        {tab === 'tickets' && <TicketsTab />}
-        {tab === 'notifications' && <NotificationsTab />}
-        {tab === 'risk' && <RiskTab />}
-        {tab === 'security' && <SecurityTab />}
+      <Nav page={page} setPage={setPage} onLogout={logout} adminName={adminName} adminRole={adminRole} />
+      <div className="flex-1 p-6 overflow-x-auto">
+        {page === 'overview' && <OverviewTab />}
+        {page === 'todos' && <ApprovalsTab adminUsername={adminName} adminRole={adminRole} />}
+        {page === 'users' && <UsersTab />}
+        {page === 'tickets' && <TicketsTab />}
+        {page === 'tasks' && <TasksTab />}
+        {page === 'orders' && <PaymentsTab />}
+        {page === 'refunds' && <RefundsTab adminUsername={adminName} adminRole={adminRole} />}
+        {page === 'referrals' && <ReferralsTab />}
+        {page === 'finance' && <FinanceTab />}
+        {page === 'site' && <ConfigTab />}
+        {page === 'notifications' && <NotificationsTab />}
+        {page === 'ai' && <AiTab />}
+        {page === 'risk' && <RiskTab />}
+        {page === 'accounts' && <AccountsTab />}
+        {page === 'audit' && <AuditTab />}
+        {page === 'security' && <SecurityTab />}
+        {page === 'monitor' && <PlannedTab title="实时监控" />}
+        {page === 'benefits' && <PlannedTab title="权益账本" />}
+        {page === 'privacy' && <PlannedTab title="隐私请求" />}
+        {page === 'results' && <PlannedTab title="结果版本" />}
+        {page === 'qc' && <PlannedTab title="质量抽检" />}
+        {page === 'failures' && <PlannedTab title="失败队列" />}
+        {page === 'files' && <PlannedTab title="文件管理" />}
+        {page === 'products' && <PlannedTab title="商品与价格" />}
+        {page === 'allocation' && <PlannedTab title="收入分配" />}
+        {page === 'reconcile' && <PlannedTab title="对账 · 结算报表" />}
+        {page === 'seo' && <PlannedTab title="SEO" />}
+        {page === 'routing' && <PlannedTab title="路由 · 评测" />}
+        {page === 'jd' && <PlannedTab title="JD来源" />}
+        {page === 'funnel' && <PlannedTab title="漏斗 · 渠道" />}
+        {page === 'campaigns' && <PlannedTab title="活动" />}
+        {page === 'blacklist' && <PlannedTab title="黑名单" />}
+        {page === 'system' && <PlannedTab title="Webhook · 队列 · 健康 · 集成" />}
       </div>
     </div>
   );

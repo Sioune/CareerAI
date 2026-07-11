@@ -243,6 +243,25 @@ export const revenueAllocations = pgTable('revenue_allocations', {
   createdAt: timestamp('created_at').defaultNow(),
 });
 
+// PRD §12.6 审批中心 / §2.2 Maker-Checker 双人复核。
+// 承载所有高风险动作的审批单：大额退款、价格发布、账务调整、批量导出、密钥轮换、配置/提示词发布等。
+// 状态枚举见附录B（审批单）：PENDING / APPROVED / REJECTED / CANCELED / EXPIRED。
+export const approvals = pgTable('approvals', {
+  id: serial('id').primaryKey(),
+  type: text('type').notNull(), // refund | price_publish | account_adjust | bulk_export | key_rotation | bulk_delete | config_publish | prompt_publish | other
+  targetType: text('target_type'), // payment | refund | config | prompt | account ...
+  targetId: text('target_id'),
+  payload: text('payload'), // JSON：申请变更的具体内容
+  amount: integer('amount'), // cents，用于阈值判定（如 >¥100 需第二审批人）
+  status: text('status').notNull().default('PENDING'), // PENDING | APPROVED | REJECTED | CANCELED | EXPIRED
+  reason: text('reason'), // 申请原因
+  requestedByAdmin: text('requested_by_admin'),
+  approvedByAdmin: text('approved_by_admin'),
+  decisionReason: text('decision_reason'), // 审批/拒绝备注
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
   resumeVersions: many(resumeVersions),
