@@ -3638,9 +3638,7 @@ ${originalText}
     const refund = rows[0];
     if (!refund) return { code: 404, body: { error: "退款申请不存在" } };
     if (refund.status !== 0) return { code: 400, body: { error: "该退款申请已被处理" } };
-    if (refund.requestedByAdmin === admin.username && admin.role !== "super_admin") {
-      return { code: 403, body: { error: "退款需要由发起人以外的管理员复核，不能自行审批" } };
-    }
+    // 退款无需双人审核，有权限的管理员可直接批准（无 Maker-Checker 限制）
 
     const orderRows = await db.select().from(payments).where(eq(payments.id, refund.paymentId)) as any[];
     const order = orderRows[0];
@@ -3689,11 +3687,7 @@ ${originalText}
     const refund = rows[0];
     if (!refund) return { code: 404, body: { error: "退款申请不存在" } };
     if (refund.status !== 0) return { code: 400, body: { error: "该退款申请已被处理" } };
-    // Maker-Checker：发起人不得处理自己提交的退款申请（超管除外），与批准保持一致。
-    if (refund.requestedByAdmin && refund.requestedByAdmin === admin.username && admin.role !== "super_admin") {
-      return { code: 403, body: { error: "不能审批自己发起的退款申请" } };
-    }
-
+    // 退款无需双人审核，有权限的管理员可直接拒绝（无 Maker-Checker 限制）
     await db.update(refunds).set({
       status: 4,
       statusName: "已拒绝",
@@ -3918,15 +3912,16 @@ ${originalText}
       const ap = rows[0];
       if (!ap) return res.status(404).json({ error: "审批单不存在" });
       if (ap.status !== "PENDING") return res.status(400).json({ error: "该审批单已处理" });
-      // Maker-Checker：发起人不得审批自己提交的申请（超管除外）。UI 已隐藏按钮，此处服务端强制。
-      if (ap.requestedByAdmin && ap.requestedByAdmin === req.admin.username && req.admin.role !== "super_admin") {
-        return res.status(403).json({ error: "不能审批自己发起的申请" });
-      }
 
-      // 退款类审批统一走资金链路 helper（财务/超管 + 非发起人），并自动同步审批单终态
+      // 退款无需双人审核：先处理退款类审批，直接调支付网关 API，不经过 Maker-Checker
       if (ap.type === "refund") {
         const result = await approveRefundById(Number(ap.targetId), req.admin, req);
         return res.status(result.code).json(result.body);
+      }
+
+      // 其他审批类型（配置/提示词/价格发布）：发起人不得审批自己提交的申请（超管除外）
+      if (ap.requestedByAdmin && ap.requestedByAdmin === req.admin.username && req.admin.role !== "super_admin") {
+        return res.status(403).json({ error: "不能审批自己发起的申请" });
       }
 
       // 发布类审批（配置/提示词/价格）：通过即真正发布，归档旧版本。
@@ -3955,14 +3950,16 @@ ${originalText}
       const ap = rows[0];
       if (!ap) return res.status(404).json({ error: "审批单不存在" });
       if (ap.status !== "PENDING") return res.status(400).json({ error: "该审批单已处理" });
-      // Maker-Checker：发起人不得处理自己提交的申请（超管除外）。UI 已隐藏按钮，此处服务端强制。
-      if (ap.requestedByAdmin && ap.requestedByAdmin === req.admin.username && req.admin.role !== "super_admin") {
-        return res.status(403).json({ error: "不能审批自己发起的申请" });
-      }
 
+      // 退款无需双人审核：先处理退款类审批
       if (ap.type === "refund") {
         const result = await rejectRefundById(Number(ap.targetId), req.admin, req.body?.reason);
         return res.status(result.code).json(result.body);
+      }
+
+      // 其他审批类型（配置/提示词/价格发布）：发起人不得处理自己提交的申请（超管除外）
+      if (ap.requestedByAdmin && ap.requestedByAdmin === req.admin.username && req.admin.role !== "super_admin") {
+        return res.status(403).json({ error: "不能审批自己发起的申请" });
       }
 
       // 发布类审批被拒：目标版本从 pending 退回 draft，历史已发布版本不受影响。
