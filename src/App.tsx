@@ -766,22 +766,6 @@ Visuals & Integrity
             verData = await resVer.json();
           }
 
-          if (verData.length === 0) {
-            const genVer = await customFetch(`/api/resume-reports/${currentTask.id}/versions/generate`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                targetRole: currentTask.targetRole,
-                report: currentTask.report,
-                resumeText: currentTask.originalResumeText || resumeText,
-                baselineResume: currentTask.optimizedResume,
-                answers: currentTask.clarificationQuestions || []
-              })
-            });
-            if (genVer.ok) {
-              verData = await genVer.json();
-            }
-          }
           setResumeVersions(verData);
           
           // Set active version to Standard version initially
@@ -1465,7 +1449,7 @@ Visuals & Integrity
           setLoadingProgress(0);
           setLoadingStalled(false);
         },
-        onDone: (optimized) => {
+        onDone: async (optimized) => {
           setLoadingProgress(100);
 
           // Reload tasks from storage to prevent stale local state overwrites
@@ -1490,16 +1474,55 @@ Visuals & Integrity
           });
 
           saveTasks(updatedTasks);
-          setEditedResume(optimized);
+
+          // Save the generated resume as the version for this SKU BEFORE triggering
+          // the state change that fires loadFinalizedData — so the version is already
+          // in DB when that effect fetches versions.
+          if (skuCode) {
+            await saveVersionForSku(taskIdToOptimize, skuCode, optimized);
+          }
+
+          setTasks(updatedTasks);
           setCurrentTaskId(taskIdToOptimize);
           setActiveTab('finalized');
-          triggerToast(lang === 'zh' ? "🎉 恭喜！高阶大模型改写服务已解锁，成功生成您的靶向优化简历！" : "🎉 Congratulations! C-level optimization unlocked. Custom resume generated successfully!");
+
+          const skuNameMap: Record<string, string> = {
+            CVL1: '标准投递版', CVL2: '高管冲刺版', CVL3: 'AI岗位定制版'
+          };
+          const versionLabel = skuCode ? (skuNameMap[skuCode] || skuCode) : '简历';
+          triggerToast(lang === 'zh'
+            ? `🎉 「${versionLabel}」已生成！可在工作台查看和导出。`
+            : `🎉 "${versionLabel}" generated! View and export in the workspace.`);
           setLoadingStep('idle');
           setLoadingProgress(0);
           setLoadingStalled(false);
         },
       }
     );
+  };
+
+  // Save a single generated resume as the version corresponding to its SKU
+  const skuToVersionType: Record<string, string> = { CVL1: 'standard', CVL2: 'executive', CVL3: 'ai_product' };
+  const saveVersionForSku = async (taskId: string, skuCode: string, resume: any) => {
+    try {
+      const res = await customFetch(`/api/tasks/${taskId}/save-cv-version`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ skuCode, resume })
+      });
+      if (res.ok) {
+        const updatedVersions = await res.json();
+        setResumeVersions(updatedVersions);
+        const versionType = skuToVersionType[skuCode];
+        const savedVer = updatedVersions.find((v: any) => v.versionType === versionType);
+        if (savedVer) {
+          setCurrentVersionId(savedVer.id);
+          setEditedResume(savedVer.content);
+        }
+      }
+    } catch (e) {
+      console.error("[saveVersionForSku] failed:", e);
+    }
   };
 
   const stopPaymentPolling = () => {
@@ -4249,24 +4272,43 @@ Visuals & Integrity
                             </span>
                           </div>
                           
-                          {/* Version Tab switcher */}
-                          {resumeVersions.length > 0 && (
-                            <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200 gap-1">
-                              {resumeVersions.map((ver) => (
-                                <button
-                                  key={ver.id}
-                                  onClick={() => handleSwitchVersion(ver.id)}
-                                  className={`px-3 py-1.5 text-[10px] font-bold rounded-md transition-all ${
-                                    currentVersionId === ver.id
-                                      ? 'bg-white text-blue-700 shadow-xs'
-                                      : 'text-slate-500 hover:text-slate-700'
-                                  }`}
-                                >
-                                  {ver.versionName}
-                                </button>
-                              ))}
-                            </div>
-                          )}
+                          {/* Version Tab switcher — always show all 3, lock unpurchased */}
+                          {(() => {
+                            const ALL_VERSION_SLOTS = [
+                              { versionType: 'standard',   skuCode: 'CVL1', label: '📄 标准版' },
+                              { versionType: 'executive',  skuCode: 'CVL2', label: '🎯 高管版' },
+                              { versionType: 'ai_product', skuCode: 'CVL3', label: '✨ AI定制版' },
+                            ];
+                            return (
+                              <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200 gap-0.5">
+                                {ALL_VERSION_SLOTS.map(({ versionType, skuCode: slotSku, label }) => {
+                                  const ver = resumeVersions.find(v => v.versionType === versionType);
+                                  const isUnlocked = !!ver;
+                                  const isCurrent = currentVersionId === ver?.id;
+                                  return (
+                                    <button
+                                      key={versionType}
+                                      title={isUnlocked ? ver?.versionName : `购买解锁 ${label}`}
+                                      onClick={() => {
+                                        if (isUnlocked && ver) handleSwitchVersion(ver.id);
+                                        else handleProductPayment(slotSku);
+                                      }}
+                                      className={`px-2.5 py-1.5 text-[10px] font-bold rounded-md transition-all flex items-center gap-1 ${
+                                        isCurrent
+                                          ? 'bg-white text-blue-700 shadow-xs'
+                                          : isUnlocked
+                                          ? 'text-slate-500 hover:text-slate-700'
+                                          : 'text-slate-400 hover:text-slate-500'
+                                      }`}
+                                    >
+                                      {!isUnlocked && <Lock className="w-2.5 h-2.5 shrink-0" />}
+                                      <span>{label}</span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            );
+                          })()}
 
                           <span className="bg-emerald-50 text-emerald-700 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1 border border-emerald-200 font-mono shadow-sm self-start sm:self-auto">
                             <Check className="w-3 h-3 text-emerald-600 animate-pulse" />

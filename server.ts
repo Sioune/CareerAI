@@ -1316,7 +1316,17 @@ ${(resumeText || "").slice(0, 2000)}
     // ─────────────────────────────────────────────────────────────────────────
 
     {
+        const skuFocusMap: Record<string, string> = {
+          CVL1: "【标准投递版】ATS关键词高密度覆盖，结构清晰，成果量化，语言务实，适合Boss直聘/猎聘广泛投递。",
+          CVL2: "【高管冲刺版】弱化执行细节，强化战略领导力：P&L责任、跨职能协同、C-level汇报、组织级ROI贡献。用权威高管语言重塑每条经历。",
+          CVL3: "【AI岗位定制版】突出AI技术落地：LLM/RAG/Agent架构、大模型API集成微调、AI商业化端到端交付数据。体现技术-商业双栖能力。",
+        };
+        const versionEmphasis = (skuFocusMap as any)[skuCode as string] || skuFocusMap['CVL2'];
+
         const prompt = `You are a premier executive resume writer. Your job is to transform the candidate's original resume to perfectly target the role of "${targetRole}" by resolving identified gaps.
+
+        Version Focus (apply to every bullet and summary): ${versionEmphasis}
+
         Target Job Insights: ${JSON.stringify(report)}
         Identified Gaps: ${JSON.stringify(matchReport)}
         
@@ -2892,6 +2902,77 @@ ${originalText}
     } catch (err: any) {
       logCleanGeminiError("versions-generation-outer", err);
       return res.status(500).json({ error: "Version generation failed" });
+    }
+  });
+
+
+  // API Route: Save a single CV version after SKU payment (one version per SKU)
+  app.post("/api/tasks/:taskId/save-cv-version", async (req, res) => {
+    try {
+      const { taskId } = req.params;
+      const { skuCode, resume } = req.body;
+      if (!skuCode || !resume) return res.status(400).json({ error: "skuCode and resume are required" });
+
+      const dbUser = await getDbUserFromHeader(req.headers.authorization);
+      if (!dbUser) return res.status(401).json({ error: "请先登录" });
+
+      // Verify payment for this specific SKU
+      const taskPayments = await db.select().from(payments).where(eq(payments.userId, dbUser.id)) as any[];
+      const hasPaid = taskPayments.some(
+        (p: any) => p.taskId === String(taskId) && p.skuCode === skuCode && p.status === 2
+      );
+      if (!hasPaid) return res.status(402).json({ error: "未找到有效购买记录", code: "payment_required" });
+
+      const skuToVersionType: Record<string, string> = {
+        CVL1: "standard", CVL2: "executive", CVL3: "ai_product"
+      };
+      const skuToVersionName: Record<string, string> = {
+        CVL1: "标准投递版", CVL2: "高管冲刺版", CVL3: "AI岗位定制版"
+      };
+      const versionType = skuToVersionType[skuCode];
+      if (!versionType) return res.status(400).json({ error: "无效的 SKU" });
+
+      const newVersion = {
+        id: `${taskId}_v_${versionType}`,
+        versionName: skuToVersionName[skuCode],
+        versionType,
+        skuCode,
+        content: resume,
+        isCurrent: true,
+        createdAt: new Date().toISOString()
+      };
+
+      // Load existing versions (may have other purchased SKUs)
+      let existingVersions: any[] = resumeVersionsCache.get(taskId) || [];
+      if (!existingVersions.length) {
+        try {
+          const dbRecords = await db.select().from(resumeVersions)
+            .where(and(eq(resumeVersions.userId, dbUser.id), eq(resumeVersions.reportId, taskId))) as any[];
+          if (dbRecords[0]?.versions) existingVersions = JSON.parse(dbRecords[0].versions);
+        } catch {}
+      }
+
+      // Replace same versionType if it exists, otherwise append
+      const updated = [
+        ...existingVersions.filter((v: any) => v.versionType !== versionType),
+        newVersion
+      ];
+      // Mark only the new version as current
+      updated.forEach(v => { v.isCurrent = v.id === newVersion.id; });
+
+      resumeVersionsCache.set(taskId, updated);
+
+      await db.delete(resumeVersions).where(and(eq(resumeVersions.userId, dbUser.id), eq(resumeVersions.reportId, taskId)));
+      await db.insert(resumeVersions).values({
+        userId: dbUser.id,
+        reportId: taskId,
+        versions: JSON.stringify(updated)
+      });
+
+      return res.json(updated);
+    } catch (err: any) {
+      console.error("[save-cv-version]", err.message);
+      return res.status(500).json({ error: err.message });
     }
   });
 
