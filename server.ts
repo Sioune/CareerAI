@@ -3629,7 +3629,19 @@ ${originalText}
   });
 
   // ─── Refund money-path helpers (shared by 退款页 与 审批中心) ──────────────────
-  // 退款执行的唯一代码路径：财务/超管 + 非发起人（UAT-12），无论从哪个入口触发。返回 { code, body }。
+  // 网关退款状态码（文档第9节）→ 内部退款状态码映射
+  // 网关: 1=待审核  2=已拒绝  3=已批准  4=退款中  5=退款成功  6=退款失败
+  // 内部: 0=待审批  1=处理中  2=退款成功  3=退款失败  4=已拒绝
+  function mapGatewayRefundStatus(gwStatus: number): { internalStatus: number; statusName: string } {
+    switch (gwStatus) {
+      case 5: return { internalStatus: 2, statusName: "退款成功" };
+      case 6: return { internalStatus: 3, statusName: "退款失败" };
+      case 2: return { internalStatus: 4, statusName: "已拒绝" };
+      default: return { internalStatus: 1, statusName: "处理中" }; // 网关 1/3/4 均为处理中
+    }
+  }
+
+  // 退款执行的唯一代码路径：财务/超管，无论从哪个入口触发。返回 { code, body }。
   async function approveRefundById(refundId: number, admin: any, req: any): Promise<{ code: number; body: any }> {
     if (admin.role !== "finance" && admin.role !== "super_admin") {
       return { code: 403, body: { error: "退款执行仅限财务或超级管理员" } };
@@ -3651,22 +3663,26 @@ ${originalText}
       refundAmount: refund.amount,
       reason: refund.reason || "",
       notifyUrl,
+      needAudit: false, // 免审（文档§7.4）：CareerAI后台已完成审批，无需网关再次人工审核，直接发起银行退款
     });
 
+    // 将网关状态码映射为内部状态码后落库
+    const mapped = mapGatewayRefundStatus(refundResult.status ?? -1);
     await db.update(refunds).set({
       refundOrderNo: refundResult.refundOrderNo,
-      status: refundResult.status ?? 1,
-      statusName: refundResult.statusName ?? "处理中",
+      status: mapped.internalStatus,
+      statusName: mapped.statusName,
       processedByAdmin: admin.username,
       approvedByAdmin: admin.username,
       updatedAt: new Date(),
     } as any).where(eq(refunds.id, refund.id));
 
-    if (refundResult.status === 2) {
-      recordRefundSuccess({ ...refund, status: 2 }).catch(() => {}); // 幂等：退款现金流出 + 履约收入冲销
+    // 网关 status=5（退款成功）时即时记账；免审场景下可能直接成功
+    if (refundResult.status === 5) {
+      recordRefundSuccess({ ...refund, status: 2 }).catch(() => {}); // 幂等：现金流出 + 履约收入冲销
       const allRefundsForPayment = await db.select().from(refunds).where(eq(refunds.paymentId, order.id)) as any[];
       const totalRefunded = allRefundsForPayment
-        .filter((r: any) => r.id === refund.id ? true : r.status === 2)
+        .filter((r: any) => r.id === refund.id ? true : r.status === 2) // 内部 2 = 退款成功
         .reduce((s: number, r: any) => s + r.amount, 0);
       if (totalRefunded >= order.amount) {
         await db.update(payments).set({ status: 6, statusName: "已退款", updatedAt: new Date() } as any).where(eq(payments.id, order.id));
@@ -3989,13 +4005,16 @@ ${originalText}
       const refund = rows[0];
       if (!refund) return res.status(200).send();
 
+      // 将网关状态码映射为内部状态码后落库
+      const cbMapped = mapGatewayRefundStatus(notify.status ?? -1);
       await db.update(refunds).set({
-        status: notify.status,
-        statusName: notify.statusName,
+        status: cbMapped.internalStatus,
+        statusName: cbMapped.statusName,
         updatedAt: new Date(),
       } as any).where(eq(refunds.id, refund.id));
 
-      if (notify.status === 2) {
+      // 网关 status=5（退款成功）时记账并更新原支付订单状态
+      if (notify.status === 5) {
         recordRefundSuccess({ ...refund, status: 2 }).catch(() => {}); // 幂等：退款现金流出 + 履约收入冲销
         const paymentRows = await db.select().from(payments).where(eq(payments.id, refund.paymentId)) as any[];
         const payment = paymentRows[0];
