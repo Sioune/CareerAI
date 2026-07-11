@@ -4927,14 +4927,25 @@ Visuals & Integrity
                   </a>
                 </div>
 
-                {/* Price tag */}
-                <div className="bg-slate-50 border border-slate-100 rounded-xl p-3 mb-4 text-center text-xs font-semibold text-slate-700 flex flex-col gap-0.5">
-                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{lang === 'zh' ? '早鸟限时优惠价' : 'LIMITED TIME OFFER'}</div>
-                  <div>
-                    {t.earlyBirdPrice}：<strong className="font-extrabold text-sm text-slate-900">{t.priceVal}</strong> ({t.originalPrice} {lang === 'zh' ? '¥49.0' : '$49.0'})
-                    <div className="text-[9px] text-amber-500 font-bold mt-1">测试价，仅供内部联调使用</div>
-                  </div>
-                </div>
+                {/* Price tag — real price from pricingCatalog */}
+                {(() => {
+                  const catalogItem = pricingCatalog.find(p => p.skuCode === pendingSkuCode);
+                  const displayPrice = catalogItem
+                    ? `¥${(catalogItem.amountCents / 100).toFixed(2)}`
+                    : '¥--';
+                  const skuLabel = catalogItem?.skuName || pendingSkuCode || '';
+                  return (
+                    <div className="bg-slate-50 border border-slate-100 rounded-xl p-3 mb-4 text-center text-xs font-semibold text-slate-700 flex flex-col gap-0.5">
+                      {skuLabel && (
+                        <div className="text-[10px] font-bold text-slate-500 truncate">{skuLabel}</div>
+                      )}
+                      <div className="mt-0.5">
+                        {lang === 'zh' ? '实付金额：' : 'Total Paid:'}
+                        <strong className="font-extrabold text-sm text-slate-900 ml-1">{displayPrice}</strong>
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* Promo referral section */}
                 <div className="bg-emerald-50/70 border border-emerald-100 rounded-xl p-3.5 mb-4 text-left flex flex-col gap-1.5 shadow-sm">
