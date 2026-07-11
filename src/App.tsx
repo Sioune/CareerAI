@@ -444,6 +444,7 @@ Visuals & Integrity
   const [paymentOrderStatus, setPaymentOrderStatus] = useState<number | null>(null); // 1待支付 2已支付 3失败 4已取消 5已过期
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [isVerifyingPayment, setIsVerifyingPayment] = useState(false);
+  const [isLoadingAdditionalGaps, setIsLoadingAdditionalGaps] = useState(false);
   const paymentPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [referralStatus, setReferralStatus] = useState<{ unclaimedCredits: number; required: number; readyToClaim: boolean } | null>(null);
 
@@ -1390,6 +1391,44 @@ Visuals & Integrity
     }
   };
 
+  // Generate additional deep gap analysis after CSAnalysis payment
+  const runAdditionalGapAnalysis = async (taskId: string) => {
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+    setIsLoadingAdditionalGaps(true);
+    streamHandleRef.current = streamSSE<{ additionalGaps: { title: string; detail: string }[] }>(
+      '/api/unlock-gap-analysis',
+      {
+        taskId,
+        targetRole: task.targetRole,
+        resumeText: task.originalResumeText || resumeText,
+        existingGaps: task.matchReport?.gaps || [],
+        report: task.report,
+      },
+      {
+        onProgress: () => {},
+        onStalled: () => {},
+        onError: ({ message }) => {
+          triggerToast(message || (lang === 'zh' ? '深度分析生成失败，请重试' : 'Deep analysis failed, please retry'));
+          setIsLoadingAdditionalGaps(false);
+        },
+        onDone: ({ additionalGaps }) => {
+          const userKey = currentUser ? `career_ai_tasks_${currentUser.id}` : 'career_ai_tasks_guest';
+          const saved = localStorage.getItem(userKey);
+          let latestTasks = tasks;
+          try { if (saved) latestTasks = JSON.parse(saved); } catch {}
+          const updated = latestTasks.map(t => t.id === taskId ? { ...t, additionalGaps } : t);
+          saveTasks(updated);
+          setTasks(updated);
+          setIsLoadingAdditionalGaps(false);
+          triggerToast(lang === 'zh'
+            ? `🔍 深度缺陷分析完成，发现 ${additionalGaps.length} 项额外缺陷`
+            : `🔍 Deep analysis done — ${additionalGaps.length} additional gaps found`);
+        }
+      }
+    );
+  };
+
   // 3. Initiate checkout paywall & process real-time transaction
   const runResumeOptimizationForTask = async (taskIdToOptimize: string, skuCode?: string) => {
     const taskToOptimize = tasks.find(t => t.id === taskIdToOptimize);
@@ -1630,7 +1669,8 @@ Visuals & Integrity
               // 2. 写入 task 对象 → localStorage + DB（历史记录持久化）
               await persistSkuPurchase(currentTask.id, skuCode);
               if (skuCode === 'CSAnalysis') {
-                triggerToast(lang === 'zh' ? '🔓 核心差距分析已解锁！' : '🔓 Core gap analysis unlocked!');
+                triggerToast(lang === 'zh' ? '🔓 核心差距分析已解锁，正在生成…' : '🔓 Unlocked! Generating deep analysis…');
+                await runAdditionalGapAnalysis(currentTask.id);
               } else if (CV_SKUS.includes(skuCode)) {
                 triggerToast(t.paymentSuccessToast);
                 await runResumeOptimizationForTask(currentTask.id, skuCode);
@@ -1683,7 +1723,8 @@ Visuals & Integrity
             await persistSkuPurchase(currentTask.id, sku);
           }
           if (sku === 'CSAnalysis') {
-            triggerToast(lang === 'zh' ? '🔓 核心差距分析已解锁！' : '🔓 Core gap analysis unlocked!');
+            triggerToast(lang === 'zh' ? '🔓 核心差距分析已解锁，正在生成…' : '🔓 Unlocked! Generating deep analysis…');
+            await runAdditionalGapAnalysis(currentTask.id);
           } else {
             triggerToast(t.paymentSuccessToast);
             await runResumeOptimizationForTask(currentTask.id, sku || undefined);
@@ -3747,66 +3788,61 @@ Visuals & Integrity
                               </div>
                             ))}
 
-                            {/* Additional gaps: locked behind CSAnalysis SKU */}
+                            {/* Additional gaps: generated on-demand after CSAnalysis payment */}
                             {purchasedSkus.includes('CSAnalysis') ? (
                               <div className="border-t border-dashed border-slate-100 mt-2 pt-4 flex flex-col gap-3">
                                 <div className="flex items-center gap-1.5 mb-1">
                                   <Check className="w-3.5 h-3.5 text-emerald-500" />
-                                  <span className="text-[10px] font-bold text-emerald-600">核心差距分析已解锁</span>
+                                  <span className="text-[10px] font-bold text-emerald-600">
+                                    {currentTask.additionalGaps?.length
+                                      ? `深度缺陷分析 · ${currentTask.additionalGaps.length} 项`
+                                      : '深度缺陷分析已解锁'}
+                                  </span>
                                 </div>
-                                <div className="flex gap-3">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400 mt-1.5 shrink-0"></span>
-                                  <div>
-                                    <h4 className="text-xs font-bold text-slate-800">海外研发机构敏捷迭代细节缺失</h4>
-                                    <p className="text-[10px] text-slate-400 mt-0.5">对标高频率的大模型API整合交付，您的简历没有写出针对数据出海合规细节的要求...</p>
+                                {isLoadingAdditionalGaps ? (
+                                  <div className="flex items-center gap-2 text-xs text-slate-500 py-1">
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-500 shrink-0" />
+                                    <span>AI 正在深度分析更多缺陷，请稍候…</span>
                                   </div>
-                                </div>
-                                <div className="flex gap-3">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400 mt-1.5 shrink-0"></span>
-                                  <div>
-                                    <h4 className="text-xs font-bold text-slate-800">对标企业级大客户财务P&L预算掌控</h4>
-                                    <p className="text-[10px] text-slate-400 mt-0.5">高阶VP岗一般直接对预算负责，原有简历中几乎没有任何大模型商业算力购买或自研预算规划指标的呈现...</p>
-                                  </div>
-                                </div>
+                                ) : currentTask.additionalGaps?.length ? (
+                                  currentTask.additionalGaps.map((gap, idx) => (
+                                    <div key={idx} className="flex gap-3 items-start">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-slate-400 mt-1.5 shrink-0"></span>
+                                      <div>
+                                        <h4 className="text-xs font-bold text-slate-800">{gap.title}</h4>
+                                        <p className="text-[10px] text-slate-500 mt-0.5 leading-relaxed">{gap.detail}</p>
+                                      </div>
+                                    </div>
+                                  ))
+                                ) : (
+                                  <button
+                                    onClick={() => runAdditionalGapAnalysis(currentTask.id)}
+                                    className="self-start text-xs text-blue-600 hover:text-blue-700 underline underline-offset-2"
+                                  >
+                                    点击生成深度缺陷分析
+                                  </button>
+                                )}
                               </div>
                             ) : (
-                              <div className="relative border-t border-dashed border-slate-100 mt-2 pt-4">
-                                <div className="absolute inset-0 backdrop-blur-[2.5px] bg-white/70 z-10 flex items-center justify-center">
-                                  <button
-                                    onClick={() => handleProductPayment('CSAnalysis')}
-                                    disabled={isCreatingSession}
-                                    className="bg-slate-900 hover:bg-slate-800 disabled:bg-slate-400 disabled:cursor-not-allowed text-white text-xs font-bold px-4 py-2 rounded-lg shadow-md transition-all flex items-center gap-2"
-                                  >
-                                    {isCreatingSession && pendingSkuCode === 'CSAnalysis' ? (
-                                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                    ) : (
-                                      <Lock className="w-3.5 h-3.5 text-blue-400" />
-                                    )}
-                                    <span>
-                                      解锁额外 {currentTask.matchReport.additionalGapsCount} 项深度缺陷清单
-                                      {(() => {
-                                        const ci = pricingCatalog.find(p => p.skuCode === 'CSAnalysis');
-                                        return ci ? <span className="ml-1 text-blue-300">· ¥{(ci.amountCents / 100).toFixed(2)}</span> : null;
-                                      })()}
-                                    </span>
-                                  </button>
-                                </div>
-                                <div className="opacity-20 blur-[2px] pointer-events-none select-none flex flex-col gap-3">
-                                  <div className="flex gap-3">
-                                    <span className="w-1.5 h-1.5 rounded-full bg-slate-400 mt-1.5"></span>
-                                    <div>
-                                      <h4 className="text-xs font-bold text-slate-800">海外研发机构敏捷迭代细节缺失</h4>
-                                      <p className="text-[10px] text-slate-400 mt-0.5">对标高频率的大模型API整合交付，您的简历没有写出针对数据出海合规细节的要求...</p>
-                                    </div>
-                                  </div>
-                                  <div className="flex gap-3">
-                                    <span className="w-1.5 h-1.5 rounded-full bg-slate-400 mt-1.5"></span>
-                                    <div>
-                                      <h4 className="text-xs font-bold text-slate-800">对标企业级大客户财务P&L预算掌控</h4>
-                                      <p className="text-[10px] text-slate-400 mt-0.5">高阶VP岗一般直接对预算负责，原有简历中几乎没有任何大模型商业算力购买或自研预算规划指标的呈现...</p>
-                                    </div>
-                                  </div>
-                                </div>
+                              <div className="border-t border-dashed border-slate-100 mt-2 pt-4">
+                                <button
+                                  onClick={() => handleProductPayment('CSAnalysis')}
+                                  disabled={isCreatingSession}
+                                  className="w-full bg-slate-900 hover:bg-slate-800 disabled:bg-slate-400 disabled:cursor-not-allowed text-white text-xs font-bold px-4 py-2 rounded-lg shadow-md transition-all flex items-center justify-center gap-2"
+                                >
+                                  {isCreatingSession && pendingSkuCode === 'CSAnalysis' ? (
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                  ) : (
+                                    <Lock className="w-3.5 h-3.5 text-blue-400" />
+                                  )}
+                                  <span>
+                                    解锁深度缺陷分析
+                                    {(() => {
+                                      const ci = pricingCatalog.find(p => p.skuCode === 'CSAnalysis');
+                                      return ci ? <span className="ml-1 text-blue-300">· ¥{(ci.amountCents / 100).toFixed(2)}</span> : null;
+                                    })()}
+                                  </span>
+                                </button>
                               </div>
                             )}
 

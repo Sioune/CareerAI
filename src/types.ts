@@ -48,7 +48,6 @@ export interface ResumeMatchReport {
   matchScore: number;
   strengths: StrengthOrGap[];
   gaps: StrengthOrGap[];
-  additionalGapsCount: number;
   matchedKeywords: string[];
   missingKeywords: string[];
 }
@@ -131,6 +130,7 @@ export interface TaskItem {
   originalResumeName?: string;
   originalResumeText?: string;
   matchReport?: ResumeMatchReport;
+  additionalGaps?: StrengthOrGap[];
   optimizedResume?: OptimizedResume;
   
   // PRD v0.4 New States

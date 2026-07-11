@@ -1164,7 +1164,6 @@ async function startServer() {
           "gaps": [
             { "title": string, "detail": string }
           ] (exactly 3 critical gaps),
-          "additionalGapsCount": number (usually 5 to 10),
           "matchedKeywords": string[] (list of 5 matched keywords/technologies/methodologies),
           "missingKeywords": string[] (list of 4-5 key missing words like SOC2, M&A, board reporting, etc.)
         }
@@ -1201,7 +1200,6 @@ async function startServer() {
                     required: ["title", "detail"]
                   }
                 },
-                additionalGapsCount: { type: Type.INTEGER },
                 matchedKeywords: {
                   type: Type.ARRAY,
                   items: { type: Type.STRING }
@@ -1211,11 +1209,73 @@ async function startServer() {
                   items: { type: Type.STRING }
                 }
               },
-              required: ["matchScore", "strengths", "gaps", "additionalGapsCount", "matchedKeywords", "missingKeywords"]
+              required: ["matchScore", "strengths", "gaps", "matchedKeywords", "missingKeywords"]
             }
           }
         });
     }
+  });
+
+  // API Route: Unlock additional deep gap analysis (paid: CSAnalysis SKU)
+  app.post("/api/unlock-gap-analysis", async (req, res) => {
+    const { taskId, targetRole, resumeText, existingGaps, report } = req.body;
+
+    const dbUser = await getDbUserFromHeader(req.headers.authorization);
+    if (!dbUser) return res.status(401).json({ error: "请先登录" });
+
+    if (taskId) {
+      const taskPayments = await db.select().from(payments).where(eq(payments.userId, dbUser.id)) as any[];
+      const hasPaid = taskPayments.some(
+        (p: any) => p.taskId === String(taskId) && p.skuCode === "CSAnalysis" && p.status === 2
+      );
+      if (!hasPaid) {
+        return res.status(402).json({ error: "需购买深度缺陷分析后方可生成", code: "payment_required" });
+      }
+    }
+
+    const existingGapsList = ((existingGaps || []) as { title: string; detail: string }[])
+      .map((g) => `- ${g.title}：${g.detail}`)
+      .join("\n") || "（无）";
+
+    const prompt = `你是一位顶级高管猎头顾问，正在帮助候选人冲刺职位"${targetRole || "高管岗位"}"。
+
+初步分析已识别出以下核心差距（请勿重复）：
+${existingGapsList}
+
+岗位画像背景摘要：${JSON.stringify(report || {}).slice(0, 800)}
+
+候选人简历摘要（前2000字）：
+${(resumeText || "").slice(0, 2000)}
+
+请识别 3 至 5 项【更深层、更精细的缺陷】，专注于以下高管层面的信号缺失：国际化视野、P&L预算责任、董事会汇报、战略路线图制定、C-level影响力建立、并购/BD经验、出海合规、组织OD能力等。
+每项缺陷须与目标岗位直接相关，不得与上述已有缺陷重复，以中文输出。
+
+返回 JSON 格式：{ "additionalGaps": [ { "title": string, "detail": string } ] }`;
+
+    return streamGeminiJSON(res, "unlock-gap-analysis", {
+      model: "gemini-3.5-flash",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            additionalGaps: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  title: { type: Type.STRING },
+                  detail: { type: Type.STRING }
+                },
+                required: ["title", "detail"]
+              }
+            }
+          },
+          required: ["additionalGaps"]
+        }
+      }
+    });
   });
 
   // API Route: Generate optimized resume
@@ -5459,7 +5519,6 @@ function getSimulatedMatch(targetRole: string, resumeText: string) {
         detail: "简历表达仍停留在单纯的“执行层”和“功能定义”，没有突出在部门战略级规划、3-5年路线图绘制或面对核心管理层 (CEO/CTO) 汇报和决策参与的经验信号。"
       }
     ],
-    additionalGapsCount: 9,
     matchedKeywords: ["SaaS Architecture", "Go-to-Market", "Series C", "OKR Implementation", "Enterprise Sales"],
     missingKeywords: ["GDPR Compliance", "SOC2", "Pre-IPO Readiness", "Turnaround Strategy", "Prompt Engineering", "RAG Pipeline"]
   };
