@@ -1692,8 +1692,8 @@ Visuals & Integrity
               // 2. 写入 task 对象 → localStorage + DB（历史记录持久化）
               await persistSkuPurchase(currentTask.id, skuCode);
               if (skuCode === 'CSAnalysis') {
-                triggerToast(lang === 'zh' ? '🔓 核心差距分析已解锁，正在生成…' : '🔓 Unlocked! Generating deep analysis…');
-                await runAdditionalGapAnalysis(currentTask.id);
+                triggerToast(lang === 'zh' ? '🔓 已解锁！正在启动简历匹配分析…' : '🔓 Unlocked! Starting resume match analysis…');
+                await handleMatchResume(true);
               } else if (CV_SKUS.includes(skuCode)) {
                 triggerToast(t.paymentSuccessToast);
                 await runResumeOptimizationForTask(currentTask.id, skuCode);
@@ -1746,8 +1746,8 @@ Visuals & Integrity
             await persistSkuPurchase(currentTask.id, sku);
           }
           if (sku === 'CSAnalysis') {
-            triggerToast(lang === 'zh' ? '🔓 核心差距分析已解锁，正在生成…' : '🔓 Unlocked! Generating deep analysis…');
-            await runAdditionalGapAnalysis(currentTask.id);
+            triggerToast(lang === 'zh' ? '🔓 已解锁！正在启动简历匹配分析…' : '🔓 Unlocked! Starting resume match analysis…');
+            await handleMatchResume(true);
           } else {
             triggerToast(t.paymentSuccessToast);
             await runResumeOptimizationForTask(currentTask.id, sku || undefined);
@@ -3707,14 +3707,36 @@ Visuals & Integrity
                         >
                           返回画像
                         </button>
-                        <button 
-                          onClick={handleMatchResume}
-                          disabled={!resumeText.trim()}
-                          className={`px-8 py-3 rounded-xl text-xs font-bold text-white transition-all shadow-sm flex items-center gap-2 ${resumeText.trim() ? 'bg-blue-600 hover:bg-blue-700' : 'bg-slate-300 cursor-not-allowed'}`}
-                        >
-                          <span>分析简历匹配度</span>
-                          <ChevronRight className="w-4 h-4" />
-                        </button>
+                        {purchasedSkus.includes('CSAnalysis') ? (
+                          <button
+                            onClick={() => handleMatchResume(true)}
+                            disabled={!resumeText.trim()}
+                            className={`px-8 py-3 rounded-xl text-xs font-bold text-white transition-all shadow-sm flex items-center gap-2 ${resumeText.trim() ? 'bg-blue-600 hover:bg-blue-700' : 'bg-slate-300 cursor-not-allowed'}`}
+                          >
+                            <span>{lang === 'zh' ? '开始匹配分析' : 'Analyze Match'}</span>
+                            <ChevronRight className="w-4 h-4" />
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleProductPayment('CSAnalysis')}
+                            disabled={isCreatingSession || !resumeText.trim()}
+                            className={`px-8 py-3 rounded-xl text-xs font-bold text-white transition-all shadow-sm flex items-center gap-2 ${resumeText.trim() ? 'bg-slate-900 hover:bg-slate-800' : 'bg-slate-300 cursor-not-allowed'}`}
+                          >
+                            {isCreatingSession && pendingSkuCode === 'CSAnalysis' ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <Lock className="w-4 h-4 text-blue-400" />
+                            )}
+                            <span>
+                              {lang === 'zh' ? '解锁深度缺陷分析' : 'Unlock Deep Analysis'}
+                              {(() => {
+                                const ci = pricingCatalog.find(p => p.skuCode === 'CSAnalysis');
+                                return ci ? <span className="ml-1 text-blue-300">· ¥{(ci.amountCents / 100).toFixed(2)}</span> : null;
+                              })()}
+                            </span>
+                            <ChevronRight className="w-4 h-4" />
+                          </button>
+                        )}
                       </div>
 
                     </div>
@@ -3811,63 +3833,6 @@ Visuals & Integrity
                               </div>
                             ))}
 
-                            {/* Additional gaps: generated on-demand after CSAnalysis payment */}
-                            {purchasedSkus.includes('CSAnalysis') ? (
-                              <div className="border-t border-dashed border-slate-100 mt-2 pt-4 flex flex-col gap-3">
-                                <div className="flex items-center gap-1.5 mb-1">
-                                  <Check className="w-3.5 h-3.5 text-emerald-500" />
-                                  <span className="text-[10px] font-bold text-emerald-600">
-                                    {currentTask.additionalGaps?.length
-                                      ? `深度缺陷分析 · ${currentTask.additionalGaps.length} 项`
-                                      : '深度缺陷分析已解锁'}
-                                  </span>
-                                </div>
-                                {isLoadingAdditionalGaps ? (
-                                  <div className="flex items-center gap-2 text-xs text-slate-500 py-1">
-                                    <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-500 shrink-0" />
-                                    <span>AI 正在深度分析更多缺陷，请稍候…</span>
-                                  </div>
-                                ) : currentTask.additionalGaps?.length ? (
-                                  currentTask.additionalGaps.map((gap, idx) => (
-                                    <div key={idx} className="flex gap-3 items-start">
-                                      <span className="w-1.5 h-1.5 rounded-full bg-slate-400 mt-1.5 shrink-0"></span>
-                                      <div>
-                                        <h4 className="text-xs font-bold text-slate-800">{gap.title}</h4>
-                                        <p className="text-[10px] text-slate-500 mt-0.5 leading-relaxed">{gap.detail}</p>
-                                      </div>
-                                    </div>
-                                  ))
-                                ) : (
-                                  <button
-                                    onClick={() => runAdditionalGapAnalysis(currentTask.id)}
-                                    className="self-start text-xs text-blue-600 hover:text-blue-700 underline underline-offset-2"
-                                  >
-                                    点击生成深度缺陷分析
-                                  </button>
-                                )}
-                              </div>
-                            ) : (
-                              <div className="border-t border-dashed border-slate-100 mt-2 pt-4">
-                                <button
-                                  onClick={() => handleProductPayment('CSAnalysis')}
-                                  disabled={isCreatingSession}
-                                  className="w-full bg-slate-900 hover:bg-slate-800 disabled:bg-slate-400 disabled:cursor-not-allowed text-white text-xs font-bold px-4 py-2 rounded-lg shadow-md transition-all flex items-center justify-center gap-2"
-                                >
-                                  {isCreatingSession && pendingSkuCode === 'CSAnalysis' ? (
-                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                  ) : (
-                                    <Lock className="w-3.5 h-3.5 text-blue-400" />
-                                  )}
-                                  <span>
-                                    解锁深度缺陷分析
-                                    {(() => {
-                                      const ci = pricingCatalog.find(p => p.skuCode === 'CSAnalysis');
-                                      return ci ? <span className="ml-1 text-blue-300">· ¥{(ci.amountCents / 100).toFixed(2)}</span> : null;
-                                    })()}
-                                  </span>
-                                </button>
-                              </div>
-                            )}
 
                           </div>
                         </div>
