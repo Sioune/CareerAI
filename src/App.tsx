@@ -1395,6 +1395,7 @@ Visuals & Integrity
     streamHandleRef.current = streamSSE<OptimizedResume>(
       "/api/optimize-resume",
       {
+        taskId: taskIdToOptimize,
         targetRole: taskToOptimize.targetRole,
         report: taskToOptimize.report,
         resumeText: taskToOptimize.originalResumeText || resumeText,
@@ -1578,7 +1579,7 @@ Visuals & Integrity
     setIsVerifyingPayment(true);
     triggerToast(lang === 'zh' ? '正在核实真实推荐注册记录...' : 'Verifying real referral registrations...');
     try {
-      const res = await customFetch('/api/referrals/claim', { method: 'POST' });
+      const res = await customFetch('/api/referrals/claim', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ taskId: currentTask.id }) });
       const data = await res.json().catch(() => ({}));
 
       if (res.ok && data.success) {
@@ -3685,13 +3686,11 @@ Visuals & Integrity
                         一键升级，解锁针对「{currentTask.targetRole}」岗位的完整改写方案。智能重构为SAR/STAR模型，高亮大厂高频率筛查词，生成一版可即时投递、在线编辑的高级求职简历，同时解锁Word/PDF一键打包导出权益。
                       </p>
                       <button 
-                        onClick={() => {
-                          runResumeOptimizationForTask(currentTask.id);
-                        }}
+                        onClick={handlePaymentSubmit}
                         className="mt-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white px-8 py-3 rounded-xl text-xs font-bold transition-all shadow-md font-sans flex items-center gap-2 group hover:scale-[1.02] active:scale-[0.98]"
                       >
                         <Sparkles className="w-4 h-4 text-emerald-300 animate-spin" />
-                        <span>一键启动大模型高管简历深度重构</span>
+                        <span>付费解锁 · 一键启动大模型高管简历深度重构</span>
                       </button>
                     </div>
 

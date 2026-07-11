@@ -480,6 +480,8 @@ async function startServer() {
       const user = await getDbUserFromHeader(req.headers.authorization);
       if (!user) return res.status(401).json({ error: "未登录" });
 
+      const { taskId } = req.body;
+
       const logs = await db.select().from(eventLogs).where(eq(eventLogs.userId, user.id)) as any[];
       const unclaimed = logs.filter((l: any) => {
         if (l.eventType !== "referral_conversion") return false;
@@ -504,6 +506,20 @@ async function startServer() {
         await db.update(eventLogs)
           .set({ metaData: JSON.stringify(meta) } as any)
           .where(eq(eventLogs.id, log.id));
+      }
+
+      // Create a zero-cost "paid" payment record so the optimize-resume payment gate passes
+      if (taskId) {
+        const referralOrderNo = `REFERRAL_${Date.now()}_${user.id}_${String(taskId).slice(0, 8)}`;
+        await db.insert(payments).values({
+          userId: user.id,
+          taskId: String(taskId),
+          businessOrderNo: referralOrderNo,
+          amount: 0,
+          status: 2,
+          statusName: "推荐奖励免费解锁",
+          paidAt: new Date(),
+        } as any);
       }
 
       return res.json({ success: true, referredUids });
@@ -906,11 +922,31 @@ async function startServer() {
 
   // API Route: Generate optimized resume
   app.post("/api/optimize-resume", async (req, res) => {
-    const { targetRole, report, resumeText, matchReport } = req.body;
+    const { taskId, targetRole, report, resumeText, matchReport } = req.body;
 
     if (!targetRole || !resumeText) {
       return res.status(400).json({ error: "targetRole and resumeText are required" });
     }
+
+    // ── Payment gate: verify that a paid record exists for this user+task ────
+    const dbUser = await getDbUserFromHeader(req.headers.authorization);
+    if (!dbUser) {
+      return res.status(401).json({ error: "请先登录后再使用简历重构功能" });
+    }
+    if (taskId) {
+      const taskPayments = await db.select().from(payments)
+        .where(eq(payments.userId, dbUser.id)) as any[];
+      const hasPaid = taskPayments.some(
+        (p: any) => p.taskId === String(taskId) && p.status === 2
+      );
+      if (!hasPaid) {
+        return res.status(402).json({
+          error: "该功能需付费解锁，请先完成支付后再生成优化简历",
+          code: "payment_required"
+        });
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     {
         const prompt = `You are a premier executive resume writer. Your job is to transform the candidate's original resume to perfectly target the role of "${targetRole}" by resolving identified gaps.
