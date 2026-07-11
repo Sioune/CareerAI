@@ -2236,7 +2236,7 @@ Visuals & Integrity
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans flex flex-col antialiased">
+    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans flex flex-col antialiased overflow-x-hidden">
       
       {/* Dynamic Toast Alert */}
       <AnimatePresence>
@@ -2355,7 +2355,7 @@ Visuals & Integrity
         <>
 
       {/* Global Top Navbar */}
-      <header className="h-16 shrink-0 bg-white border-b border-slate-200 sticky top-0 z-40 flex justify-between items-center px-6 md:px-10 shadow-sm">
+      <header className="h-14 sm:h-16 shrink-0 bg-white border-b border-slate-200 sticky top-0 z-40 flex justify-between items-center px-3 sm:px-6 md:px-10 shadow-sm">
         <div className="flex items-center gap-3">
           <span className="font-sans font-bold text-2xl tracking-tight text-blue-600">CareerAI</span>
           <span 
@@ -2394,7 +2394,7 @@ Visuals & Integrity
         </nav>
 
         {/* Right Status Actions */}
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-1.5 sm:gap-3">
           {/* Notification Center Bell & Dropdown */}
           <div className="relative">
             <button 
@@ -2417,7 +2417,7 @@ Visuals & Integrity
                     initial={{ opacity: 0, y: 10, scale: 0.95 }}
                     animate={{ opacity: 1, y: 0, scale: 1 }}
                     exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                    className="fixed top-16 left-4 right-4 sm:absolute sm:top-auto sm:left-auto sm:right-0 sm:mt-2 w-[calc(100vw-2rem)] max-w-sm sm:w-96 bg-white border border-slate-200 rounded-2xl shadow-xl z-50 overflow-hidden"
+                    className="fixed top-14 sm:top-16 left-2 right-2 sm:absolute sm:top-auto sm:left-auto sm:right-0 sm:mt-2 w-[calc(100vw-1rem)] sm:w-auto max-w-sm sm:w-96 bg-white border border-slate-200 rounded-2xl shadow-xl z-50 overflow-hidden"
                   >
                     <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
                       <div className="flex items-center gap-2">
@@ -2560,16 +2560,16 @@ Visuals & Integrity
               <button 
                 id="user-profile-menu-btn"
                 onClick={() => setShowUserDropdown(!showUserDropdown)}
-                className="flex items-center gap-3 cursor-pointer hover:bg-slate-50 p-1.5 rounded-xl transition-all"
+                className="flex items-center gap-1.5 sm:gap-2 cursor-pointer hover:bg-slate-50 p-1 sm:p-1.5 rounded-xl transition-all"
               >
-                <div className="w-8 h-8 rounded-full bg-blue-600 text-white overflow-hidden flex items-center justify-center font-bold text-sm">
+                <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-blue-600 text-white overflow-hidden flex items-center justify-center font-bold text-xs sm:text-sm shrink-0">
                   {currentUser.username.substring(0, 2).toUpperCase()}
                 </div>
                 <div className="text-left hidden md:block">
                   <p className="text-xs font-bold text-slate-800 leading-tight">{currentUser.username}</p>
                   <p className="text-[9px] text-slate-400 font-bold font-mono uppercase mt-0.5">{t.executivePortal}</p>
                 </div>
-                <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                <ChevronDown className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-slate-400 shrink-0 hidden sm:block" />
               </button>
 
               {showUserDropdown && (
@@ -2892,7 +2892,7 @@ Visuals & Integrity
         </aside>
 
         {/* Main Fluid Container Stage */}
-        <main className="flex-1 overflow-y-auto p-4 md:p-10 flex flex-col justify-between relative bg-slate-50">
+        <main className="flex-1 overflow-y-auto overflow-x-hidden p-3 sm:p-4 md:p-10 flex flex-col justify-between relative bg-slate-50 min-w-0">
           
           {/* Main loader screen for API calls */}
           {loadingStep !== 'idle' && (
@@ -3101,14 +3101,14 @@ Visuals & Integrity
               <motion.div 
                 initial={{ opacity: 0, y: 15 }} 
                 animate={{ opacity: 1, y: 0 }} 
-                className="flex flex-col items-center justify-center py-10 md:py-16"
+                className="flex flex-col items-center justify-center py-6 md:py-16"
               >
-                <div className="text-center max-w-3xl mx-auto mb-12">
+                <div className="text-center max-w-3xl mx-auto mb-6 md:mb-12 px-2">
                   <span className="text-[10px] font-bold tracking-widest text-blue-600 uppercase bg-blue-50 px-3 py-1 rounded-full">{t.targetAnalysis}</span>
-                  <h1 className="text-4xl md:text-5xl font-extrabold text-slate-900 tracking-tight mt-4 mb-6 leading-tight">
+                  <h1 className="text-2xl sm:text-3xl md:text-5xl font-extrabold text-slate-900 tracking-tight mt-3 mb-3 md:mt-4 md:mb-6 leading-tight">
                     {t.unlockTitle} <span className="text-blue-600">{t.unlockRole}</span>
                   </h1>
-                  <p className="text-slate-500 text-lg leading-relaxed">
+                  <p className="text-slate-500 text-sm sm:text-base md:text-lg leading-relaxed">
                     {t.unlockDesc}
                   </p>
                 </div>
@@ -3178,7 +3178,7 @@ Visuals & Integrity
                 </div>
 
                 {/* Trending Roles Section */}
-                <div className="flex flex-col sm:flex-row items-center justify-center gap-3 text-slate-500 text-sm mb-16">
+                <div className="flex flex-col sm:flex-row items-center justify-center gap-3 text-slate-500 text-sm mb-8 md:mb-16">
                   <h2 className="font-bold text-xs uppercase tracking-wider text-slate-400 shrink-0">{t.trendingRoles}:</h2>
                   <div className="flex flex-wrap gap-2 justify-center font-bold">
                     {["VP of AI Engineering", "Chief Data Officer", "Head of Generative AI"].map((role, idx) => (
@@ -3232,16 +3232,44 @@ Visuals & Integrity
             ) : (
               
               /* Active Task Navigation Area */
-              <div className="w-full flex flex-col gap-6">
+              <div className="w-full flex flex-col gap-4 md:gap-6">
+
+                {/* Mobile Step Progress Bar (only visible on mobile/tablet, desktop uses sidebar) */}
+                <div className="flex lg:hidden overflow-x-auto gap-1 pb-1 -mx-4 px-4 scrollbar-none">
+                  {[
+                    { tab: 'researched', label: t.jdAnalysis, icon: BarChart3, enabled: true },
+                    { tab: 'matching', label: t.uploadResume, icon: UploadCloud, enabled: true },
+                    { tab: 'matched', label: t.matchScore, icon: CheckCircle2, enabled: !!currentTask.matchReport },
+                    { tab: 'finalized', label: t.finalize, icon: FileText, enabled: currentTask.status === 'finalized' }
+                  ].map((item, idx) => {
+                    const Icon = item.icon;
+                    const isActive = activeTab === item.tab;
+                    return (
+                      <button
+                        key={idx}
+                        disabled={!item.enabled}
+                        onClick={() => navigateToTab(item.tab as any)}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold shrink-0 transition-all ${
+                          isActive ? 'bg-blue-600 text-white shadow-sm' :
+                          item.enabled ? 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50' :
+                          'bg-slate-100 text-slate-400 cursor-not-allowed'
+                        }`}
+                      >
+                        <Icon className="w-3.5 h-3.5 shrink-0" />
+                        <span className="whitespace-nowrap">{item.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
                 
                 {/* Dashboard Subheader with current active target role */}
-                <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 pb-5 border-b border-slate-200">
-                  <div>
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end gap-3 pb-4 md:pb-5 border-b border-slate-200">
+                  <div className="min-w-0">
                     <span className="text-[10px] font-bold text-blue-600 uppercase tracking-widest bg-blue-50 px-2 py-1 rounded">{t.targetContext}</span>
-                    <h1 className="text-2xl md:text-3xl font-bold text-slate-900 mt-2">
+                    <h1 className="text-xl sm:text-2xl md:text-3xl font-bold text-slate-900 mt-2 leading-tight truncate max-w-full">
                       {currentTask.targetRole} - {t.marketInsight}
                     </h1>
-                    <p className="text-slate-500 text-sm mt-1">
+                    <p className="text-slate-500 text-xs sm:text-sm mt-1">
                       {t.dataAggregated} {currentTask.report?.jdCount || 25} {t.dataAggregatedSuffix}
                     </p>
                   </div>
@@ -3287,7 +3315,7 @@ Visuals & Integrity
                   >
                     
                     {/* Left: Research Summary */}
-                    <div className="col-span-1 lg:col-span-8 bg-white border border-slate-200 p-6 rounded-2xl shadow-sm">
+                    <div className="col-span-1 lg:col-span-8 bg-white border border-slate-200 p-4 sm:p-6 rounded-2xl shadow-sm">
                       <div className="flex items-center gap-2 mb-4 pb-3 border-b border-slate-100">
                         <Sparkles className="w-5 h-5 text-blue-600" />
                         <h3 className="font-bold text-slate-950 text-sm uppercase tracking-wider">{t.researchSummary}</h3>
@@ -3298,7 +3326,7 @@ Visuals & Integrity
                     </div>
 
                     {/* Right: Mandatory Requirements */}
-                    <div className="col-span-1 lg:col-span-4 bg-white border border-slate-200 p-6 rounded-2xl shadow-sm">
+                    <div className="col-span-1 lg:col-span-4 bg-white border border-slate-200 p-4 sm:p-6 rounded-2xl shadow-sm">
                       <div className="flex items-center gap-2 mb-4 pb-3 border-b border-slate-100">
                         <AlertCircle className="w-5 h-5 text-rose-500" />
                         <h3 className="font-bold text-slate-950 text-sm uppercase tracking-wider text-rose-600 font-bold">Mandatory Requirements (必备硬性要求)</h3>
@@ -3430,12 +3458,12 @@ Visuals & Integrity
                     )}
 
                     {/* CALL TO ACTION CTA MODULE */}
-                    <div className="col-span-1 lg:col-span-12 bg-slate-900 border border-slate-800 p-8 rounded-2xl text-center flex flex-col items-center justify-center gap-4 shadow-xl mt-4 relative overflow-hidden">
+                    <div className="col-span-1 lg:col-span-12 bg-slate-900 border border-slate-800 p-5 sm:p-8 rounded-2xl text-center flex flex-col items-center justify-center gap-4 shadow-xl mt-4 relative overflow-hidden">
                       <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-600 via-indigo-500 to-emerald-400"></div>
-                      <div className="w-16 h-16 rounded-full bg-slate-800/80 flex items-center justify-center text-blue-400 mb-2">
-                        <UploadCloud className="w-8 h-8" />
+                      <div className="w-12 h-12 sm:w-16 sm:h-16 rounded-full bg-slate-800/80 flex items-center justify-center text-blue-400 mb-1 sm:mb-2">
+                        <UploadCloud className="w-6 h-6 sm:w-8 sm:h-8" />
                       </div>
-                      <h3 className="text-white text-xl font-bold tracking-tight">测一测您与该职位的匹配契合度</h3>
+                      <h3 className="text-white text-lg sm:text-xl font-bold tracking-tight">测一测您与该职位的匹配契合度</h3>
                       <p className="text-slate-400 text-xs max-w-lg leading-relaxed">
                         {t.ctaMatchDesc}
                       </p>
@@ -3604,7 +3632,7 @@ Visuals & Integrity
                       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                         {/* Left small card: Active Context Target Role */}
                         <div className="col-span-1 lg:col-span-4 flex flex-col gap-6">
-                      <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-sm">
+                      <div className="bg-white border border-slate-200 p-4 sm:p-6 rounded-2xl shadow-sm">
                         <h3 className="font-bold text-slate-900 text-sm uppercase tracking-wider mb-4 pb-3 border-b border-slate-100">Target Role Context</h3>
                         <div className="flex flex-col gap-4">
                           <div>
@@ -3623,7 +3651,7 @@ Visuals & Integrity
                       </div>
 
                       {/* Benefits helper info */}
-                      <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-sm">
+                      <div className="bg-white border border-slate-200 p-4 sm:p-6 rounded-2xl shadow-sm">
                         <h3 className="font-bold text-slate-900 text-sm uppercase tracking-wider mb-4 pb-3 border-b border-slate-100">Why Upload? (比对价值)</h3>
                         <div className="flex flex-col gap-4">
                           <div className="flex gap-3">
@@ -3652,7 +3680,7 @@ Visuals & Integrity
                         onDragOver={handleDragOver}
                         onDragLeave={handleDragLeave}
                         onDrop={handleDrop}
-                        className={`border-2 border-dashed rounded-2xl p-8 flex flex-col items-center justify-center text-center transition-all bg-white cursor-pointer group min-h-[220px] ${isDragActive ? 'border-blue-500 bg-blue-50' : 'border-slate-300 hover:border-blue-500 hover:bg-slate-50'}`}
+                        className={`border-2 border-dashed rounded-2xl p-5 sm:p-8 flex flex-col items-center justify-center text-center transition-all bg-white cursor-pointer group min-h-[180px] sm:min-h-[220px] ${isDragActive ? 'border-blue-500 bg-blue-50' : 'border-slate-300 hover:border-blue-500 hover:bg-slate-50'}`}
                       >
                         <div className="w-14 h-14 rounded-full bg-blue-50 group-hover:scale-105 transition-transform flex items-center justify-center text-blue-600 mb-4">
                           <UploadCloud className="w-7 h-7" />
@@ -3775,10 +3803,10 @@ Visuals & Integrity
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                       
                       {/* Overall match circular score */}
-                      <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-sm flex flex-col items-center justify-center">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block w-full text-left mb-6">Overall Match (综合契合度)</span>
+                      <div className="bg-white border border-slate-200 p-4 sm:p-6 rounded-2xl shadow-sm flex flex-col items-center justify-center">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block w-full text-left mb-4 sm:mb-6">Overall Match (综合契合度)</span>
                         
-                        <div className="relative w-48 h-48 flex items-center justify-center">
+                        <div className="relative w-36 h-36 sm:w-48 sm:h-48 flex items-center justify-center">
                           {/* SVG Circular progress */}
                           <svg className="w-full h-full transform -rotate-90" viewBox="0 0 100 100">
                             <circle cx="50" cy="50" r="45" fill="none" stroke="#f1f5f9" strokeWidth="8" />
@@ -3813,11 +3841,11 @@ Visuals & Integrity
                         
                         {/* Key Strengths list */}
                         <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-                          <div className="px-6 py-3.5 border-b border-slate-100 bg-slate-50 flex items-center gap-2">
+                          <div className="px-4 sm:px-6 py-3.5 border-b border-slate-100 bg-slate-50 flex items-center gap-2">
                             <CheckCircle2 className="w-5 h-5 text-emerald-500" />
                             <h3 className="font-bold text-slate-900 text-xs uppercase tracking-wider">Key Strengths (简历核心优势)</h3>
                           </div>
-                          <div className="p-6 flex flex-col gap-4">
+                          <div className="p-4 sm:p-6 flex flex-col gap-4">
                             {currentTask.matchReport.strengths.map((str, idx) => (
                               <div key={idx} className="flex gap-3 items-start">
                                 <ChevronRight className="w-4 h-4 text-emerald-500 shrink-0 mt-1" />
@@ -3832,14 +3860,14 @@ Visuals & Integrity
 
                         {/* Critical Gaps list */}
                         <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-                          <div className="px-6 py-3.5 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
+                          <div className="px-4 sm:px-6 py-3.5 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
                             <div className="flex items-center gap-2">
                               <AlertCircle className="w-5 h-5 text-rose-500" />
                               <h3 className="font-bold text-slate-900 text-xs uppercase tracking-wider text-rose-600">Critical Gaps (核心差距短板)</h3>
                             </div>
                             <span className="bg-rose-50 text-rose-600 text-[10px] font-bold px-2 py-0.5 rounded-full">3 个高级缺陷</span>
                           </div>
-                          <div className="p-6 flex flex-col gap-4">
+                          <div className="p-4 sm:p-6 flex flex-col gap-4">
                             {currentTask.matchReport.gaps.map((gap, idx) => (
                               <div key={idx} className="flex gap-3 items-start">
                                 <span className="w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0 mt-2"></span>
@@ -3863,7 +3891,7 @@ Visuals & Integrity
                         <Sparkles className="w-5 h-5 text-blue-600" />
                         <h3 className="font-bold text-slate-900 text-xs uppercase tracking-wider">Keyword Density & Coverage (大厂筛选高频关键词覆盖评估)</h3>
                       </div>
-                      <div className="p-6">
+                      <div className="p-4 sm:p-6">
                         <div className="flex flex-wrap gap-x-2 gap-y-3">
                           {currentTask.matchReport.matchedKeywords.map((tag, idx) => (
                             <span key={idx} className="px-3 py-1 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg text-xs font-mono font-semibold flex items-center gap-1.5">
@@ -4039,26 +4067,26 @@ Visuals & Integrity
                       <button
                         type="button"
                         onClick={() => setMobileWorkspaceTab('copilot')}
-                        className={`flex-1 py-2.5 text-xs font-extrabold rounded-xl transition-all flex items-center justify-center gap-2 ${
+                        className={`flex-1 py-2 sm:py-2.5 text-[11px] sm:text-xs font-extrabold rounded-xl transition-all flex items-center justify-center gap-1.5 ${
                           mobileWorkspaceTab === 'copilot'
                             ? 'bg-blue-600 text-white shadow-md shadow-blue-100'
                             : 'text-slate-600 hover:text-slate-900 bg-white/50 hover:bg-white'
                         }`}
                       >
-                        <Sparkles className="w-4 h-4 shrink-0" />
-                        <span>改写研判助手 (左栏)</span>
+                        <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                        <span className="truncate">AI 改写助手</span>
                       </button>
                       <button
                         type="button"
                         onClick={() => setMobileWorkspaceTab('resume')}
-                        className={`flex-1 py-2.5 text-xs font-extrabold rounded-xl transition-all flex items-center justify-center gap-2 ${
+                        className={`flex-1 py-2 sm:py-2.5 text-[11px] sm:text-xs font-extrabold rounded-xl transition-all flex items-center justify-center gap-1.5 ${
                           mobileWorkspaceTab === 'resume'
                             ? 'bg-blue-600 text-white shadow-md shadow-blue-100'
                             : 'text-slate-600 hover:text-slate-900 bg-white/50 hover:bg-white'
                         }`}
                       >
-                        <FileText className="w-4 h-4 shrink-0" />
-                        <span>重构简历预览 (右栏)</span>
+                        <FileText className="w-3.5 h-3.5 shrink-0" />
+                        <span className="truncate">简历预览</span>
                       </button>
                     </div>
 
@@ -4246,7 +4274,7 @@ Visuals & Integrity
                         {/* Decorative AI Glow strip */}
                         <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-600 via-indigo-500 to-emerald-400 z-10"></div>
                         
-                        <div className="px-5 py-3 border-b border-slate-200 bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
+                        <div className="px-3 sm:px-5 py-3 border-b border-slate-200 bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-3 shrink-0">
                           <div className="flex items-center gap-2">
                             <Sparkles className="w-4 h-4 text-blue-500 animate-pulse shrink-0" />
                             <span className="text-[10px] font-bold text-blue-600 uppercase tracking-widest">
@@ -4819,7 +4847,7 @@ Visuals & Integrity
               initial={{ opacity: 0, x: 100 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: 80 }}
-              className="fixed right-0 top-16 bottom-0 w-80 bg-white border-l border-slate-200 shadow-2xl z-40 p-6 flex flex-col overflow-hidden"
+              className="fixed right-0 top-14 sm:top-16 bottom-0 w-full sm:w-80 bg-white border-l border-slate-200 shadow-2xl z-40 p-4 sm:p-6 flex flex-col overflow-hidden"
             >
               <div className="flex justify-between items-center mb-6 pb-3 border-b border-slate-100">
                 <div className="flex items-center gap-2">
@@ -5047,11 +5075,11 @@ Visuals & Integrity
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.98 }}
-                className="bg-white border border-slate-200 w-full max-w-md rounded-2xl shadow-2xl p-6 relative overflow-hidden text-slate-800"
+                className="bg-white border border-slate-200 w-full max-w-md rounded-2xl shadow-2xl p-4 sm:p-6 relative overflow-hidden text-slate-800 max-h-[90vh] overflow-y-auto"
               >
                 <button 
                   onClick={() => setShowShareModal(false)}
-                  className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 transition-colors"
+                  className="absolute top-3 right-3 sm:top-4 sm:right-4 text-slate-400 hover:text-slate-600 transition-colors"
                 >
                   <X className="w-5 h-5" />
                 </button>
@@ -5148,11 +5176,11 @@ Visuals & Integrity
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.98 }}
-                className="bg-white border border-slate-200 w-full max-w-md rounded-2xl shadow-2xl p-6 relative overflow-hidden text-slate-800"
+                className="bg-white border border-slate-200 w-full max-w-md rounded-2xl shadow-2xl p-4 sm:p-6 relative overflow-hidden text-slate-800 max-h-[90vh] overflow-y-auto"
               >
                 <button 
                   onClick={() => setActiveNotification(null)}
-                  className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 transition-colors"
+                  className="absolute top-3 right-3 sm:top-4 sm:right-4 text-slate-400 hover:text-slate-600 transition-colors"
                 >
                   <X className="w-5 h-5" />
                 </button>
