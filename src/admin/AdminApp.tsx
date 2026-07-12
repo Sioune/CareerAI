@@ -715,6 +715,294 @@ function ReferralsTab() {
   );
 }
 
+function ModelPricingSection() {
+  const [prices, setPrices] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [msg, setMsg] = useState('');
+  const [form, setForm] = useState({
+    provider: 'gemini', model: 'gemini-3.5-flash',
+    inputPerMillion: '', outputPerMillion: '',
+    currency: 'CNY', source: 'official', effectiveAt: '',
+  });
+
+  const load = () => {
+    setLoading(true);
+    apiFetch('/api/admin/model-prices')
+      .then((d) => { setPrices(d.prices || []); setError(''); })
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false));
+  };
+  useEffect(() => { load(); }, []);
+
+  const save = async () => {
+    setError(''); setMsg('');
+    const inp = Number(form.inputPerMillion);
+    const out = Number(form.outputPerMillion);
+    if (!form.provider || !form.model) { setError('provider 和 model 不能为空'); return; }
+    if (isNaN(inp) || isNaN(out) || form.inputPerMillion === '' || form.outputPerMillion === '') { setError('单价须为有效数字'); return; }
+    if (!form.effectiveAt) { setError('生效日期时间不能为空'); return; }
+    setSaving(true);
+    try {
+      await apiFetch('/api/admin/model-prices', {
+        method: 'POST',
+        body: JSON.stringify({ provider: form.provider, model: form.model, inputPerMillion: inp, outputPerMillion: out, currency: form.currency, source: form.source, effectiveAt: form.effectiveAt }),
+      });
+      setMsg('✅ 计价条目已保存，新计价对后续调用立即生效');
+      setForm((f) => ({ ...f, effectiveAt: '' }));
+      load();
+    } catch (e: any) { setError(e.message); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+      <div className="px-4 py-3 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
+        <div>
+          <h3 className="font-semibold text-sm text-slate-800">💰 模型计价管理</h3>
+          <p className="text-xs text-slate-400 mt-0.5">追加式不可篡改历史 · 单位：分（¥0.01）/ 百万 tokens · 生效日期后新调用使用新价格</p>
+        </div>
+        <button onClick={load} className="text-xs text-blue-600 hover:underline">刷新</button>
+      </div>
+
+      <div className="p-4 border-b border-slate-100 bg-amber-50/40">
+        <p className="text-xs font-semibold text-amber-700 mb-2">新增计价条目（仅追加，历史成本记录不受影响）</p>
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 mb-2">
+          {[
+            { label: 'Provider', field: 'provider', placeholder: 'gemini', type: 'text' },
+            { label: '模型名称', field: 'model', placeholder: 'gemini-3.5-flash', type: 'text' },
+            { label: 'Input 单价（分/百万）', field: 'inputPerMillion', placeholder: '70', type: 'number' },
+            { label: 'Output 单价（分/百万）', field: 'outputPerMillion', placeholder: '280', type: 'number' },
+          ].map((f) => (
+            <div key={f.field}>
+              <label className="block text-xs text-slate-500 mb-1">{f.label}</label>
+              <input type={f.type} value={(form as any)[f.field]} placeholder={f.placeholder}
+                onChange={(e) => setForm((prev) => ({ ...prev, [f.field]: e.target.value }))}
+                className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-xs" />
+            </div>
+          ))}
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">口径来源</label>
+            <select value={form.source} onChange={(e) => setForm((p) => ({ ...p, source: e.target.value }))}
+              className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-xs">
+              <option value="official">官方公示</option>
+              <option value="contract">合同价</option>
+              <option value="invoice">账单核对</option>
+              <option value="illustrative">示意估算</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">生效日期时间</label>
+            <input type="datetime-local" value={form.effectiveAt}
+              onChange={(e) => setForm((p) => ({ ...p, effectiveAt: e.target.value }))}
+              className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-xs" />
+          </div>
+        </div>
+        {error && <p className="text-xs text-red-600 mb-1">{error}</p>}
+        {msg && <p className="text-xs text-emerald-600 mb-1">{msg}</p>}
+        <button onClick={save} disabled={saving}
+          className="bg-slate-900 text-white px-4 py-1.5 rounded-lg text-xs font-semibold disabled:opacity-50">
+          {saving ? '保存中...' : '保存新计价'}
+        </button>
+      </div>
+
+      <div className="overflow-x-auto max-h-64">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-slate-600 text-xs sticky top-0">
+            <tr>
+              <th className="text-left px-3 py-2">Provider</th>
+              <th className="text-left px-3 py-2">模型</th>
+              <th className="text-right px-3 py-2">Input（分/M）</th>
+              <th className="text-right px-3 py-2">Output（分/M）</th>
+              <th className="text-left px-3 py-2">口径</th>
+              <th className="text-left px-3 py-2">生效时间</th>
+              <th className="text-left px-3 py-2">录入人</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={7} className="text-center text-slate-400 py-6">加载中...</td></tr>
+            ) : prices.length === 0 ? (
+              <tr><td colSpan={7} className="text-center text-slate-400 py-6">暂无计价记录，请通过上方表单录入第一条</td></tr>
+            ) : prices.map((p, i) => (
+              <tr key={p.id} className={`border-t border-slate-100 ${i === 0 ? 'bg-emerald-50/30' : ''}`}>
+                <td className="px-3 py-2 font-mono text-xs text-slate-600">{p.provider}</td>
+                <td className="px-3 py-2 font-mono text-xs">
+                  {p.model}
+                  {i === 0 && <span className="ml-1.5 text-[10px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full font-bold">当前生效</span>}
+                </td>
+                <td className="px-3 py-2 text-right font-mono text-xs text-indigo-600">{p.input_per_million}</td>
+                <td className="px-3 py-2 text-right font-mono text-xs text-violet-600">{p.output_per_million}</td>
+                <td className="px-3 py-2 text-xs text-slate-500">{p.source}</td>
+                <td className="px-3 py-2 text-xs font-mono text-slate-500">{p.effective_at ? fmtDate(p.effective_at) : '—'}</td>
+                <td className="px-3 py-2 text-xs text-slate-400">{p.created_by_admin || 'system'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function TokenStatsSection() {
+  const [stats, setStats] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const load = () => {
+    setLoading(true);
+    apiFetch('/api/admin/finance/token-stats?days=30')
+      .then((d) => { setStats(d); setError(''); })
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false));
+  };
+  useEffect(() => { load(); }, []);
+
+  if (loading) return <p className="text-slate-500 text-sm">加载 Token 统计...</p>;
+  if (error) return <p className="text-red-600 text-sm">Token统计加载失败: {error}</p>;
+  if (!stats) return null;
+
+  const s = stats.summary;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="font-semibold text-sm text-slate-700">🤖 Token 消耗统计（精确口径）</h3>
+        <button onClick={load} className="text-xs text-blue-600 hover:underline">刷新</button>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <Card label="累计调用次数" value={s.calls.toLocaleString()} sub="次 AI 调用" />
+        <Card label="累计 Input Tokens" value={s.totalTokensIn.toLocaleString()} sub="输入 tokens" />
+        <Card label="累计 Output Tokens" value={s.totalTokensOut.toLocaleString()} sub="输出 tokens" />
+        <Card label="AI 成本（基于计价）" value={`¥${(s.totalCostCents / 100).toFixed(4)}`} sub={`精确 ${(s.totalMicroCents / 1e6).toFixed(4)} 分`} />
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <div className="px-3 py-2 bg-slate-50 border-b border-slate-100">
+            <p className="text-xs font-semibold text-slate-600">按模型汇总</p>
+          </div>
+          <table className="w-full text-xs">
+            <thead className="bg-slate-50/50 text-slate-500"><tr>
+              <th className="text-left px-3 py-1.5">模型</th>
+              <th className="text-right px-3 py-1.5">调用</th>
+              <th className="text-right px-3 py-1.5">In Tokens</th>
+              <th className="text-right px-3 py-1.5">Out Tokens</th>
+              <th className="text-right px-3 py-1.5">成本(¥)</th>
+            </tr></thead>
+            <tbody>
+              {stats.byModel.length === 0 ? (
+                <tr><td colSpan={5} className="text-center text-slate-400 py-4">暂无数据</td></tr>
+              ) : stats.byModel.map((r: any, i: number) => (
+                <tr key={i} className="border-t border-slate-100">
+                  <td className="px-3 py-1.5 font-mono">{r.model}</td>
+                  <td className="px-3 py-1.5 text-right">{r.calls}</td>
+                  <td className="px-3 py-1.5 text-right text-indigo-600">{r.tokensIn.toLocaleString()}</td>
+                  <td className="px-3 py-1.5 text-right text-violet-600">{r.tokensOut.toLocaleString()}</td>
+                  <td className="px-3 py-1.5 text-right text-emerald-600">{(r.costCents / 100).toFixed(4)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <div className="px-3 py-2 bg-slate-50 border-b border-slate-100">
+            <p className="text-xs font-semibold text-slate-600">按操作类型汇总</p>
+          </div>
+          <table className="w-full text-xs">
+            <thead className="bg-slate-50/50 text-slate-500"><tr>
+              <th className="text-left px-3 py-1.5">操作</th>
+              <th className="text-right px-3 py-1.5">调用</th>
+              <th className="text-right px-3 py-1.5">In</th>
+              <th className="text-right px-3 py-1.5">Out</th>
+              <th className="text-right px-3 py-1.5">成本(¥)</th>
+            </tr></thead>
+            <tbody>
+              {stats.byOperation.length === 0 ? (
+                <tr><td colSpan={5} className="text-center text-slate-400 py-4">暂无数据（尚无 AI 调用）</td></tr>
+              ) : stats.byOperation.map((r: any, i: number) => (
+                <tr key={i} className="border-t border-slate-100">
+                  <td className="px-3 py-1.5 font-mono">{r.operation}</td>
+                  <td className="px-3 py-1.5 text-right">{r.calls}</td>
+                  <td className="px-3 py-1.5 text-right text-indigo-600">{r.tokensIn.toLocaleString()}</td>
+                  <td className="px-3 py-1.5 text-right text-violet-600">{r.tokensOut.toLocaleString()}</td>
+                  <td className="px-3 py-1.5 text-right text-emerald-600">{(r.costCents / 100).toFixed(4)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {stats.byDay && stats.byDay.length > 0 && (
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <div className="px-3 py-2 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+            <p className="text-xs font-semibold text-slate-600">近30天逐日消耗（Asia/Shanghai）</p>
+          </div>
+          <div className="overflow-x-auto max-h-48">
+            <table className="w-full text-xs">
+              <thead className="bg-slate-50/50 text-slate-500 sticky top-0"><tr>
+                <th className="text-left px-3 py-1.5">业务日</th>
+                <th className="text-right px-3 py-1.5">调用</th>
+                <th className="text-right px-3 py-1.5">In Tokens</th>
+                <th className="text-right px-3 py-1.5">Out Tokens</th>
+                <th className="text-right px-3 py-1.5">成本(¥)</th>
+              </tr></thead>
+              <tbody>
+                {stats.byDay.map((r: any, i: number) => (
+                  <tr key={i} className="border-t border-slate-100">
+                    <td className="px-3 py-1.5 font-mono">{r.bizDate}</td>
+                    <td className="px-3 py-1.5 text-right">{r.calls}</td>
+                    <td className="px-3 py-1.5 text-right text-indigo-600">{r.tokensIn.toLocaleString()}</td>
+                    <td className="px-3 py-1.5 text-right text-violet-600">{r.tokensOut.toLocaleString()}</td>
+                    <td className="px-3 py-1.5 text-right text-emerald-600">{(r.costCents / 100).toFixed(4)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {stats.recent && stats.recent.length > 0 && (
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <div className="px-3 py-2 bg-slate-50 border-b border-slate-100">
+            <p className="text-xs font-semibold text-slate-600">最近调用明细（最新200条）</p>
+          </div>
+          <div className="overflow-x-auto max-h-56">
+            <table className="w-full text-xs">
+              <thead className="bg-slate-50/50 text-slate-500 sticky top-0"><tr>
+                <th className="text-left px-3 py-1.5">操作</th>
+                <th className="text-left px-3 py-1.5">模型</th>
+                <th className="text-right px-3 py-1.5">In</th>
+                <th className="text-right px-3 py-1.5">Out</th>
+                <th className="text-right px-3 py-1.5">成本(¥)</th>
+                <th className="text-left px-3 py-1.5">时间</th>
+              </tr></thead>
+              <tbody>
+                {stats.recent.map((r: any, i: number) => (
+                  <tr key={i} className="border-t border-slate-100">
+                    <td className="px-3 py-1 font-mono">{r.operation}</td>
+                    <td className="px-3 py-1 text-slate-500 font-mono">{r.model}</td>
+                    <td className="px-3 py-1 text-right text-indigo-600">{(r.tokens_in || 0).toLocaleString()}</td>
+                    <td className="px-3 py-1 text-right text-violet-600">{(r.tokens_out || 0).toLocaleString()}</td>
+                    <td className="px-3 py-1 text-right text-emerald-600">{((r.cost_micro_cents || 0) / 1e8).toFixed(6)}</td>
+                    <td className="px-3 py-1 text-slate-400">{fmtDate(r.created_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FinanceTab() {
   const [data, setData] = useState<any>(null);
   const [summary, setSummary] = useState<any>(null);
@@ -729,55 +1017,35 @@ function FinanceTab() {
   if (!data) return <p className="text-slate-500 text-sm">加载中...</p>;
 
   return (
-    <div>
-      <h2 className="text-lg font-bold text-slate-900 mb-4">财务闭环 · 账本 / Token 成本 / 毛利</h2>
+    <div className="space-y-8">
+      <h2 className="text-lg font-bold text-slate-900">财务闭环 · 账本 / Token 成本 / 毛利</h2>
 
       {summary && (
         <>
-          <h3 className="font-semibold text-sm mb-2 text-slate-700">现金口径（资金账本汇总）</h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-            <Card label="现金收入" value={fmtMoney(summary.cashInCents)} sub="PAYMENT_RECEIVED" />
-            <Card label="退款流出" value={fmtMoney(summary.refundCents)} sub="REFUND" />
-            <Card label="渠道手续费(估)" value={fmtMoney(summary.feeCents)} sub="示意口径 ≈0.6%" />
-            <Card label="净现金" value={fmtMoney(summary.netCashCents)} sub="现金收入−退款−手续费" />
+          <div>
+            <h3 className="font-semibold text-sm mb-2 text-slate-700">现金口径（资金账本汇总）</h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <Card label="现金收入" value={fmtMoney(summary.cashInCents)} sub="PAYMENT_RECEIVED" />
+              <Card label="退款流出" value={fmtMoney(summary.refundCents)} sub="REFUND" />
+              <Card label="渠道手续费(估)" value={fmtMoney(summary.feeCents)} sub="示意口径 ≈0.6%" />
+              <Card label="净现金" value={fmtMoney(summary.netCashCents)} sub="现金收入−退款−手续费" />
+            </div>
           </div>
-          <h3 className="font-semibold text-sm mb-2 text-slate-700">履约口径与毛利</h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-            <Card label="已确认履约收入(净)" value={fmtMoney(summary.recognizedNetCents)} sub={`已冲销 ${fmtMoney(summary.reversalCents)}`} />
-            <Card label="待确认收入(递延)" value={fmtMoney(summary.deferredCents)} sub="已收现金但未履约" />
-            <Card label="AI Token 成本" value={fmtMoney(summary.totalCostCents)} sub={`精确 ${(summary.totalCostMicroCents / 1e6).toFixed(4)} 分`} />
-            <Card label="毛利(履约口径)" value={fmtMoney(summary.grossMarginCents)} sub={summary.grossMarginPct !== null ? `毛利率 ${summary.grossMarginPct}%` : '暂无已确认收入'} />
+          <div>
+            <h3 className="font-semibold text-sm mb-2 text-slate-700">履约口径与毛利</h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <Card label="已确认履约收入(净)" value={fmtMoney(summary.recognizedNetCents)} sub={`已冲销 ${fmtMoney(summary.reversalCents)}`} />
+              <Card label="待确认收入(递延)" value={fmtMoney(summary.deferredCents)} sub="已收现金但未履约" />
+              <Card label="AI Token 成本" value={fmtMoney(summary.totalCostCents)} sub={`精确 ${(summary.totalCostMicroCents / 1e6).toFixed(4)} 分`} />
+              <Card label="毛利(履约口径)" value={fmtMoney(summary.grossMarginCents)} sub={summary.grossMarginPct !== null ? `毛利率 ${summary.grossMarginPct}%` : '暂无已确认收入'} />
+            </div>
           </div>
         </>
       )}
 
-      <h3 className="font-semibold text-sm mb-1 text-slate-700">按功能类型成本分布</h3>
-      <p className="text-xs text-slate-400 mb-2">累计 {data.recentEvents.length} 次调用 · 输入 {data.totalTokensIn} / 输出 {data.totalTokensOut} tokens</p>
-      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden mb-6">
-        <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-slate-600 text-xs">
-            <tr>
-              <th className="text-left px-3 py-2">功能</th>
-              <th className="text-left px-3 py-2">调用次数</th>
-              <th className="text-left px-3 py-2">成本</th>
-            </tr>
-          </thead>
-          <tbody>
-            {Object.entries(data.byOperation).map(([op, v]: [string, any]) => (
-              <tr key={op} className="border-t border-slate-100">
-                <td className="px-3 py-2 font-mono text-xs">{op}</td>
-                <td className="px-3 py-2">{v.count}</td>
-                <td className="px-3 py-2">{fmtMoney(v.costCents)}</td>
-              </tr>
-            ))}
-            {Object.keys(data.byOperation).length === 0 && (
-              <tr><td colSpan={3} className="text-center text-slate-400 py-6">暂无数据（说明：Gemini API 未配置或尚未产生调用）</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      <TokenStatsSection />
 
-      <p className="text-xs text-slate-400">注：成本为基于 Gemini 官方公开单价的估算值，非平台实际账单金额，仅供毛利趋势参考。</p>
+      <ModelPricingSection />
     </div>
   );
 }
