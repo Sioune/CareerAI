@@ -5716,7 +5716,7 @@ Visuals & Integrity
 
       {/* Help Center Modal */}
       {showHelpCenter && (
-        <HelpCenter onClose={() => setShowHelpCenter(false)} lang={lang} />
+        <HelpCenter onClose={() => setShowHelpCenter(false)} lang={lang} siteConfig={siteConfig} />
       )}
     </div>
   );

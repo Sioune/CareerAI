@@ -23,10 +23,12 @@ import {
   Check,
   AlertCircle,
 } from "lucide-react";
+import type { SiteConfig } from "./hooks/useSiteConfig";
 
 interface HelpCenterProps {
   onClose: () => void;
   lang: "zh" | "en";
+  siteConfig?: SiteConfig;
 }
 
 interface Section {
@@ -39,11 +41,15 @@ interface Section {
   items?: string[];
 }
 
-export default function HelpCenter({ onClose, lang }: HelpCenterProps) {
+export default function HelpCenter({ onClose, lang, siteConfig }: HelpCenterProps) {
   const [activeSection, setActiveSection] = useState<string>("overview");
   const [expandedFaq, setExpandedFaq] = useState<string | null>(null);
 
   const zh = lang === "zh";
+  const brandName = zh
+    ? (siteConfig?.brand.name_zh || "CareerAI")
+    : (siteConfig?.brand.name_en || "CareerAI");
+  const version = siteConfig?.app_version.version || "V1.0";
 
   const sections: Section[] = [
     {
@@ -153,16 +159,16 @@ export default function HelpCenter({ onClose, lang }: HelpCenterProps) {
                   <Sparkles className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="font-extrabold text-lg leading-tight">CareerAI</h3>
+                  <h3 className="font-extrabold text-lg leading-tight">{brandName}</h3>
                   <p className="text-blue-200 text-xs font-bold uppercase tracking-wider">
-                    {zh ? "AI 高管专版 V0.4 PRO" : "Executive AI Edition V0.4 PRO"}
+                    {zh ? `AI 高管专版 ${version}` : `Executive AI Edition ${version}`}
                   </p>
                 </div>
               </div>
               <p className="text-blue-100 text-sm leading-relaxed">
                 {zh
-                  ? "CareerAI 是一款面向高管及资深职场人的 AI 简历优化平台，通过实时岗位画像分析、大模型差距矩阵评分与靶向改写引擎，帮助您在激烈竞争中脱颖而出。"
-                  : "CareerAI is an AI-powered resume optimizer for executives and senior professionals. It delivers real-time JD profiling, LLM-driven gap analysis, and precision rewriting to give you a decisive edge."}
+                  ? `${brandName} 是一款面向高管及资深职场人的 AI 简历优化平台，通过实时岗位画像分析、大模型差距矩阵评分与靶向改写引擎，帮助您在激烈竞争中脱颖而出。`
+                  : `${brandName} is an AI-powered resume optimizer for executives and senior professionals. It delivers real-time JD profiling, LLM-driven gap analysis, and precision rewriting to give you a decisive edge.`}
               </p>
             </div>
 
@@ -941,10 +947,10 @@ export default function HelpCenter({ onClose, lang }: HelpCenterProps) {
             </div>
             <div>
               <h2 className="font-extrabold text-white text-sm leading-tight">
-                {zh ? "CareerAI 操作手册" : "CareerAI User Guide"}
+                {zh ? `${brandName} 操作手册` : `${brandName} User Guide`}
               </h2>
               <p className="text-slate-400 text-[10px] font-bold uppercase tracking-wider">
-                {zh ? "全功能图文指引 V0.4 PRO" : "Full Feature Guide V0.4 PRO"}
+                {zh ? `全功能图文指引 ${version}` : `Full Feature Guide ${version}`}
               </p>
             </div>
           </div>
@@ -994,7 +1000,7 @@ export default function HelpCenter({ onClose, lang }: HelpCenterProps) {
                   {sections.find((s) => s.id === activeSection)?.title}
                 </h3>
                 <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
-                  {zh ? "CareerAI 操作手册" : "CareerAI User Guide"}
+                  {zh ? `${brandName} 操作手册` : `${brandName} User Guide`}
                 </p>
               </div>
             </div>
