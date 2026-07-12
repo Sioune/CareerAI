@@ -4884,6 +4884,27 @@ ${originalText}
     }
   });
 
+  app.get("/api/config/public/batch", async (req, res) => {
+    try {
+      const keysParam = (req.query.keys as string) || "";
+      const keys = keysParam.split(",").map((k) => k.trim()).filter(Boolean);
+      if (keys.length === 0) return res.json({ configs: {} });
+      const all = await db.select().from(siteConfigs) as any[];
+      const result: Record<string, any> = {};
+      for (const key of keys) {
+        const published = all
+          .filter((c: any) => c.key === key && c.status === "published")
+          .sort((a: any, b: any) => b.version - a.version)[0];
+        if (published) {
+          try { result[key] = JSON.parse(published.value); } catch { result[key] = published.value; }
+        }
+      }
+      return res.json({ configs: result });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
   app.get("/api/config/public/:key", async (req, res) => {
     try {
       const rows = await db.select().from(siteConfigs).where(eq(siteConfigs.key, req.params.key)) as any[];

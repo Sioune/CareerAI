@@ -1105,89 +1105,251 @@ function VersionStatusBadge({ status }: { status: string }) {
   return <span className={`px-2 py-0.5 rounded-full text-xs ${it.cls}`}>{it.label}</span>;
 }
 
-function ConfigTab() {
-  const [rows, setRows] = useState<any[]>([]);
+type ConfigKey = 'brand' | 'app_version' | 'maintenance_banner' | 'footer' | 'homepage_copy';
+
+function useConfigSection(configKey: ConfigKey) {
+  const [current, setCurrent] = useState<any>(null);
+  const [history, setHistory] = useState<any[]>([]);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
-  const [key, setKey] = useState('');
-  const [value, setValue] = useState('');
 
-  const load = useCallback(() => {
-    apiFetch('/api/admin/config').then((d) => setRows(d.configs)).catch((e) => setError(e.message));
-  }, []);
+  const load = useCallback(async () => {
+    try {
+      const all = await apiFetch('/api/admin/config');
+      const rows: any[] = (all.configs || []).filter((c: any) => c.key === configKey);
+      rows.sort((a: any, b: any) => b.version - a.version);
+      setHistory(rows);
+      const pub = rows.find((r: any) => r.status === 'published');
+      const draft = rows.find((r: any) => r.status === 'draft');
+      const active = draft || pub;
+      if (active) {
+        try { setCurrent(JSON.parse(active.value)); } catch { setCurrent({}); }
+      }
+    } catch (e: any) { setError(e.message); }
+  }, [configKey]);
+
   useEffect(() => { load(); }, [load]);
 
-  const saveDraft = async () => {
-    setError(''); setMsg('');
+  const saveDraft = async (value: any) => {
+    setError(''); setMsg(''); setSaving(true);
     try {
-      let parsed: any = value;
-      try { parsed = JSON.parse(value); } catch { /* keep as string */ }
-      await apiFetch('/api/admin/config', { method: 'POST', body: JSON.stringify({ key, value: parsed }) });
-      setKey(''); setValue('');
+      await apiFetch('/api/admin/config', { method: 'POST', body: JSON.stringify({ key: configKey, value }) });
+      setMsg('✅ 已保存草稿，点击「提交发布」后生效');
       load();
     } catch (e: any) { setError(e.message); }
+    finally { setSaving(false); }
   };
 
   const submitPublish = async (id: number) => {
     setError(''); setMsg('');
-    try { const d = await apiFetch(`/api/admin/config/${id}/publish`, { method: 'POST' }); setMsg(d.message || '已提交发布审批'); load(); }
-    catch (e: any) { setError(e.message); }
-  };
-  const rollback = async (id: number) => {
-    setError(''); setMsg('');
-    if (!confirm('确认回滚到该历史版本？将立即生效并归档当前已发布版本。')) return;
-    try { const d = await apiFetch(`/api/admin/config/${id}/rollback`, { method: 'POST' }); setMsg(d.message || '已回滚'); load(); }
+    try { const d = await apiFetch(`/api/admin/config/${id}/publish`, { method: 'POST' }); setMsg(d.message || '✅ 已提交发布审批'); load(); }
     catch (e: any) { setError(e.message); }
   };
 
+  const rollback = async (id: number) => {
+    setError(''); setMsg('');
+    if (!confirm('确认回滚到该历史版本？将立即生效并归档当前已发布版本。')) return;
+    try { const d = await apiFetch(`/api/admin/config/${id}/rollback`, { method: 'POST' }); setMsg(d.message || '✅ 已回滚'); load(); }
+    catch (e: any) { setError(e.message); }
+  };
+
+  return { current, history, saving, error, msg, saveDraft, submitPublish, rollback, setMsg, setError };
+}
+
+function SectionShell({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
   return (
-    <div>
-      <h2 className="text-lg font-bold text-slate-900 mb-1">站点配置 / CMS（版本化 + 发布审批 + 回滚）</h2>
-      <p className="text-xs text-slate-400 mb-3">发布需经审批中心复核（Maker-Checker）；回滚可即时恢复历史已发布版本。</p>
-      {error && <p className="text-red-600 text-sm mb-2">{error}</p>}
-      {msg && <p className="text-emerald-600 text-sm mb-2">{msg}</p>}
-      <div className="bg-white rounded-xl border border-slate-200 p-4 mb-4 flex gap-2 items-end">
-        <div className="flex-1">
-          <label className="block text-xs text-slate-500 mb-1">配置键 (key)</label>
-          <input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm" value={key} onChange={(e) => setKey(e.target.value)} placeholder="e.g. resume_unlock_price" />
-        </div>
-        <div className="flex-[2]">
-          <label className="block text-xs text-slate-500 mb-1">值 (纯文本或 JSON)</label>
-          <input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm" value={value} onChange={(e) => setValue(e.target.value)} />
-        </div>
-        <button onClick={saveDraft} disabled={!key || !value} className="bg-slate-900 text-white px-4 py-1.5 rounded-lg text-sm disabled:opacity-50">保存草稿</button>
+    <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+      <div className="px-4 py-3 bg-slate-50 border-b border-slate-100">
+        <h3 className="font-semibold text-sm text-slate-800">{title}</h3>
+        <p className="text-xs text-slate-400 mt-0.5">{subtitle}</p>
       </div>
-      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-        <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-slate-600 text-xs">
-            <tr>
-              <th className="text-left px-3 py-2">Key</th>
-              <th className="text-left px-3 py-2">版本</th>
-              <th className="text-left px-3 py-2">状态</th>
-              <th className="text-left px-3 py-2">值</th>
-              <th className="text-left px-3 py-2">编辑者</th>
-              <th className="text-left px-3 py-2"></th>
+      <div className="p-4">{children}</div>
+    </div>
+  );
+}
+
+function ConfigHistoryTable({ history, onPublish, onRollback }: { history: any[]; onPublish: (id: number) => void; onRollback: (id: number) => void }) {
+  if (history.length === 0) return <p className="text-xs text-slate-400 mt-2">暂无版本历史</p>;
+  return (
+    <div className="mt-3 bg-slate-50 rounded-lg overflow-hidden border border-slate-100">
+      <table className="w-full text-xs">
+        <thead className="text-slate-500 bg-slate-100"><tr>
+          <th className="text-left px-3 py-1.5">版本</th>
+          <th className="text-left px-3 py-1.5">状态</th>
+          <th className="text-left px-3 py-1.5">编辑人</th>
+          <th className="text-left px-3 py-1.5">时间</th>
+          <th className="px-3 py-1.5"></th>
+        </tr></thead>
+        <tbody>
+          {history.map((c) => (
+            <tr key={c.id} className="border-t border-slate-100">
+              <td className="px-3 py-1.5 font-mono">v{c.version}</td>
+              <td className="px-3 py-1.5"><VersionStatusBadge status={c.status} /></td>
+              <td className="px-3 py-1.5 text-slate-500">{c.editedByAdmin || '-'}</td>
+              <td className="px-3 py-1.5 text-slate-400">{c.updatedAt ? new Date(c.updatedAt).toLocaleString('zh-CN') : '-'}</td>
+              <td className="px-3 py-1.5 whitespace-nowrap">
+                {c.status === 'draft' && <button onClick={() => onPublish(c.id)} className="text-blue-600 hover:underline">提交发布</button>}
+                {c.status === 'pending' && <span className="text-blue-500">审批中</span>}
+                {c.status === 'archived' && <button onClick={() => onRollback(c.id)} className="text-amber-600 hover:underline">回滚</button>}
+              </td>
             </tr>
-          </thead>
-          <tbody>
-            {rows.map((c) => (
-              <tr key={c.id} className="border-t border-slate-100">
-                <td className="px-3 py-2 font-medium">{c.key}</td>
-                <td className="px-3 py-2">v{c.version}</td>
-                <td className="px-3 py-2"><VersionStatusBadge status={c.status} /></td>
-                <td className="px-3 py-2 text-slate-500 max-w-xs truncate font-mono text-xs">{c.value}</td>
-                <td className="px-3 py-2 text-slate-500">{c.editedByAdmin}</td>
-                <td className="px-3 py-2 whitespace-nowrap">
-                  {c.status === 'draft' && <button onClick={() => submitPublish(c.id)} className="text-blue-600 hover:underline text-xs">提交发布审批</button>}
-                  {c.status === 'pending' && <span className="text-blue-500 text-xs">审批中</span>}
-                  {c.status === 'archived' && <button onClick={() => rollback(c.id)} className="text-amber-600 hover:underline text-xs">回滚到此版本</button>}
-                </td>
-              </tr>
-            ))}
-            {rows.length === 0 && <tr><td colSpan={6} className="text-center text-slate-400 py-6">暂无配置</td></tr>}
-          </tbody>
-        </table>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function BrandSection() {
+  const { current, history, saving, error, msg, saveDraft, submitPublish, rollback } = useConfigSection('brand');
+  const [form, setForm] = useState({ name_zh: '', name_en: '', logo_url: '', favicon_url: '', primary_color: '#2563eb' });
+  useEffect(() => { if (current) setForm({ name_zh: current.name_zh || '', name_en: current.name_en || '', logo_url: current.logo_url || '', favicon_url: current.favicon_url || '', primary_color: current.primary_color || '#2563eb' }); }, [current]);
+  const f = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => setForm((p) => ({ ...p, [k]: e.target.value }));
+  return (
+    <SectionShell title="🎨 品牌 / 外观" subtitle="系统名称、Logo、Favicon、主色 — 发布后立即应用至前端">
+      {error && <p className="text-red-600 text-xs mb-2">{error}</p>}
+      {msg && <p className="text-emerald-600 text-xs mb-2">{msg}</p>}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+        <div><label className="block text-xs text-slate-500 mb-1">系统名称（中文）</label><input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm" value={form.name_zh} onChange={f('name_zh')} placeholder="CareerAI" /></div>
+        <div><label className="block text-xs text-slate-500 mb-1">系统名称（英文）</label><input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm" value={form.name_en} onChange={f('name_en')} placeholder="CareerAI" /></div>
+        <div><label className="block text-xs text-slate-500 mb-1">Logo 图片 URL（留空则显示文字 Logo）</label><input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm" value={form.logo_url} onChange={f('logo_url')} placeholder="https://..." /></div>
+        <div><label className="block text-xs text-slate-500 mb-1">Favicon URL（.ico 或 .png）</label><input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm" value={form.favicon_url} onChange={f('favicon_url')} placeholder="https://..." /></div>
+        <div><label className="block text-xs text-slate-500 mb-1">品牌主色（十六进制，目前仅记录，下期应用至 CSS 变量）</label>
+          <div className="flex gap-2 items-center">
+            <input type="color" value={form.primary_color} onChange={f('primary_color')} className="h-9 w-12 rounded border border-slate-300 cursor-pointer" />
+            <input className="flex-1 border border-slate-300 rounded-lg px-3 py-1.5 text-sm font-mono" value={form.primary_color} onChange={f('primary_color')} placeholder="#2563eb" />
+          </div>
+        </div>
       </div>
+      <button onClick={() => saveDraft(form)} disabled={saving} className="bg-slate-900 text-white px-4 py-1.5 rounded-lg text-sm disabled:opacity-50">{saving ? '保存中...' : '保存草稿'}</button>
+      <ConfigHistoryTable history={history} onPublish={submitPublish} onRollback={rollback} />
+    </SectionShell>
+  );
+}
+
+function AppVersionSection() {
+  const { current, history, saving, error, msg, saveDraft, submitPublish, rollback } = useConfigSection('app_version');
+  const [form, setForm] = useState({ version: '', release_notes_zh: '', release_notes_en: '' });
+  useEffect(() => { if (current) setForm({ version: current.version || '', release_notes_zh: current.release_notes_zh || '', release_notes_en: current.release_notes_en || '' }); }, [current]);
+  const f = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setForm((p) => ({ ...p, [k]: e.target.value }));
+  return (
+    <SectionShell title="🏷️ 版本号 · 更新日志" subtitle="版本号显示在导航栏徽章；更新日志显示在「版本公告」弹窗">
+      {error && <p className="text-red-600 text-xs mb-2">{error}</p>}
+      {msg && <p className="text-emerald-600 text-xs mb-2">{msg}</p>}
+      <div className="grid grid-cols-1 gap-3 mb-3">
+        <div><label className="block text-xs text-slate-500 mb-1">版本号（显示在导航徽章，如 v1.2.0）</label><input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm font-mono" value={form.version} onChange={f('version')} placeholder="v0.4 PRO" /></div>
+        <div><label className="block text-xs text-slate-500 mb-1">更新日志（中文，Markdown 支持）</label><textarea className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm" rows={4} value={form.release_notes_zh} onChange={f('release_notes_zh')} placeholder="## 本版更新&#10;- 新功能：..." /></div>
+        <div><label className="block text-xs text-slate-500 mb-1">更新日志（English）</label><textarea className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm" rows={4} value={form.release_notes_en} onChange={f('release_notes_en')} placeholder="## What's New&#10;- Feature: ..." /></div>
+      </div>
+      <button onClick={() => saveDraft(form)} disabled={saving} className="bg-slate-900 text-white px-4 py-1.5 rounded-lg text-sm disabled:opacity-50">{saving ? '保存中...' : '保存草稿'}</button>
+      <ConfigHistoryTable history={history} onPublish={submitPublish} onRollback={rollback} />
+    </SectionShell>
+  );
+}
+
+function MaintenanceBannerSection() {
+  const { current, history, saving, error, msg, saveDraft, submitPublish, rollback } = useConfigSection('maintenance_banner');
+  const [form, setForm] = useState({ enabled: false, text_zh: '', text_en: '' });
+  useEffect(() => { if (current) setForm({ enabled: !!current.enabled, text_zh: current.text_zh || '', text_en: current.text_en || '' }); }, [current]);
+  return (
+    <SectionShell title="🔔 全站维护公告 Banner" subtitle="开启后，前端顶部显示黄色横幅通知；关闭后立即消失">
+      {error && <p className="text-red-600 text-xs mb-2">{error}</p>}
+      {msg && <p className="text-emerald-600 text-xs mb-2">{msg}</p>}
+      <div className="grid grid-cols-1 gap-3 mb-3">
+        <div className="flex items-center gap-3">
+          <label className="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" checked={form.enabled} onChange={(e) => setForm((p) => ({ ...p, enabled: e.target.checked }))} className="sr-only peer" />
+            <div className="w-11 h-6 bg-slate-200 rounded-full peer peer-checked:bg-amber-500 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:after:translate-x-5"></div>
+          </label>
+          <span className={`text-sm font-semibold ${form.enabled ? 'text-amber-600' : 'text-slate-400'}`}>{form.enabled ? '⚠️ Banner 当前开启' : 'Banner 当前关闭'}</span>
+        </div>
+        <div><label className="block text-xs text-slate-500 mb-1">公告文字（中文）</label><input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm" value={form.text_zh} onChange={(e) => setForm((p) => ({ ...p, text_zh: e.target.value }))} placeholder="系统将于今晚 22:00–23:00 进行维护，期间暂停服务。" /></div>
+        <div><label className="block text-xs text-slate-500 mb-1">公告文字（English）</label><input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm" value={form.text_en} onChange={(e) => setForm((p) => ({ ...p, text_en: e.target.value }))} placeholder="Scheduled maintenance tonight 22:00–23:00. Service will be temporarily unavailable." /></div>
+      </div>
+      <button onClick={() => saveDraft(form)} disabled={saving} className="bg-slate-900 text-white px-4 py-1.5 rounded-lg text-sm disabled:opacity-50">{saving ? '保存中...' : '保存草稿'}</button>
+      <ConfigHistoryTable history={history} onPublish={submitPublish} onRollback={rollback} />
+    </SectionShell>
+  );
+}
+
+function FooterSection() {
+  const { current, history, saving, error, msg, saveDraft, submitPublish, rollback } = useConfigSection('footer');
+  const [form, setForm] = useState({ copyright: '', icp_number: '', contact_email: '', social_links_raw: '[]', terms_text: '', privacy_text: '' });
+  useEffect(() => {
+    if (current) setForm({
+      copyright: current.copyright || '',
+      icp_number: current.icp_number || '',
+      contact_email: current.contact_email || '',
+      social_links_raw: JSON.stringify(current.social_links || [], null, 2),
+      terms_text: current.terms_text || '',
+      privacy_text: current.privacy_text || '',
+    });
+  }, [current]);
+  const f = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setForm((p) => ({ ...p, [k]: e.target.value }));
+  const handleSave = () => {
+    let social_links: any[] = [];
+    try { social_links = JSON.parse(form.social_links_raw); } catch { alert('社交链接 JSON 格式错误，请检查'); return; }
+    saveDraft({ copyright: form.copyright, icp_number: form.icp_number, contact_email: form.contact_email, social_links, terms_text: form.terms_text, privacy_text: form.privacy_text });
+  };
+  return (
+    <SectionShell title="📄 页脚配置" subtitle="版权文字、ICP 备案号、客服邮箱、社交媒体链接、法律链接文字">
+      {error && <p className="text-red-600 text-xs mb-2">{error}</p>}
+      {msg && <p className="text-emerald-600 text-xs mb-2">{msg}</p>}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+        <div className="md:col-span-2"><label className="block text-xs text-slate-500 mb-1">版权声明文字</label><input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm" value={form.copyright} onChange={f('copyright')} placeholder="© 2026 CareerAI Executive Search. All rights reserved." /></div>
+        <div><label className="block text-xs text-slate-500 mb-1">ICP 备案号（留空则不显示）</label><input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm font-mono" value={form.icp_number} onChange={f('icp_number')} placeholder="京ICP备XXXXXXXX号" /></div>
+        <div><label className="block text-xs text-slate-500 mb-1">客服邮箱</label><input type="email" className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm" value={form.contact_email} onChange={f('contact_email')} placeholder="support@example.com" /></div>
+        <div><label className="block text-xs text-slate-500 mb-1">服务条款链接文字</label><input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm" value={form.terms_text} onChange={f('terms_text')} placeholder="Terms of Service / 服务条款" /></div>
+        <div><label className="block text-xs text-slate-500 mb-1">隐私政策链接文字</label><input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm" value={form.privacy_text} onChange={f('privacy_text')} placeholder="Privacy Policy / 隐私政策" /></div>
+        <div className="md:col-span-2">
+          <label className="block text-xs text-slate-500 mb-1">社交媒体链接（JSON 数组，格式：{`[{"name":"微信公众号","url":"https://..."}]`}）</label>
+          <textarea className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm font-mono" rows={3} value={form.social_links_raw} onChange={f('social_links_raw')} />
+        </div>
+      </div>
+      <button onClick={handleSave} disabled={saving} className="bg-slate-900 text-white px-4 py-1.5 rounded-lg text-sm disabled:opacity-50">{saving ? '保存中...' : '保存草稿'}</button>
+      <ConfigHistoryTable history={history} onPublish={submitPublish} onRollback={rollback} />
+    </SectionShell>
+  );
+}
+
+function HomepageCopySection() {
+  const { current, history, saving, error, msg, saveDraft, submitPublish, rollback } = useConfigSection('homepage_copy');
+  const [form, setForm] = useState({ hero_title_zh: '', hero_title_en: '', hero_subtitle_zh: '', hero_subtitle_en: '', cta_zh: '', cta_en: '' });
+  useEffect(() => {
+    if (current) setForm({ hero_title_zh: current.hero_title_zh || '', hero_title_en: current.hero_title_en || '', hero_subtitle_zh: current.hero_subtitle_zh || '', hero_subtitle_en: current.hero_subtitle_en || '', cta_zh: current.cta_zh || '', cta_en: current.cta_en || '' });
+  }, [current]);
+  const f = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => setForm((p) => ({ ...p, [k]: e.target.value }));
+  return (
+    <SectionShell title="🏠 首页文案" subtitle="Hero 标题、副标题、CTA 按钮文字 — 发布后前端立即使用（中英文各一套）">
+      {error && <p className="text-red-600 text-xs mb-2">{error}</p>}
+      {msg && <p className="text-emerald-600 text-xs mb-2">{msg}</p>}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+        <div><label className="block text-xs text-slate-500 mb-1">Hero 主标题（中文）</label><input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm" value={form.hero_title_zh} onChange={f('hero_title_zh')} placeholder="AI 驱动的高管简历优化器" /></div>
+        <div><label className="block text-xs text-slate-500 mb-1">Hero 主标题（English）</label><input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm" value={form.hero_title_en} onChange={f('hero_title_en')} placeholder="AI-Powered Executive Resume Optimizer" /></div>
+        <div><label className="block text-xs text-slate-500 mb-1">副标题（中文）</label><input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm" value={form.hero_subtitle_zh} onChange={f('hero_subtitle_zh')} placeholder="针对目标岗位 JD，精准重构高管领导力叙事" /></div>
+        <div><label className="block text-xs text-slate-500 mb-1">副标题（English）</label><input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm" value={form.hero_subtitle_en} onChange={f('hero_subtitle_en')} placeholder="Precisely restructure executive narratives for target JDs" /></div>
+        <div><label className="block text-xs text-slate-500 mb-1">CTA 按钮文字（中文）</label><input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm" value={form.cta_zh} onChange={f('cta_zh')} placeholder="立即体验" /></div>
+        <div><label className="block text-xs text-slate-500 mb-1">CTA 按钮文字（English）</label><input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm" value={form.cta_en} onChange={f('cta_en')} placeholder="Get Started" /></div>
+      </div>
+      <button onClick={() => saveDraft(form)} disabled={saving} className="bg-slate-900 text-white px-4 py-1.5 rounded-lg text-sm disabled:opacity-50">{saving ? '保存中...' : '保存草稿'}</button>
+      <ConfigHistoryTable history={history} onPublish={submitPublish} onRollback={rollback} />
+    </SectionShell>
+  );
+}
+
+function ConfigTab() {
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-lg font-bold text-slate-900">站点配置 / CMS</h2>
+        <p className="text-xs text-slate-400 mt-0.5">每个区块独立版本管理 · 草稿 → 提交审批 → 已发布 → 可回滚 · 发布后前端立即读取新值</p>
+      </div>
+      <BrandSection />
+      <AppVersionSection />
+      <MaintenanceBannerSection />
+      <FooterSection />
+      <HomepageCopySection />
     </div>
   );
 }

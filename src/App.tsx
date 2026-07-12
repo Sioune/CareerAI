@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { useSiteConfig } from "./hooks/useSiteConfig";
 import { QRCodeSVG } from "qrcode.react";
 import { 
   Search, 
@@ -101,6 +102,8 @@ const extractReference = (text: string): string | null => {
 };
 
 export default function App() {
+  const siteConfig = useSiteConfig();
+
   // Global States
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
@@ -147,7 +150,7 @@ export default function App() {
     premiumSupport: lang === 'zh' ? '高级特权客服' : 'Get Premium Support',
     helpCenter: lang === 'zh' ? '帮助中心' : 'Help Center',
     privacy: lang === 'zh' ? '隐私保障' : 'Privacy',
-    supportMsg: lang === 'zh' ? '已为您打开邮件客户端，发送至 siounex@qq.com，我们的高管顾问会尽快与您联系。' : 'Opening your email client to siounex@qq.com. Our support team will get back to you shortly.',
+    supportMsg: lang === 'zh' ? `已为您打开邮件客户端，发送至 ${siteConfig.footer.contact_email}，我们的高管顾问会尽快与您联系。` : `Opening your email client to ${siteConfig.footer.contact_email}. Our support team will get back to you shortly.`,
     helpMsg: lang === 'zh' ? '已打开帮助中心...您也可以随时输入目标岗位让AI自动进行全量检索。' : 'Help center opened. You can search any role to query public databases automatically.',
     privacyMsg: lang === 'zh' ? '数据隐私安全保障：所有上传简历将进行手机号/邮箱脱敏，且数据绝对不参与任何基础模型训练。' : 'Data privacy guarantee: CVs are fully desensitized and will never be used for training.',
 
@@ -572,7 +575,7 @@ Visuals & Integrity
     
     // Dynamic page titles matching regional/language context
     if (lang === 'zh') {
-      document.title = "CareerAI 高管简历优化器 | 靶向简历修改与AI领袖能力重构 | Executive Resume Optimizer";
+      document.title = `${siteConfig.brand.name_zh} 高管简历优化器 | 靶向简历修改与AI领袖能力重构 | Executive Resume Optimizer`;
       
       // Update dynamic SEO meta-description tag for Chinese searchers
       const metaDesc = document.querySelector('meta[name="description"]');
@@ -585,7 +588,7 @@ Visuals & Integrity
         metaKeywords.setAttribute('content', 'CareerAI, 高管简历优化, 简历修改, AI简历, 简历评测, 岗位画像, 简历重构, Executive Resume, CV Rewrite, 简历升级');
       }
     } else {
-      document.title = "CareerAI Executive Resume Optimizer | AI Resume Restructuring & Target Alignment";
+      document.title = `${siteConfig.brand.name_en} Executive Resume Optimizer | AI Resume Restructuring & Target Alignment`;
       
       // Update dynamic SEO meta-description tag for English/International searchers
       const metaDesc = document.querySelector('meta[name="description"]');
@@ -597,7 +600,15 @@ Visuals & Integrity
         metaKeywords.setAttribute('content', 'CareerAI, Executive Resume, AI Resume Optimizer, CV Restructuring, Resume Alignment, leadership CV, JD matching score');
       }
     }
-  }, [lang]);
+  }, [lang, siteConfig.brand.name_zh, siteConfig.brand.name_en]);
+
+  useEffect(() => {
+    if (!siteConfig.brand.favicon_url) return;
+    let link = document.querySelector<HTMLLinkElement>("link[rel~='icon']");
+    if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link); }
+    link.href = siteConfig.brand.favicon_url;
+  }, [siteConfig.brand.favicon_url]);
+
 
   // Load from Supabase (first) or LocalStorage (fallback)
   useEffect(() => {
@@ -2458,16 +2469,23 @@ Visuals & Integrity
       ) : (
         <>
 
+      {/* Maintenance Banner */}
+      {siteConfig.maintenance_banner.enabled && (siteConfig.maintenance_banner.text_zh || siteConfig.maintenance_banner.text_en) && (
+        <div className="w-full bg-amber-400 text-amber-900 text-xs font-semibold text-center py-2 px-4 sticky top-0 z-50">
+          ⚠️ {lang === 'zh' ? (siteConfig.maintenance_banner.text_zh || siteConfig.maintenance_banner.text_en) : (siteConfig.maintenance_banner.text_en || siteConfig.maintenance_banner.text_zh)}
+        </div>
+      )}
+
       {/* Global Top Navbar */}
       <header className="h-14 sm:h-16 shrink-0 bg-white border-b border-slate-200 sticky top-0 z-40 flex justify-between items-center px-3 sm:px-6 md:px-10 shadow-sm">
         <div className="flex items-center gap-3">
-          <span className="font-sans font-bold text-2xl tracking-tight text-blue-600">CareerAI</span>
+          <span className="font-sans font-bold text-2xl tracking-tight text-blue-600">{lang === 'zh' ? siteConfig.brand.name_zh : siteConfig.brand.name_en}</span>
           <span 
             onClick={() => setShowV04ReleaseNotes(true)}
             className="hidden sm:inline bg-amber-500/10 text-amber-600 border border-amber-500/25 hover:bg-amber-500/15 font-mono text-[10px] px-2.5 py-0.5 rounded-full font-bold cursor-pointer transition-all hover:scale-105 active:scale-95"
-            title="点击查看 V0.4 PRO 版本亮点"
+            title="点击查看版本亮点"
           >
-            V0.4 PRO
+            {siteConfig.app_version.version}
           </span>
         </div>
 
@@ -2894,7 +2912,7 @@ Visuals & Integrity
 
                   <button 
                     onClick={() => {
-                      window.location.href = "mailto:siounex@qq.com?subject=" + encodeURIComponent(lang === 'zh' ? 'CareerAI 高管客服咨询' : 'CareerAI Executive Support Inquiry');
+                      window.location.href = "mailto:" + siteConfig.footer.contact_email + "?subject=" + encodeURIComponent(lang === 'zh' ? `${siteConfig.brand.name_zh} 高管客服咨询` : `${siteConfig.brand.name_en} Executive Support Inquiry`);
                       triggerToast(t.supportMsg);
                       setMobileMenuOpen(false);
                     }}
@@ -2995,7 +3013,7 @@ Visuals & Integrity
           <div className="mt-auto border-t border-slate-100 pt-5 flex flex-col gap-4">
             <button 
               onClick={() => {
-                window.location.href = "mailto:siounex@qq.com?subject=" + encodeURIComponent(lang === 'zh' ? 'CareerAI 高管客服咨询' : 'CareerAI Executive Support Inquiry');
+                window.location.href = "mailto:" + siteConfig.footer.contact_email + "?subject=" + encodeURIComponent(lang === 'zh' ? `${siteConfig.brand.name_zh} 高管客服咨询` : `${siteConfig.brand.name_en} Executive Support Inquiry`);
                 triggerToast(t.supportMsg);
               }}
               className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-colors shadow-sm"
@@ -5200,12 +5218,22 @@ Visuals & Integrity
 
           {/* Simple Global Footer component */}
           <footer className="w-full shrink-0 py-6 border-t border-slate-200 flex flex-col md:flex-row justify-between items-center gap-4 mt-12 bg-white px-6 md:px-10 rounded-2xl shadow-sm">
-            <div className="text-[11px] font-bold uppercase tracking-widest text-slate-400">
-              © 2026 CareerAI Executive Search. All rights reserved.
+            <div className="flex flex-col gap-1 items-center md:items-start">
+              <div className="text-[11px] font-bold uppercase tracking-widest text-slate-400">
+                {siteConfig.footer.copyright}
+              </div>
+              {siteConfig.footer.icp_number && (
+                <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer" className="text-[10px] text-slate-400 hover:text-blue-500 transition-colors">
+                  {siteConfig.footer.icp_number}
+                </a>
+              )}
             </div>
             <div className="flex gap-6 text-xs text-slate-500 font-semibold">
-              <a href="/terms" className="hover:text-blue-600 transition-colors">Terms of Service</a>
-              <a href="/privacy" className="hover:text-blue-600 transition-colors">Privacy Policy</a>
+              {siteConfig.footer.social_links.map((s) => (
+                <a key={s.name} href={s.url} target="_blank" rel="noopener noreferrer" className="hover:text-blue-600 transition-colors">{s.name}</a>
+              ))}
+              <a href="/terms" className="hover:text-blue-600 transition-colors">{siteConfig.footer.terms_text}</a>
+              <a href="/privacy" className="hover:text-blue-600 transition-colors">{siteConfig.footer.privacy_text}</a>
               <button onClick={handleCheckApiStatus} className="hover:text-blue-600 transition-colors">API Status</button>
             </div>
           </footer>
