@@ -5236,6 +5236,7 @@ Visuals & Integrity
               ))}
               <a href="/terms" className="hover:text-blue-600 transition-colors">{siteConfig.footer.terms_text}</a>
               <a href="/privacy" className="hover:text-blue-600 transition-colors">{siteConfig.footer.privacy_text}</a>
+              <a href="/help" className="hover:text-blue-600 transition-colors">Help Center</a>
               <button onClick={handleCheckApiStatus} className="hover:text-blue-600 transition-colors">API Status</button>
             </div>
           </footer>

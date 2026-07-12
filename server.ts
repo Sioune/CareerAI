@@ -5394,14 +5394,32 @@ ${originalText}
 
   // Static trust/legal pages — must be registered before Vite middleware
   // so that crawlers reach real HTML without executing JavaScript.
-  function trustPage(title: string, body: string): string {
+  const SITE_URL = 'https://ais-pre-jajkn2exl3isrxxhme6g2u-267389115360.us-west2.run.app';
+  const OG_IMAGE = `${SITE_URL}/og-image.png`;
+
+  function trustPage(title: string, body: string, opts: {
+    description: string;
+    path: string;
+  }): string {
+    const canonicalUrl = `${SITE_URL}${opts.path}`;
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>${title} — CareerAI</title>
-  <meta name="description" content="${title} for CareerAI Executive Resume Optimizer." />
+  <title>${title} — CareerAI Executive Resume Optimizer</title>
+  <meta name="description" content="${opts.description}" />
+  <link rel="canonical" href="${canonicalUrl}" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="CareerAI Executive Resume Optimizer" />
+  <meta property="og:title" content="${title} — CareerAI" />
+  <meta property="og:description" content="${opts.description}" />
+  <meta property="og:url" content="${canonicalUrl}" />
+  <meta property="og:image" content="${OG_IMAGE}" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="${title} — CareerAI" />
+  <meta name="twitter:description" content="${opts.description}" />
+  <meta name="twitter:image" content="${OG_IMAGE}" />
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;background:#f8fafc;color:#1e293b;line-height:1.7}
@@ -5477,7 +5495,7 @@ ${originalText}
 
       <h2>10. Contact</h2>
       <p>For questions about these Terms, please visit our <a href="/help">Help Center</a> or contact us through the platform.</p>
-    `));
+    `, { description: 'Read the Terms of Service for CareerAI Executive Resume Optimizer — covering account responsibilities, acceptable use, intellectual property, and how AI-generated resume analysis and rewrites are provided.', path: '/terms' }));
   });
 
   app.get('/privacy', (_req, res) => {
@@ -5517,7 +5535,7 @@ ${originalText}
 
       <h2>9. Contact</h2>
       <p>For privacy enquiries, please use the <a href="/help">Help Center</a>. For formal data subject requests, include "Data Subject Request" in your message subject.</p>
-    `));
+    `, { description: 'CareerAI Privacy Policy — how we collect, protect, and handle your resume data. GDPR and PIPL compliant. Your data is never used to train AI models and is automatically desensitized before processing.', path: '/privacy' }));
   });
 
   app.get('/help', (_req, res) => {
@@ -5554,7 +5572,7 @@ ${originalText}
 
       <h2>Still Need Help?</h2>
       <p>If you cannot find an answer here, use the in-app support button or reach out through your account dashboard. We aim to respond within one business day.</p>
-    `));
+    `, { description: 'CareerAI Help Center — answers about supported file types (PDF, DOCX), English and Chinese language support, resume analysis, executive rewrite exports, account billing, and data privacy.', path: '/help' }));
   });
 
   // Vite development server / production builds handler
