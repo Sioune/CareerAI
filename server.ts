@@ -531,7 +531,12 @@ function sseWrite(res: any, event: string, data: any) {
   }
 }
 
-async function streamGeminiJSON(res: any, action: string, params: any) {
+async function streamGeminiJSON(
+  res: any,
+  action: string,
+  params: any,
+  onUsage?: (model: string, usage: any) => void,
+) {
   res.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache, no-transform",
@@ -551,6 +556,7 @@ async function streamGeminiJSON(res: any, action: string, params: any) {
   let fullText = "";
   let finished = false;
   let clientGone = false;
+  let lastUsageMetadata: any = null;
 
   res.on("close", () => { clientGone = true; });
 
@@ -570,11 +576,8 @@ async function streamGeminiJSON(res: any, action: string, params: any) {
     }
 
     if (sinceLastChunkMs > SSE_STALL_MS) {
-      // No new tokens for a while: could still be "thinking" or could be a dead connection.
-      // Let the client decide whether to keep waiting or bail out and retry later.
       sseWrite(res, "stalled", { elapsedMs, sinceLastChunkMs, receivedChars });
     } else {
-      // Actively receiving content — safe to show as real progress.
       sseWrite(res, "progress", { elapsedMs, receivedChars });
     }
   }, SSE_HEARTBEAT_MS);
@@ -589,11 +592,18 @@ async function streamGeminiJSON(res: any, action: string, params: any) {
         receivedChars += t.length;
         lastChunkAt = Date.now();
       }
+      // Capture usageMetadata from any chunk (last chunk typically has final counts)
+      if ((chunk as any).usageMetadata) lastUsageMetadata = (chunk as any).usageMetadata;
     }
 
     if (finished || clientGone) return;
     finished = true;
     clearInterval(heartbeat);
+
+    // Log token usage after stream completes
+    if (onUsage && lastUsageMetadata) {
+      try { onUsage(params.model || "gemini-3.5-flash", lastUsageMetadata); } catch {}
+    }
 
     if (!fullText.trim()) {
       sseWrite(res, "error", { code: "empty", message: "AI 未返回有效内容，请稍后重试。" });
@@ -1173,7 +1183,7 @@ async function startServer() {
               required: ["targetRole", "researchSummary", "mandatoryRequirements", "highFrequencySkills", "plusSkills", "jdCount"]
             }
           }
-        });
+        }, (model, usage) => { logAiCostEvent(undefined, model, "analyze-role", usage); });
     }
   });
 
@@ -1254,10 +1264,10 @@ async function startServer() {
                   items: { type: Type.STRING }
                 }
               },
-              required: ["matchScore", "strengths", "gaps", "matchedKeywords", "missingKeywords"]
+              required: ["matchScore", "strengths", "gaps", "matchedKeywords", "missingKeywords"],
             }
           }
-        });
+        }, (model, usage) => { logAiCostEvent(undefined, model, "match-resume", usage); });
     }
   });
 
@@ -1320,7 +1330,7 @@ ${(resumeText || "").slice(0, 2000)}
           required: ["additionalGaps"]
         }
       }
-    });
+    }, (model, usage) => { logAiCostEvent(undefined, model, "unlock-gap-analysis", usage); });
   });
 
   // API Route: Generate optimized resume
@@ -1451,7 +1461,7 @@ ${(resumeText || "").slice(0, 2000)}
               required: ["name", "title", "email", "location", "summary", "coreCapabilities", "experience", "education", "skills"]
             }
           }
-        });
+        }, (model, usage) => { logAiCostEvent((req as any).body?.taskId, model, "optimize-resume", usage); });
     }
   });
 
@@ -4363,6 +4373,137 @@ ${originalText}
       });
     } catch (err: any) {
       console.error("Admin finance costs error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ─── 模型计价管理（PRD §3.4 / §8.3）────────────────────────────────────────
+  // GET /api/admin/model-prices — 查询所有计价历史（按生效时间倒序）
+  app.get("/api/admin/model-prices", requireAdmin, requirePermission("finance", "read"), async (req, res) => {
+    try {
+      const rows = await rawQuery(
+        `SELECT id, provider, model, input_per_million, output_per_million, currency, source, effective_at, created_by_admin, created_at
+         FROM model_prices ORDER BY effective_at DESC, id DESC LIMIT 200`
+      );
+      return res.json({ prices: rows.rows });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/admin/model-prices — 新增一条模型单价（带生效日期，追加式不可篡改）
+  app.post("/api/admin/model-prices", requireAdmin, requirePermission("finance", "write"), async (req: any, res) => {
+    try {
+      const { provider, model, inputPerMillion, outputPerMillion, currency, source, effectiveAt, notes } = req.body;
+      if (!provider?.trim() || !model?.trim()) return res.status(400).json({ error: "provider 和 model 不能为空" });
+      if (typeof inputPerMillion !== "number" || typeof outputPerMillion !== "number") {
+        return res.status(400).json({ error: "inputPerMillion 和 outputPerMillion 须为数字（单位：分/百万tokens）" });
+      }
+      if (!effectiveAt) return res.status(400).json({ error: "effectiveAt 生效时间不能为空" });
+      const effDate = new Date(effectiveAt);
+      if (isNaN(effDate.getTime())) return res.status(400).json({ error: "effectiveAt 格式无效" });
+      const result = await rawQuery(
+        `INSERT INTO model_prices (provider, model, input_per_million, output_per_million, currency, source, effective_at, created_by_admin)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         ON CONFLICT (provider, model, effective_at) DO NOTHING
+         RETURNING *`,
+        [
+          provider.trim(), model.trim(),
+          Math.round(inputPerMillion), Math.round(outputPerMillion),
+          currency || "CNY", source || "official",
+          effDate.toISOString(), req.admin.username,
+        ]
+      );
+      if (result.rows.length === 0) return res.status(409).json({ error: "该 provider/model/effectiveAt 组合已存在，请更换生效时间" });
+      await logAudit(req.admin, "model_price_created", "model_price", String(result.rows[0].id), { provider, model, inputPerMillion, outputPerMillion, effectiveAt });
+      return res.json({ success: true, price: result.rows[0] });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/admin/finance/token-stats — Token 消耗聚合统计（按模型/操作/日期）
+  app.get("/api/admin/finance/token-stats", requireAdmin, requirePermission("finance", "read"), async (req, res) => {
+    try {
+      const days = Math.min(Number(req.query.days) || 30, 90);
+
+      // 总量摘要
+      const summary = await rawQuery(
+        `SELECT COUNT(*) AS calls,
+                COALESCE(SUM(tokens_in),0)         AS total_tokens_in,
+                COALESCE(SUM(tokens_out),0)        AS total_tokens_out,
+                COALESCE(SUM(cost_micro_cents),0)  AS total_micro_cents
+         FROM cost_events`
+      );
+
+      // 按模型聚合
+      const byModel = await rawQuery(
+        `SELECT model,
+                COUNT(*) AS calls,
+                COALESCE(SUM(tokens_in),0)        AS tokens_in,
+                COALESCE(SUM(tokens_out),0)       AS tokens_out,
+                COALESCE(SUM(cost_micro_cents),0) AS micro_cents
+         FROM cost_events
+         GROUP BY model ORDER BY micro_cents DESC`
+      );
+
+      // 按操作类型聚合
+      const byOperation = await rawQuery(
+        `SELECT operation,
+                COUNT(*) AS calls,
+                COALESCE(SUM(tokens_in),0)        AS tokens_in,
+                COALESCE(SUM(tokens_out),0)       AS tokens_out,
+                COALESCE(SUM(cost_micro_cents),0) AS micro_cents
+         FROM cost_events
+         GROUP BY operation ORDER BY micro_cents DESC`
+      );
+
+      // 按业务日（Asia/Shanghai）聚合，最近 N 天
+      const byDay = await rawQuery(
+        `SELECT TO_CHAR((created_at AT TIME ZONE 'Asia/Shanghai')::date, 'YYYY-MM-DD') AS biz_date,
+                COUNT(*) AS calls,
+                COALESCE(SUM(tokens_in),0)        AS tokens_in,
+                COALESCE(SUM(tokens_out),0)       AS tokens_out,
+                COALESCE(SUM(cost_micro_cents),0) AS micro_cents
+         FROM cost_events
+         WHERE created_at >= NOW() - INTERVAL '${days} days'
+         GROUP BY biz_date ORDER BY biz_date DESC`
+      );
+
+      // 最近 200 条明细
+      const recent = await rawQuery(
+        `SELECT id, provider, model, operation, tokens_in, tokens_out, cost_cents, cost_micro_cents, task_id, created_at
+         FROM cost_events ORDER BY created_at DESC LIMIT 200`
+      );
+
+      const s = summary.rows[0];
+      return res.json({
+        summary: {
+          calls: Number(s.calls),
+          totalTokensIn: Number(s.total_tokens_in),
+          totalTokensOut: Number(s.total_tokens_out),
+          totalMicroCents: Number(s.total_micro_cents),
+          totalCostCents: Math.round(Number(s.total_micro_cents) / 1_000_000),
+        },
+        byModel: byModel.rows.map((r: any) => ({
+          model: r.model, calls: Number(r.calls),
+          tokensIn: Number(r.tokens_in), tokensOut: Number(r.tokens_out),
+          microCents: Number(r.micro_cents), costCents: Math.round(Number(r.micro_cents) / 1_000_000),
+        })),
+        byOperation: byOperation.rows.map((r: any) => ({
+          operation: r.operation, calls: Number(r.calls),
+          tokensIn: Number(r.tokens_in), tokensOut: Number(r.tokens_out),
+          microCents: Number(r.micro_cents), costCents: Math.round(Number(r.micro_cents) / 1_000_000),
+        })),
+        byDay: byDay.rows.map((r: any) => ({
+          bizDate: r.biz_date, calls: Number(r.calls),
+          tokensIn: Number(r.tokens_in), tokensOut: Number(r.tokens_out),
+          microCents: Number(r.micro_cents), costCents: Math.round(Number(r.micro_cents) / 1_000_000),
+        })),
+        recent: recent.rows,
+      });
+    } catch (err: any) {
+      console.error("Admin token-stats error:", err);
       return res.status(500).json({ error: err.message });
     }
   });

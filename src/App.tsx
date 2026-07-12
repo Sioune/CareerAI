@@ -538,9 +538,21 @@ Visuals & Integrity
 
   // V0.4 Admin Dashboard Mode
   const [showAdminConsole, setShowAdminConsole] = useState(false);
+  const [adminConsoleTab, setAdminConsoleTab] = useState<'overview' | 'ai-cost'>('overview');
   const [adminFunnel, setAdminFunnel] = useState<any[]>([]);
   const [adminFeedbacks, setAdminFeedbacks] = useState<any[]>([]);
   const [isLoadingAdmin, setIsLoadingAdmin] = useState(false);
+  // AI Token & 成本 tab state
+  const [adminModelPrices, setAdminModelPrices] = useState<any[]>([]);
+  const [adminTokenStats, setAdminTokenStats] = useState<any>(null);
+  const [isLoadingAiCost, setIsLoadingAiCost] = useState(false);
+  const [adminPriceForm, setAdminPriceForm] = useState({
+    provider: 'gemini', model: 'gemini-3.5-flash',
+    inputPerMillion: '', outputPerMillion: '',
+    currency: 'CNY', source: 'official', effectiveAt: '',
+  });
+  const [isSavingPrice, setIsSavingPrice] = useState(false);
+  const [priceFormError, setPriceFormError] = useState('');
 
   // Restore session from localStorage token on mount
   useEffect(() => {
@@ -1082,12 +1094,71 @@ Visuals & Integrity
     }
   };
 
+  // Load AI Token & Cost data
+  const loadAiCostData = async () => {
+    if (isLoadingAiCost) return;
+    setIsLoadingAiCost(true);
+    try {
+      const [pricesRes, statsRes] = await Promise.all([
+        customFetch("/api/admin/model-prices"),
+        customFetch("/api/admin/finance/token-stats"),
+      ]);
+      if (pricesRes.ok) {
+        const d = await pricesRes.json();
+        setAdminModelPrices(d.prices || []);
+      }
+      if (statsRes.ok) {
+        const d = await statsRes.json();
+        setAdminTokenStats(d);
+      }
+    } catch (e) {
+      console.error("Failed to load AI cost data:", e);
+    } finally {
+      setIsLoadingAiCost(false);
+    }
+  };
+
+  const handleSaveModelPrice = async () => {
+    setPriceFormError('');
+    const inp = Number(adminPriceForm.inputPerMillion);
+    const out = Number(adminPriceForm.outputPerMillion);
+    if (!adminPriceForm.provider || !adminPriceForm.model) { setPriceFormError('provider 和 model 不能为空'); return; }
+    if (isNaN(inp) || isNaN(out)) { setPriceFormError('单价须为有效数字'); return; }
+    if (!adminPriceForm.effectiveAt) { setPriceFormError('生效时间不能为空'); return; }
+    setIsSavingPrice(true);
+    try {
+      const res = await customFetch("/api/admin/model-prices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: adminPriceForm.provider,
+          model: adminPriceForm.model,
+          inputPerMillion: inp,
+          outputPerMillion: out,
+          currency: adminPriceForm.currency,
+          source: adminPriceForm.source,
+          effectiveAt: adminPriceForm.effectiveAt,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setPriceFormError(data.error || '保存失败'); return; }
+      triggerToast('✅ 模型计价已保存，立即生效');
+      setAdminPriceForm(f => ({ ...f, effectiveAt: '' }));
+      await loadAiCostData();
+    } catch (e: any) {
+      setPriceFormError(e.message || '保存失败');
+    } finally {
+      setIsSavingPrice(false);
+    }
+  };
+
   // V0.4 Toggle Admin Console Dashboard
   const handleToggleAdminConsole = async () => {
     const nextState = !showAdminConsole;
     setShowAdminConsole(nextState);
     if (nextState) {
       setIsLoadingAdmin(true);
+      setAdminConsoleTab('overview');
       try {
         const [funnelRes, feedbackRes] = await Promise.all([
           customFetch("/api/admin/conversion-funnel"),
@@ -3005,137 +3076,389 @@ Visuals & Integrity
             <motion.div 
               initial={{ opacity: 0, scale: 0.98 }}
               animate={{ opacity: 1, scale: 1 }}
-              className="max-w-[1200px] w-full mx-auto flex-grow flex flex-col gap-6"
+              className="max-w-[1200px] w-full mx-auto flex-grow flex flex-col gap-4"
             >
-              {/* Header card with close */}
-              <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl text-white shadow-xl relative overflow-hidden flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 shrink-0">
+              {/* Header card with close + Tab navigation */}
+              <div className="bg-slate-900 border border-slate-800 p-4 sm:p-6 rounded-2xl text-white shadow-xl relative overflow-hidden shrink-0">
                 <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-600 via-indigo-500 to-emerald-400"></div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <ShieldCheck className="w-5 h-5 text-blue-400" />
-                    <h2 className="font-extrabold text-lg tracking-tight uppercase">CareerAI 专家服务控制后台</h2>
+                <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-3 mb-4">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <ShieldCheck className="w-5 h-5 text-blue-400" />
+                      <h2 className="font-extrabold text-lg tracking-tight uppercase">CareerAI 专家服务控制后台</h2>
+                    </div>
+                    <p className="text-xs text-slate-400 mt-1">转化漏斗监控 · AI Token 成本管理 · 模型计价维护</p>
                   </div>
-                  <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                    本控制台专供高管委员会监控底层模型转化漏斗 (Conversion Funnel)、处理高阶反馈、及对高价值线索进行跟进。
-                  </p>
+                  <button
+                    onClick={() => setShowAdminConsole(false)}
+                    className="px-4 py-2 border border-slate-700 hover:bg-slate-800 text-slate-300 rounded-xl text-xs font-bold transition-all shrink-0 self-start sm:self-auto"
+                  >
+                    关闭控制台
+                  </button>
                 </div>
-                <button 
-                  onClick={() => setShowAdminConsole(false)}
-                  className="px-4 py-2 border border-slate-800 hover:bg-slate-800 text-slate-300 rounded-xl text-xs font-bold transition-all shrink-0 self-start sm:self-auto"
-                >
-                  关闭控制台
-                </button>
+                {/* Tab bar */}
+                <div className="flex gap-1 bg-slate-800/60 p-1 rounded-xl w-fit">
+                  {([
+                    { id: 'overview' as const, label: '📊 概览 & 漏斗' },
+                    { id: 'ai-cost' as const, label: '🤖 AI Token & 成本' },
+                  ]).map(tab => (
+                    <button
+                      key={tab.id}
+                      onClick={() => {
+                        setAdminConsoleTab(tab.id);
+                        if (tab.id === 'ai-cost' && !adminTokenStats && !isLoadingAiCost) loadAiCostData();
+                      }}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${adminConsoleTab === tab.id ? 'bg-blue-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
               </div>
 
-              {isLoadingAdmin ? (
-                <div className="bg-white border border-slate-200 rounded-2xl p-16 flex flex-col items-center justify-center text-slate-400 gap-3">
-                  <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
-                  <span className="text-xs font-bold uppercase tracking-widest font-mono">正在分析系统级多维数据...</span>
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                  {/* Left Column: Conversion Funnel Chart & Traffic Simulator */}
-                  <div className="lg:col-span-2 space-y-6">
-                    {/* Funnel Widget */}
-                    <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-sm">
-                      <div className="flex justify-between items-center mb-4 pb-2 border-b border-slate-100">
-                        <div className="flex items-center gap-2">
-                          <TrendingUp className="w-4 h-4 text-blue-600" />
-                          <h3 className="font-bold text-slate-800 text-sm">全链条用户转化漏斗 (实时画像归因)</h3>
-                        </div>
-                        <span className="bg-blue-50 text-blue-700 text-[10px] font-mono px-2 py-0.5 rounded font-extrabold">REAL-TIME</span>
-                      </div>
-
-                      {adminFunnel.length === 0 ? (
-                        <p className="text-xs text-slate-400 py-6 text-center">暂无漏斗统计</p>
-                      ) : (
-                        <div className="space-y-4">
-                          {adminFunnel.map((step, idx) => {
-                            const percentOfTotal = ((step.count / adminFunnel[0].count) * 100).toFixed(1);
-                            const percentOfPrevious = idx === 0 ? '100.0' : ((step.count / adminFunnel[idx - 1].count) * 100).toFixed(1);
-                            
-                            return (
-                              <div key={idx} className="space-y-1.5">
-                                <div className="flex justify-between text-xs font-bold">
-                                  <div className="flex items-center gap-2">
-                                    <span className="w-5 h-5 rounded-full bg-slate-100 border border-slate-200 text-slate-600 flex items-center justify-center font-mono text-[10px] font-bold">
-                                      {idx + 1}
-                                    </span>
-                                    <span className="text-slate-800">{step.step}</span>
-                                  </div>
-                                  <div className="text-slate-500 font-mono text-[11px] flex gap-2.5">
-                                    <span className="text-slate-850 font-bold">{step.count} 次</span>
-                                    <span>总占比: {percentOfTotal}%</span>
-                                    {idx > 0 && <span className="text-emerald-600">转化率: {percentOfPrevious}%</span>}
-                                  </div>
-                                </div>
-                                <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden shadow-inner relative flex">
-                                  <div 
-                                    className="bg-blue-600 h-full rounded-full transition-all"
-                                    style={{ width: `${percentOfTotal}%` }}
-                                  />
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Funnel Insights / Action Plan */}
-                    <div className="bg-blue-50/50 border border-blue-100 p-5 rounded-2xl">
-                      <div className="flex items-center gap-2 text-blue-800 font-bold mb-2 text-sm uppercase tracking-wider">
-                        <Sparkles className="w-4 h-4 text-blue-600" />
-                        <h4>漏斗归因分析与专家决策建议</h4>
-                      </div>
-                      <div className="space-y-2 text-xs text-blue-700 leading-relaxed font-medium">
-                        <p>1. <b>高管澄清问卷效果显著：</b> 引入三步澄清对话机制后，用户的靶向匹配重构满意度自 84.5% 跃升至 <b>96.8%</b>，核心诉求画像精确度增加近 2.3 倍。</p>
-                        <p>2. <b>改写建议采纳率较高：</b> 用户在得到 AI 措辞重构建议后，平均会采纳 <b>2.6 处</b>子弹点。通过对 “忽略” 项特征归类，后续应继续对“管理幅度”维度的改写提炼进行微调。</p>
-                        <p>3. <b>大礼包需求迫切：</b> 后台数据显示 42.5% 的已付费用户点击了“一键求职大礼包(.zip)”导出，建议后续增加面试问题自动生成与行业趋势简报等周边产品线。</p>
-                      </div>
-                    </div>
+              {/* ── Tab: 概览 & 漏斗 ── */}
+              {adminConsoleTab === 'overview' && (
+                isLoadingAdmin ? (
+                  <div className="bg-white border border-slate-200 rounded-2xl p-16 flex flex-col items-center justify-center text-slate-400 gap-3">
+                    <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
+                    <span className="text-xs font-bold uppercase tracking-widest font-mono">正在分析系统级多维数据...</span>
                   </div>
-
-                  {/* Right Column: Customer Feedback Feed */}
-                  <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-sm flex flex-col h-[520px]">
-                    <div className="flex items-center justify-between mb-4 pb-2 border-b border-slate-100 shrink-0">
-                      <div className="flex items-center gap-2">
-                        <MessageSquare className="w-4 h-4 text-emerald-600" />
-                        <h3 className="font-bold text-slate-800 text-sm">最新客户满意度反馈信息流</h3>
-                      </div>
-                      <span className="bg-emerald-50 text-emerald-700 text-[9px] font-mono font-bold px-2 py-0.5 rounded-full">FEED</span>
-                    </div>
-
-                    <div className="flex-grow overflow-y-auto space-y-3.5 pr-1">
-                      {adminFeedbacks.length === 0 ? (
-                        <div className="h-full flex flex-col items-center justify-center text-slate-400 py-12">
-                          <AlertCircle className="w-8 h-8 text-slate-300 mb-1" />
-                          <p className="text-xs">暂无用户提交反馈</p>
-                        </div>
-                      ) : (
-                        adminFeedbacks.map((fb, idx) => (
-                          <div key={idx} className="bg-slate-50 border border-slate-150 p-3.5 rounded-xl hover:bg-slate-100/50 transition-colors">
-                            <div className="flex justify-between items-start mb-2">
-                              <div>
-                                <span className="text-[10px] font-extrabold text-slate-900 bg-slate-200 px-1.5 py-0.5 rounded font-mono uppercase tracking-wider">
-                                  {fb.username || '匿名高管'}
-                                </span>
-                                <span className="text-[9px] text-slate-400 font-mono block mt-0.5">{fb.createdAt || '刚刚'}</span>
-                              </div>
-                              <div className="flex text-amber-400 text-xs">
-                                {Array.from({ length: fb.rating || 5 }).map((_, i) => (
-                                  <span key={i}>★</span>
-                                ))}
-                              </div>
-                            </div>
-                            <p className="text-xs text-slate-700 leading-relaxed font-medium bg-white p-2 border border-slate-150 rounded-lg text-justify italic">
-                              “ {fb.feedbackText || '无具体说明'} ”
-                            </p>
+                ) : (
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div className="lg:col-span-2 space-y-6">
+                      <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-sm">
+                        <div className="flex justify-between items-center mb-4 pb-2 border-b border-slate-100">
+                          <div className="flex items-center gap-2">
+                            <TrendingUp className="w-4 h-4 text-blue-600" />
+                            <h3 className="font-bold text-slate-800 text-sm">全链条用户转化漏斗 (实时画像归因)</h3>
                           </div>
-                        ))
-                      )}
+                          <span className="bg-blue-50 text-blue-700 text-[10px] font-mono px-2 py-0.5 rounded font-extrabold">REAL-TIME</span>
+                        </div>
+                        {adminFunnel.length === 0 ? (
+                          <p className="text-xs text-slate-400 py-6 text-center">暂无漏斗统计</p>
+                        ) : (
+                          <div className="space-y-4">
+                            {adminFunnel.map((step, idx) => {
+                              const percentOfTotal = ((step.count / adminFunnel[0].count) * 100).toFixed(1);
+                              const percentOfPrevious = idx === 0 ? '100.0' : ((step.count / adminFunnel[idx - 1].count) * 100).toFixed(1);
+                              return (
+                                <div key={idx} className="space-y-1.5">
+                                  <div className="flex justify-between text-xs font-bold">
+                                    <div className="flex items-center gap-2">
+                                      <span className="w-5 h-5 rounded-full bg-slate-100 border border-slate-200 text-slate-600 flex items-center justify-center font-mono text-[10px] font-bold">{idx + 1}</span>
+                                      <span className="text-slate-800">{step.step}</span>
+                                    </div>
+                                    <div className="text-slate-500 font-mono text-[11px] flex gap-2.5">
+                                      <span className="font-bold">{step.count} 次</span>
+                                      <span>总占比: {percentOfTotal}%</span>
+                                      {idx > 0 && <span className="text-emerald-600">转化率: {percentOfPrevious}%</span>}
+                                    </div>
+                                  </div>
+                                  <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden shadow-inner">
+                                    <div className="bg-blue-600 h-full rounded-full transition-all" style={{ width: `${percentOfTotal}%` }} />
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                      <div className="bg-blue-50/50 border border-blue-100 p-5 rounded-2xl">
+                        <div className="flex items-center gap-2 text-blue-800 font-bold mb-2 text-sm uppercase tracking-wider">
+                          <Sparkles className="w-4 h-4 text-blue-600" />
+                          <h4>漏斗归因分析与专家决策建议</h4>
+                        </div>
+                        <div className="space-y-2 text-xs text-blue-700 leading-relaxed font-medium">
+                          <p>1. <b>高管澄清问卷效果显著：</b> 引入三步澄清对话机制后，用户的靶向匹配重构满意度自 84.5% 跃升至 <b>96.8%</b>，核心诉求画像精确度增加近 2.3 倍。</p>
+                          <p>2. <b>改写建议采纳率较高：</b> 用户在得到 AI 措辞重构建议后，平均会采纳 <b>2.6 处</b>子弹点。通过对 "忽略" 项特征归类，后续应继续对"管理幅度"维度的改写提炼进行微调。</p>
+                          <p>3. <b>大礼包需求迫切：</b> 后台数据显示 42.5% 的已付费用户点击了"一键求职大礼包(.zip)"导出，建议后续增加面试问题自动生成与行业趋势简报等周边产品线。</p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-sm flex flex-col h-[520px]">
+                      <div className="flex items-center justify-between mb-4 pb-2 border-b border-slate-100 shrink-0">
+                        <div className="flex items-center gap-2">
+                          <MessageSquare className="w-4 h-4 text-emerald-600" />
+                          <h3 className="font-bold text-slate-800 text-sm">最新客户满意度反馈</h3>
+                        </div>
+                        <span className="bg-emerald-50 text-emerald-700 text-[9px] font-mono font-bold px-2 py-0.5 rounded-full">FEED</span>
+                      </div>
+                      <div className="flex-grow overflow-y-auto space-y-3.5 pr-1">
+                        {adminFeedbacks.length === 0 ? (
+                          <div className="h-full flex flex-col items-center justify-center text-slate-400 py-12">
+                            <AlertCircle className="w-8 h-8 text-slate-300 mb-1" />
+                            <p className="text-xs">暂无用户提交反馈</p>
+                          </div>
+                        ) : (
+                          adminFeedbacks.map((fb, idx) => (
+                            <div key={idx} className="bg-slate-50 border border-slate-200 p-3.5 rounded-xl hover:bg-slate-100/50 transition-colors">
+                              <div className="flex justify-between items-start mb-2">
+                                <div>
+                                  <span className="text-[10px] font-extrabold text-slate-900 bg-slate-200 px-1.5 py-0.5 rounded font-mono uppercase tracking-wider">{fb.username || '匿名高管'}</span>
+                                  <span className="text-[9px] text-slate-400 font-mono block mt-0.5">{fb.createdAt || '刚刚'}</span>
+                                </div>
+                                <div className="flex text-amber-400 text-xs">{Array.from({ length: fb.rating || 5 }).map((_, i) => <span key={i}>★</span>)}</div>
+                              </div>
+                              <p className="text-xs text-slate-700 leading-relaxed font-medium bg-white p-2 border border-slate-200 rounded-lg italic">" {fb.feedbackText || '无具体说明'} "</p>
+                            </div>
+                          ))
+                        )}
+                      </div>
                     </div>
                   </div>
+                )
+              )}
+
+              {/* ── Tab: AI Token & 成本 ── */}
+              {adminConsoleTab === 'ai-cost' && (
+                <div className="flex flex-col gap-6">
+                  {isLoadingAiCost ? (
+                    <div className="bg-white border border-slate-200 rounded-2xl p-16 flex flex-col items-center justify-center text-slate-400 gap-3">
+                      <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
+                      <span className="text-xs font-bold uppercase tracking-widest font-mono">正在加载 Token 成本数据...</span>
+                    </div>
+                  ) : (
+                    <>
+                      {adminTokenStats && (
+                        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                          {[
+                            { label: '累计调用次数', value: adminTokenStats.summary.calls.toLocaleString(), unit: '次', color: 'blue' },
+                            { label: '累计 Input Tokens', value: adminTokenStats.summary.totalTokensIn.toLocaleString(), unit: 'tokens', color: 'indigo' },
+                            { label: '累计 Output Tokens', value: adminTokenStats.summary.totalTokensOut.toLocaleString(), unit: 'tokens', color: 'violet' },
+                            { label: '累计 AI 成本', value: `¥${(adminTokenStats.summary.totalCostCents / 100).toFixed(4)}`, unit: '（示意口径）', color: 'emerald' },
+                          ].map(c => (
+                            <div key={c.label} className="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
+                              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">{c.label}</p>
+                              <p className={`text-xl font-extrabold font-mono leading-tight text-${c.color}-600`}>{c.value}</p>
+                              <p className="text-[10px] text-slate-400 mt-0.5">{c.unit}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {adminTokenStats && (
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                          <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+                            <div className="px-5 py-3 border-b border-slate-100 flex items-center gap-2 bg-slate-50/50">
+                              <span className="text-sm">🤖</span>
+                              <h3 className="font-bold text-slate-800 text-xs uppercase tracking-wider">按模型汇总</h3>
+                            </div>
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-xs">
+                                <thead><tr className="border-b border-slate-100 bg-slate-50/30">
+                                  <th className="px-4 py-2 text-left font-bold text-slate-500">模型</th>
+                                  <th className="px-4 py-2 text-right font-bold text-slate-500">调用</th>
+                                  <th className="px-4 py-2 text-right font-bold text-slate-500">In Tokens</th>
+                                  <th className="px-4 py-2 text-right font-bold text-slate-500">Out Tokens</th>
+                                  <th className="px-4 py-2 text-right font-bold text-slate-500">成本(¥)</th>
+                                </tr></thead>
+                                <tbody className="divide-y divide-slate-50">
+                                  {(adminTokenStats.byModel || []).length === 0 ? (
+                                    <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">暂无数据</td></tr>
+                                  ) : adminTokenStats.byModel.map((r: any, i: number) => (
+                                    <tr key={i} className="hover:bg-slate-50/50">
+                                      <td className="px-4 py-2 font-mono text-slate-700">{r.model}</td>
+                                      <td className="px-4 py-2 text-right text-slate-600">{r.calls}</td>
+                                      <td className="px-4 py-2 text-right font-mono text-indigo-600">{r.tokensIn.toLocaleString()}</td>
+                                      <td className="px-4 py-2 text-right font-mono text-violet-600">{r.tokensOut.toLocaleString()}</td>
+                                      <td className="px-4 py-2 text-right font-mono text-emerald-600">{(r.costCents / 100).toFixed(4)}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                          <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+                            <div className="px-5 py-3 border-b border-slate-100 flex items-center gap-2 bg-slate-50/50">
+                              <span className="text-sm">⚙️</span>
+                              <h3 className="font-bold text-slate-800 text-xs uppercase tracking-wider">按操作类型汇总</h3>
+                            </div>
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-xs">
+                                <thead><tr className="border-b border-slate-100 bg-slate-50/30">
+                                  <th className="px-4 py-2 text-left font-bold text-slate-500">操作</th>
+                                  <th className="px-4 py-2 text-right font-bold text-slate-500">调用</th>
+                                  <th className="px-4 py-2 text-right font-bold text-slate-500">In</th>
+                                  <th className="px-4 py-2 text-right font-bold text-slate-500">Out</th>
+                                  <th className="px-4 py-2 text-right font-bold text-slate-500">成本(¥)</th>
+                                </tr></thead>
+                                <tbody className="divide-y divide-slate-50">
+                                  {(adminTokenStats.byOperation || []).length === 0 ? (
+                                    <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">暂无数据</td></tr>
+                                  ) : adminTokenStats.byOperation.map((r: any, i: number) => (
+                                    <tr key={i} className="hover:bg-slate-50/50">
+                                      <td className="px-4 py-2 font-mono text-slate-600 text-[11px]">{r.operation}</td>
+                                      <td className="px-4 py-2 text-right text-slate-600">{r.calls}</td>
+                                      <td className="px-4 py-2 text-right font-mono text-indigo-600">{r.tokensIn.toLocaleString()}</td>
+                                      <td className="px-4 py-2 text-right font-mono text-violet-600">{r.tokensOut.toLocaleString()}</td>
+                                      <td className="px-4 py-2 text-right font-mono text-emerald-600">{(r.costCents / 100).toFixed(4)}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {adminTokenStats && adminTokenStats.byDay && adminTokenStats.byDay.length > 0 && (
+                        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+                          <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm">📅</span>
+                              <h3 className="font-bold text-slate-800 text-xs uppercase tracking-wider">近30天逐日 Token 消耗</h3>
+                            </div>
+                            <span className="text-[10px] text-slate-400 font-mono">时区: Asia/Shanghai</span>
+                          </div>
+                          <div className="overflow-x-auto max-h-64">
+                            <table className="w-full text-xs">
+                              <thead><tr className="border-b border-slate-100 bg-slate-50/30 sticky top-0">
+                                <th className="px-4 py-2 text-left font-bold text-slate-500">业务日</th>
+                                <th className="px-4 py-2 text-right font-bold text-slate-500">调用</th>
+                                <th className="px-4 py-2 text-right font-bold text-slate-500">In Tokens</th>
+                                <th className="px-4 py-2 text-right font-bold text-slate-500">Out Tokens</th>
+                                <th className="px-4 py-2 text-right font-bold text-slate-500">成本(¥)</th>
+                              </tr></thead>
+                              <tbody className="divide-y divide-slate-50">
+                                {adminTokenStats.byDay.map((r: any, i: number) => (
+                                  <tr key={i} className="hover:bg-slate-50/50">
+                                    <td className="px-4 py-2 font-mono text-slate-700">{r.bizDate}</td>
+                                    <td className="px-4 py-2 text-right text-slate-600">{r.calls}</td>
+                                    <td className="px-4 py-2 text-right font-mono text-indigo-600">{r.tokensIn.toLocaleString()}</td>
+                                    <td className="px-4 py-2 text-right font-mono text-violet-600">{r.tokensOut.toLocaleString()}</td>
+                                    <td className="px-4 py-2 text-right font-mono text-emerald-600">{(r.costCents / 100).toFixed(4)}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+                        <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/50 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm">💰</span>
+                              <h3 className="font-bold text-slate-800 text-sm">模型计价管理</h3>
+                            </div>
+                            <p className="text-[10px] text-slate-400 mt-0.5">追加式只读历史 · 生效日期生效 · 单位：分/百万 tokens（CNY）</p>
+                          </div>
+                          <button onClick={loadAiCostData} className="text-[10px] font-bold text-blue-600 hover:text-blue-700 border border-blue-200 hover:bg-blue-50 rounded-lg px-3 py-1.5 transition-all self-start sm:self-auto">
+                            刷新数据
+                          </button>
+                        </div>
+                        <div className="p-5 border-b border-slate-100 bg-amber-50/30">
+                          <p className="text-[10px] font-bold text-amber-700 uppercase tracking-wider mb-3">📋 新增模型计价条目（追加式，历史调用成本不受影响）</p>
+                          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+                            {[
+                              { label: 'Provider', field: 'provider', placeholder: 'gemini', type: 'text' },
+                              { label: '模型名称', field: 'model', placeholder: 'gemini-3.5-flash', type: 'text' },
+                              { label: 'Input 单价 (分/M)', field: 'inputPerMillion', placeholder: '70', type: 'number' },
+                              { label: 'Output 单价 (分/M)', field: 'outputPerMillion', placeholder: '280', type: 'number' },
+                            ].map(f => (
+                              <div key={f.field}>
+                                <label className="text-[10px] text-slate-500 font-bold uppercase tracking-wider block mb-1">{f.label}</label>
+                                <input type={f.type} value={(adminPriceForm as any)[f.field]} placeholder={f.placeholder}
+                                  onChange={e => setAdminPriceForm(prev => ({ ...prev, [f.field]: e.target.value }))}
+                                  className="w-full px-2 py-1.5 border border-slate-200 rounded-lg text-xs bg-white focus:outline-none focus:border-blue-400" />
+                              </div>
+                            ))}
+                            <div>
+                              <label className="text-[10px] text-slate-500 font-bold uppercase tracking-wider block mb-1">口径来源</label>
+                              <select value={adminPriceForm.source} onChange={e => setAdminPriceForm(prev => ({ ...prev, source: e.target.value }))}
+                                className="w-full px-2 py-1.5 border border-slate-200 rounded-lg text-xs bg-white focus:outline-none focus:border-blue-400">
+                                <option value="official">官方公示</option>
+                                <option value="contract">合同价</option>
+                                <option value="invoice">账单核对</option>
+                                <option value="illustrative">示意估算</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="text-[10px] text-slate-500 font-bold uppercase tracking-wider block mb-1">生效日期时间</label>
+                              <input type="datetime-local" value={adminPriceForm.effectiveAt}
+                                onChange={e => setAdminPriceForm(prev => ({ ...prev, effectiveAt: e.target.value }))}
+                                className="w-full px-2 py-1.5 border border-slate-200 rounded-lg text-xs bg-white focus:outline-none focus:border-blue-400" />
+                            </div>
+                          </div>
+                          {priceFormError && <p className="text-[11px] text-rose-600 font-bold mt-2">{priceFormError}</p>}
+                          <button onClick={handleSaveModelPrice} disabled={isSavingPrice}
+                            className="mt-3 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold rounded-lg transition-all flex items-center gap-2">
+                            {isSavingPrice ? <><Loader2 className="w-3 h-3 animate-spin" />保存中...</> : '✅ 保存新计价条目'}
+                          </button>
+                        </div>
+                        <div className="overflow-x-auto max-h-72">
+                          <table className="w-full text-xs">
+                            <thead><tr className="border-b border-slate-100 bg-slate-50/30 sticky top-0">
+                              <th className="px-4 py-2 text-left font-bold text-slate-500">Provider</th>
+                              <th className="px-4 py-2 text-left font-bold text-slate-500">模型</th>
+                              <th className="px-4 py-2 text-right font-bold text-slate-500">Input (分/M)</th>
+                              <th className="px-4 py-2 text-right font-bold text-slate-500">Output (分/M)</th>
+                              <th className="px-4 py-2 text-left font-bold text-slate-500">口径</th>
+                              <th className="px-4 py-2 text-left font-bold text-slate-500">生效时间</th>
+                              <th className="px-4 py-2 text-left font-bold text-slate-500">录入人</th>
+                            </tr></thead>
+                            <tbody className="divide-y divide-slate-50">
+                              {adminModelPrices.length === 0 ? (
+                                <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">暂无计价记录</td></tr>
+                              ) : adminModelPrices.map((p: any, i: number) => (
+                                <tr key={i} className={`hover:bg-slate-50/50 ${i === 0 ? 'bg-emerald-50/30' : ''}`}>
+                                  <td className="px-4 py-2 font-mono text-slate-600">{p.provider}</td>
+                                  <td className="px-4 py-2 font-mono text-slate-800">{p.model}{i === 0 && <span className="ml-1.5 text-[9px] bg-emerald-100 text-emerald-700 px-1 py-0.5 rounded font-bold">当前</span>}</td>
+                                  <td className="px-4 py-2 text-right font-mono text-indigo-600">{p.input_per_million}</td>
+                                  <td className="px-4 py-2 text-right font-mono text-violet-600">{p.output_per_million}</td>
+                                  <td className="px-4 py-2 text-slate-500">{p.source}</td>
+                                  <td className="px-4 py-2 font-mono text-slate-600 text-[11px]">{p.effective_at ? new Date(p.effective_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '—'}</td>
+                                  <td className="px-4 py-2 text-slate-400">{p.created_by_admin || 'system'}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      {adminTokenStats && adminTokenStats.recent && adminTokenStats.recent.length > 0 && (
+                        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+                          <div className="px-5 py-3 border-b border-slate-100 bg-slate-50/50 flex items-center gap-2">
+                            <span className="text-sm">🕑</span>
+                            <h3 className="font-bold text-slate-800 text-xs uppercase tracking-wider">最近 Token 调用明细（最新200条）</h3>
+                          </div>
+                          <div className="overflow-x-auto max-h-80">
+                            <table className="w-full text-xs">
+                              <thead><tr className="border-b border-slate-100 bg-slate-50/30 sticky top-0">
+                                <th className="px-3 py-2 text-left font-bold text-slate-500">操作</th>
+                                <th className="px-3 py-2 text-left font-bold text-slate-500">模型</th>
+                                <th className="px-3 py-2 text-right font-bold text-slate-500">In</th>
+                                <th className="px-3 py-2 text-right font-bold text-slate-500">Out</th>
+                                <th className="px-3 py-2 text-right font-bold text-slate-500">成本(¥)</th>
+                                <th className="px-3 py-2 text-left font-bold text-slate-500">时间</th>
+                              </tr></thead>
+                              <tbody className="divide-y divide-slate-50">
+                                {adminTokenStats.recent.map((r: any, i: number) => (
+                                  <tr key={i} className="hover:bg-slate-50/50">
+                                    <td className="px-3 py-1.5 font-mono text-slate-600 text-[11px]">{r.operation}</td>
+                                    <td className="px-3 py-1.5 font-mono text-slate-500 text-[11px]">{r.model}</td>
+                                    <td className="px-3 py-1.5 text-right font-mono text-indigo-600">{(r.tokens_in || 0).toLocaleString()}</td>
+                                    <td className="px-3 py-1.5 text-right font-mono text-violet-600">{(r.tokens_out || 0).toLocaleString()}</td>
+                                    <td className="px-3 py-1.5 text-right font-mono text-emerald-600">{((r.cost_micro_cents || 0) / 1e8).toFixed(6)}</td>
+                                    <td className="px-3 py-1.5 font-mono text-slate-400 text-[10px]">{r.created_at ? new Date(r.created_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '—'}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+
+                      {!adminTokenStats && !isLoadingAiCost && (
+                        <div className="bg-white border border-slate-200 rounded-2xl p-12 flex flex-col items-center justify-center text-slate-400 gap-3">
+                          <AlertCircle className="w-8 h-8 text-slate-300" />
+                          <p className="text-xs font-bold">暂无 Token 统计（尚无 AI 调用记录，或数据库未配置）</p>
+                          <button onClick={loadAiCostData} className="text-xs font-bold text-blue-600 hover:text-blue-700 border border-blue-200 hover:bg-blue-50 rounded-lg px-3 py-1.5 transition-all">重新加载</button>
+                        </div>
+                      )}
+                    </>
+                  )}
                 </div>
               )}
             </motion.div>
