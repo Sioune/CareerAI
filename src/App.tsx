@@ -2383,13 +2383,13 @@ Visuals & Integrity
               <div className="flex justify-between items-center mb-4">
                 <div className="flex items-center gap-2">
                   <Sparkles className="w-5 h-5 text-blue-400" />
-                  <span className="font-sans font-bold text-lg tracking-tight text-white">CareerAI</span>
+                  <span className="font-sans font-bold text-lg tracking-tight text-white">{lang === 'zh' ? siteConfig.brand.name_zh : siteConfig.brand.name_en}</span>
                   <span 
                     onClick={() => setShowV04ReleaseNotes(true)}
                     className="bg-amber-500/20 text-amber-300 font-mono text-[9px] px-2 py-0.5 rounded-full font-bold cursor-pointer hover:bg-amber-500/35 transition-colors"
-                    title="点击查看 V0.4 PRO 版本亮点"
+                    title={lang === 'zh' ? `点击查看 ${siteConfig.app_version.version} 版本亮点` : `View ${siteConfig.app_version.version} release notes`}
                   >
-                    V0.4 PRO
+                    {siteConfig.app_version.version}
                   </span>
                 </div>
                 {/* Language Switcher */}
@@ -3496,10 +3496,12 @@ Visuals & Integrity
                 <div className="text-center max-w-3xl mx-auto mb-6 md:mb-12 px-2">
                   <span className="text-[10px] font-bold tracking-widest text-blue-600 uppercase bg-blue-50 px-3 py-1 rounded-full">{t.targetAnalysis}</span>
                   <h1 className="text-2xl sm:text-3xl md:text-5xl font-extrabold text-slate-900 tracking-tight mt-3 mb-3 md:mt-4 md:mb-6 leading-tight">
-                    {t.unlockTitle} <span className="text-blue-600">{t.unlockRole}</span>
+                    {(lang === 'zh' ? siteConfig.homepage_copy.hero_title_zh : siteConfig.homepage_copy.hero_title_en)
+                      ? (lang === 'zh' ? siteConfig.homepage_copy.hero_title_zh : siteConfig.homepage_copy.hero_title_en)
+                      : <>{t.unlockTitle} <span className="text-blue-600">{t.unlockRole}</span></>}
                   </h1>
                   <p className="text-slate-500 text-sm sm:text-base md:text-lg leading-relaxed">
-                    {t.unlockDesc}
+                    {(lang === 'zh' ? siteConfig.homepage_copy.hero_subtitle_zh : siteConfig.homepage_copy.hero_subtitle_en) || t.unlockDesc}
                   </p>
                 </div>
 
@@ -3524,7 +3526,7 @@ Visuals & Integrity
                       onClick={() => handleAnalyzeRole()}
                       className="bg-blue-600 text-white px-8 py-4 rounded-xl text-sm font-bold hover:bg-blue-700 transition-colors shadow-sm flex items-center justify-center gap-2 shrink-0 group"
                     >
-                      <span>{t.analyzeBtn}</span>
+                      <span>{(lang === 'zh' ? siteConfig.homepage_copy.cta_zh : siteConfig.homepage_copy.cta_en) || t.analyzeBtn}</span>
                       <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
                     </button>
                   </div>
@@ -5632,19 +5634,21 @@ Visuals & Integrity
 
                 <div className="flex items-center gap-2 mb-3 shrink-0">
                   <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded font-mono bg-amber-50 text-amber-700 border border-amber-150">
-                    V0.4 PRO VERSION UPGRADE
+                    {siteConfig.app_version.version} VERSION
                   </span>
                   <span className="text-[10px] text-slate-400 font-semibold font-mono">{lang === 'zh' ? '全新发布' : 'NEW RELEASE'}</span>
                 </div>
 
                 <h3 className="font-extrabold text-slate-900 text-base mb-3 leading-snug flex items-center gap-2 shrink-0">
                   <Sparkles className="w-5 h-5 text-amber-500 animate-pulse" />
-                  <span>{lang === 'zh' ? 'CareerAI V0.4 PRO 尊贵版重大升级公告' : 'CareerAI V0.4 PRO Exclusive Release Notes'}</span>
+                  <span>{lang === 'zh'
+                    ? `${siteConfig.brand.name_zh} ${siteConfig.app_version.version} 版本公告`
+                    : `${siteConfig.brand.name_en} ${siteConfig.app_version.version} Release Notes`}</span>
                 </h3>
 
                 <div className="bg-slate-50 border border-slate-100 rounded-xl p-4 text-slate-750 text-xs leading-relaxed overflow-y-auto whitespace-pre-line font-medium font-sans flex-grow min-h-0">
-                  {lang === 'zh' ? (
-                    `🎯 核心功能迭代亮点
+                  {lang === 'zh'
+                    ? (siteConfig.app_version.release_notes_zh || `🎯 核心功能迭代亮点
 
 研判佐证链 (Premium JD Evidence Chain)
 真实原汁原味原始数据佐证：在 【岗位画像】(researched) 页面，新增了来自大厂或独角兽公司的百万级真实 JD 特征特征分析。
@@ -5668,9 +5672,8 @@ Visuals & Integrity
 
 🎨 视觉设计与工程规范
 V0.4 PRO 尊贵标识：系统顶栏标识正式升级为 V0.4 PRO 专享版，页面整体配色及字体沿用了严谨奢华的 Cosmic Slate 灰蓝金专业色调。
-无缝路由与状态驱动：所有新增交互均由前端状态机制平滑衔接，完美适配响应式布局，并通过了系统的 TypeScript 静态类型编译与 npm run build 校验。`
-                  ) : (
-                    `🎯 Core Feature Milestones & Iterations
+无缝路由与状态驱动：所有新增交互均由前端状态机制平滑衔接，完美适配响应式布局，并通过了系统的 TypeScript 静态类型编译与 npm run build 校验。`)
+                    : (siteConfig.app_version.release_notes_en || `🎯 Core Feature Milestones & Iterations
 
 Premium JD Evidence Chain
 - High fidelity real JD evidence in the [Researched] stage from top-tier tech firms.
@@ -5692,8 +5695,7 @@ Conversion Funnel Dashboard
 - Brand new [Expert Admin] dashboard console in the navbar to track conversion funnel metrics and inspect user feedback live.
 
 Visuals & Integrity
-- System brand updated to V0.4 PRO exclusive version with elegant Cosmic Slate palette. Full responsive flows and solid TypeScript builds.`
-                  )}
+- System brand updated to V0.4 PRO exclusive version with elegant Cosmic Slate palette. Full responsive flows and solid TypeScript builds.`)}
                 </div>
 
                 <div className="mt-5 flex justify-end shrink-0">
