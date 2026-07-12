@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, type FormEvent } from 'react';
+import { useEffect, useState, useCallback, useRef, type FormEvent } from 'react';
 import { hasPermission, ROLES as ALL_ROLES, ROLE_LABEL, type PermModule } from '../shared/permissions.ts';
 
 const TOKEN_KEY = 'careerai_admin_token';
