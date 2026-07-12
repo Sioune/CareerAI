@@ -3,6 +3,14 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig} from 'vite';
 
+// Ensure VITE_SITE_ORIGIN is always defined so Vite's built-in %VITE_*% HTML
+// replacement never emits a warning and never leaves a literal placeholder in
+// the built output.  Override by exporting VITE_SITE_ORIGIN or SITE_ORIGIN
+// before running the build.
+if (!process.env.VITE_SITE_ORIGIN) {
+  process.env.VITE_SITE_ORIGIN = (process.env.SITE_ORIGIN || 'https://careerai.app').replace(/\/$/, '');
+}
+
 export default defineConfig(() => {
   return {
     plugins: [react(), tailwindcss()],

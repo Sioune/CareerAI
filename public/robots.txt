@@ -1,4 +1,5 @@
 User-agent: *
 Allow: /
+Disallow: /admin
 
-Sitemap: https://ais-pre-jajkn2exl3isrxxhme6g2u-267389115360.us-west2.run.app/sitemap.xml
+Sitemap: https://careerai.app/sitemap.xml

@@ -5575,6 +5575,58 @@ ${originalText}
     `, { description: 'CareerAI Help Center — answers about supported file types (PDF, DOCX), English and Chinese language support, resume analysis, executive rewrite exports, account billing, and data privacy.', path: '/help' }));
   });
 
+  // Crawl governance: block indexing of the admin surface
+  app.use('/admin', (req: any, res: any, next: any) => {
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+    next();
+  });
+
+  // Dynamic crawl files — inject SITE_ORIGIN so the correct production host is
+  // always used regardless of which deployment serves the request.
+  const SITE_ORIGIN = (process.env.SITE_ORIGIN || process.env.VITE_SITE_ORIGIN || 'https://careerai.app').replace(/\/$/, '');
+
+  app.get('/robots.txt', (_req: any, res: any) => {
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.send(
+      `User-agent: *\nAllow: /\nDisallow: /admin\n\nSitemap: ${SITE_ORIGIN}/sitemap.xml\n`
+    );
+  });
+
+  app.get('/sitemap.xml', (_req: any, res: any) => {
+    res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+    res.send(
+      `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url>\n    <loc>${SITE_ORIGIN}/</loc>\n    <changefreq>weekly</changefreq>\n    <priority>1.0</priority>\n  </url>\n</urlset>\n`
+    );
+  });
+
+  app.get('/llms.txt', (_req: any, res: any) => {
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.send(`# CareerAI — Executive Resume Optimizer
+
+## Summary
+CareerAI is a bilingual (Chinese/English) AI-powered resume analysis and rewriting platform designed for senior managers, technical leaders, and executives. It analyzes job descriptions, scores resume-to-JD alignment, and produces executive-grade resume rewrites with leadership vocabulary upgrades.
+
+## Key Capabilities
+- Job description (JD) parsing and target role profiling
+- AI-driven resume-to-JD matching score and gap analysis
+- C-level vocabulary and leadership statement reconstruction
+- Export to PDF, DOCX, and ZIP formats
+- Secure data handling: uploaded resumes are desensitized and never used for model training
+
+## Intended Audience
+Senior professionals, directors, VPs, general managers, and C-suite executives seeking AI-assisted resume optimization for high-stakes career transitions.
+
+## Language
+Primary: Simplified Chinese (zh-CN). Interface also available in English.
+
+## Canonical URL
+${SITE_ORIGIN}/
+
+## Contact / Attribution
+CareerAI Solutions — ${SITE_ORIGIN}/
+`);
+  });
+
   // Vite development server / production builds handler
   const distPath = path.join(process.cwd(), 'dist');
   const hasDist = fs.existsSync(path.join(distPath, 'index.html'));
