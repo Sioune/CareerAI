@@ -1204,24 +1204,101 @@ function ConfigHistoryTable({ history, onPublish, onRollback }: { history: any[]
 function BrandSection() {
   const { current, history, saving, error, msg, saveDraft, submitPublish, rollback } = useConfigSection('brand');
   const [form, setForm] = useState({ name_zh: '', name_en: '', logo_url: '', favicon_url: '', primary_color: '#2563eb' });
-  useEffect(() => { if (current) setForm({ name_zh: current.name_zh || '', name_en: current.name_en || '', logo_url: current.logo_url || '', favicon_url: current.favicon_url || '', primary_color: current.primary_color || '#2563eb' }); }, [current]);
+  const [uploading, setUploading] = useState(false);
+  const [uploadMsg, setUploadMsg] = useState('');
+  const [uploadError, setUploadError] = useState('');
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (current) setForm({ name_zh: current.name_zh || '', name_en: current.name_en || '', logo_url: current.logo_url || '', favicon_url: current.favicon_url || '', primary_color: current.primary_color || '#2563eb' });
+  }, [current]);
+
   const f = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => setForm((p) => ({ ...p, [k]: e.target.value }));
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadError(''); setUploadMsg(''); setUploading(true);
+    try {
+      const token = localStorage.getItem('careerai_admin_token');
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await fetch('/api/admin/upload/logo', {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: fd,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '上传失败');
+      setForm((p) => ({ ...p, logo_url: data.logo_url, favicon_url: data.favicon_url }));
+      setUploadMsg(`✅ 上传成功！Favicon 已自动生成（64×64 PNG）`);
+    } catch (err: any) {
+      setUploadError(err.message);
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = '';
+    }
+  };
+
   return (
-    <SectionShell title="🎨 品牌 / 外观" subtitle="系统名称、Logo、Favicon、主色 — 发布后立即应用至前端">
+    <SectionShell title="🎨 品牌 / 外观" subtitle="系统名称、Logo 上传、Favicon 自动生成、主色 — 发布后立即应用至前端">
       {error && <p className="text-red-600 text-xs mb-2">{error}</p>}
       {msg && <p className="text-emerald-600 text-xs mb-2">{msg}</p>}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
         <div><label className="block text-xs text-slate-500 mb-1">系统名称（中文）</label><input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm" value={form.name_zh} onChange={f('name_zh')} placeholder="CareerAI" /></div>
         <div><label className="block text-xs text-slate-500 mb-1">系统名称（英文）</label><input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm" value={form.name_en} onChange={f('name_en')} placeholder="CareerAI" /></div>
-        <div><label className="block text-xs text-slate-500 mb-1">Logo 图片 URL（留空则显示文字 Logo）</label><input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm" value={form.logo_url} onChange={f('logo_url')} placeholder="https://..." /></div>
-        <div><label className="block text-xs text-slate-500 mb-1">Favicon URL（.ico 或 .png）</label><input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm" value={form.favicon_url} onChange={f('favicon_url')} placeholder="https://..." /></div>
-        <div><label className="block text-xs text-slate-500 mb-1">品牌主色（十六进制，目前仅记录，下期应用至 CSS 变量）</label>
-          <div className="flex gap-2 items-center">
-            <input type="color" value={form.primary_color} onChange={f('primary_color')} className="h-9 w-12 rounded border border-slate-300 cursor-pointer" />
-            <input className="flex-1 border border-slate-300 rounded-lg px-3 py-1.5 text-sm font-mono" value={form.primary_color} onChange={f('primary_color')} placeholder="#2563eb" />
+      </div>
+
+      <div className="bg-slate-50 rounded-xl border border-slate-200 p-4 mb-4">
+        <p className="text-xs font-semibold text-slate-700 mb-3">Logo 上传 <span className="font-normal text-slate-400">（支持 JPG / PNG / WebP / SVG，≤5MB；上传后 Favicon 自动从 Logo 裁剪生成 64×64 PNG）</span></p>
+        <div className="flex gap-4 items-start">
+          {form.logo_url && (
+            <div className="shrink-0">
+              <p className="text-[10px] text-slate-400 mb-1 text-center">Logo 预览</p>
+              <img src={form.logo_url} alt="logo preview" className="w-20 h-20 object-contain rounded-lg border border-slate-200 bg-white p-1" />
+            </div>
+          )}
+          {form.favicon_url && form.favicon_url !== form.logo_url && (
+            <div className="shrink-0">
+              <p className="text-[10px] text-slate-400 mb-1 text-center">Favicon 预览</p>
+              <img src={form.favicon_url} alt="favicon preview" className="w-12 h-12 object-contain rounded-lg border border-slate-200 bg-white p-1" />
+            </div>
+          )}
+          <div className="flex-1">
+            <input ref={fileRef} type="file" accept="image/jpeg,image/jpg,image/png,image/webp,image/gif,image/svg+xml" className="hidden" onChange={handleFileChange} />
+            <button
+              onClick={() => fileRef.current?.click()}
+              disabled={uploading}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg disabled:opacity-50 transition-colors"
+            >
+              {uploading ? '上传中...' : '📁 选择图片并上传'}
+            </button>
+            {uploadMsg && <p className="text-emerald-600 text-xs mt-2">{uploadMsg}</p>}
+            {uploadError && <p className="text-red-600 text-xs mt-2">{uploadError}</p>}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">Logo URL <span className="text-slate-400">（上传后自动填入，也可手动填写外链）</span></label>
+            <input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-xs font-mono bg-white" value={form.logo_url} onChange={f('logo_url')} placeholder="/uploads/logo-xxx.png 或 https://..." />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">Favicon URL <span className="text-slate-400">（上传后自动生成，也可手动覆盖）</span></label>
+            <input className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-xs font-mono bg-white" value={form.favicon_url} onChange={f('favicon_url')} placeholder="/uploads/favicon-xxx.png" />
           </div>
         </div>
       </div>
+
+      <div className="mb-4">
+        <label className="block text-xs text-slate-500 mb-1">品牌主色（十六进制）</label>
+        <div className="flex gap-2 items-center">
+          <input type="color" value={form.primary_color} onChange={f('primary_color')} className="h-9 w-12 rounded border border-slate-300 cursor-pointer" />
+          <input className="flex-1 border border-slate-300 rounded-lg px-3 py-1.5 text-sm font-mono" value={form.primary_color} onChange={f('primary_color')} placeholder="#2563eb" />
+        </div>
+      </div>
+
       <button onClick={() => saveDraft(form)} disabled={saving} className="bg-slate-900 text-white px-4 py-1.5 rounded-lg text-sm disabled:opacity-50">{saving ? '保存中...' : '保存草稿'}</button>
       <ConfigHistoryTable history={history} onPublish={submitPublish} onRollback={rollback} />
     </SectionShell>

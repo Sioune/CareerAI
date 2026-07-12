@@ -5,6 +5,9 @@ import { execSync } from "child_process";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+import multer from "multer";
+// @ts-ignore
+import Jimp from "jimp";
 // @ts-ignore
 import mammoth from "mammoth";
 import { createRequire } from "module";
@@ -643,6 +646,10 @@ async function startServer() {
     .catch((e) => console.error("[Finance] startup init failed:", e));
 
   app.use(express.json({ limit: "10mb" }));
+
+  const uploadsDir = path.join(process.cwd(), "uploads");
+  if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+  app.use("/uploads", express.static(uploadsDir));
 
   // API Route: Health check
   app.get("/api/health", (req, res) => {
@@ -4811,6 +4818,38 @@ ${originalText}
       await db.update(admins).set({ role } as any).where(eq(admins.id, Number(id)));
       await logAudit(req.admin, "admin_role_changed", "admin", id, { newRole: role });
       return res.json({ success: true });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ===================== Logo / Favicon Upload =====================
+  const logoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 }, fileFilter: (_req, file, cb) => { cb(null, /^image\/(jpeg|jpg|png|gif|webp|svg\+xml)$/.test(file.mimetype)); } });
+
+  app.post("/api/admin/upload/logo", requireAdmin, requirePermission("site", "write"), logoUpload.single("file"), async (req: any, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: "未收到文件" });
+      const ts = Date.now();
+      const ext = req.file.mimetype === "image/svg+xml" ? "svg" : req.file.mimetype.split("/")[1].replace("jpeg", "jpg");
+      const logoFilename = `logo-${ts}.${ext}`;
+      const logoPath = path.join(uploadsDir, logoFilename);
+      fs.writeFileSync(logoPath, req.file.buffer);
+      const logoUrl = `/uploads/${logoFilename}`;
+
+      let faviconUrl = logoUrl;
+      if (ext !== "svg") {
+        try {
+          const img = await Jimp.read(req.file.buffer);
+          const size = Math.min(img.getWidth(), img.getHeight());
+          const faviconBuf = await img.crop(0, 0, size, size).resize(64, 64).getBufferAsync(Jimp.MIME_PNG);
+          const faviconFilename = `favicon-${ts}.png`;
+          fs.writeFileSync(path.join(uploadsDir, faviconFilename), faviconBuf);
+          faviconUrl = `/uploads/${faviconFilename}`;
+        } catch { /* fallback: use logo as favicon */ }
+      }
+
+      await logAudit(req.admin, "logo_uploaded", "site_config", "brand", { logoUrl, faviconUrl });
+      return res.json({ logo_url: logoUrl, favicon_url: faviconUrl });
     } catch (err: any) {
       return res.status(500).json({ error: err.message });
     }
