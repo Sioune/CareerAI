@@ -648,31 +648,64 @@ Visuals & Integrity
     };
   }, [currentUser]);
 
-  // Load notifications from Supabase, merge with default notifications
+  // Load notifications from Supabase + admin broadcasts, merge with default notifications
   useEffect(() => {
     const loadNotifications = async () => {
       if (!currentUser) return;
+      // Track which broadcast notification IDs this user has read (localStorage)
+      const readBroadcastKey = `career_ai_read_broadcasts_${currentUser.id}`;
+      const readBroadcastIds: Set<string> = new Set(
+        JSON.parse(localStorage.getItem(readBroadcastKey) || "[]")
+      );
+
+      const formatBroadcast = (n: any): NotificationItem => {
+        const createdAt = n.createdAt ? new Date(n.createdAt) : new Date();
+        const timeZh = createdAt.toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '/');
+        const timeEn = createdAt.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        const broadcastId = `admin-broadcast-${n.id}`;
+        return {
+          id: broadcastId,
+          title: n.title || '系统公告',
+          titleEn: n.title || 'Announcement',
+          content: n.body || '',
+          contentEn: n.body || '',
+          time: timeZh,
+          timeEn: timeEn,
+          isRead: readBroadcastIds.has(broadcastId),
+          type: 'system' as const,
+        };
+      };
+
       try {
-        const res = await customFetch("/api/notifications");
-        if (res.ok) {
-          const dbNotifs = await res.json();
-          if (Array.isArray(dbNotifs) && dbNotifs.length > 0) {
-            setNotifications(prev => {
-              const merged = new Map<string, NotificationItem>();
-              // Add all from DB
-              dbNotifs.forEach((n: any) => merged.set(n.id, n));
-              // Add prev / default ones if not already present
-              prev.forEach(n => {
-                if (!merged.has(n.id)) {
-                  merged.set(n.id, n);
-                }
-              });
-              return Array.from(merged.values());
-            });
-          }
-        }
+        // Parallel: fetch personal notifications + admin broadcasts
+        const [personalRes, feedRes] = await Promise.all([
+          customFetch("/api/notifications"),
+          customFetch(`/api/notifications/feed?uid=${encodeURIComponent(currentUser.uid || currentUser.id)}`),
+        ]);
+
+        const dbNotifs: any[] = personalRes.ok ? await personalRes.json() : [];
+        const feedData = feedRes.ok ? await feedRes.json() : {};
+        const broadcasts: NotificationItem[] = Array.isArray(feedData.notifications)
+          ? feedData.notifications.map(formatBroadcast)
+          : [];
+
+        setNotifications(prev => {
+          const merged = new Map<string, NotificationItem>();
+          // Personal notifications from eventLogs (take precedence for isRead state)
+          if (Array.isArray(dbNotifs)) dbNotifs.forEach((n: any) => merged.set(n.id, n));
+          // Admin broadcasts (insert if not already overridden)
+          broadcasts.forEach(n => { if (!merged.has(n.id)) merged.set(n.id, n); });
+          // Default / seed notifications (lowest priority)
+          prev.forEach(n => { if (!merged.has(n.id)) merged.set(n.id, n); });
+          // Sort newest first
+          return Array.from(merged.values()).sort((a, b) => {
+            const ta = new Date(a.time).getTime() || 0;
+            const tb = new Date(b.time).getTime() || 0;
+            return tb - ta;
+          });
+        });
       } catch (err) {
-        console.error("Failed to load notifications from Supabase:", err);
+        console.error("Failed to load notifications:", err);
       }
     };
     loadNotifications();
@@ -2417,7 +2450,7 @@ Visuals & Integrity
                     initial={{ opacity: 0, y: 10, scale: 0.95 }}
                     animate={{ opacity: 1, y: 0, scale: 1 }}
                     exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                    className="fixed top-14 sm:top-16 left-2 right-2 sm:absolute sm:top-auto sm:left-auto sm:right-0 sm:mt-2 w-[calc(100vw-1rem)] sm:w-auto max-w-sm sm:w-96 bg-white border border-slate-200 rounded-2xl shadow-xl z-50 overflow-hidden"
+                    className="fixed top-14 sm:top-16 left-2 right-2 sm:absolute sm:top-auto sm:left-auto sm:right-0 sm:mt-2 sm:w-96 bg-white border border-slate-200 rounded-2xl shadow-xl z-50 overflow-hidden"
                   >
                     <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
                       <div className="flex items-center gap-2">
@@ -2436,6 +2469,15 @@ Visuals & Integrity
                           const previous = notifications;
                           setNotifications(notifications.map(n => ({ ...n, isRead: true })));
                           if (currentUser) {
+                            // Persist broadcast reads to localStorage
+                            const readBroadcastKey = `career_ai_read_broadcasts_${currentUser.id}`;
+                            const broadcastIds = notifications
+                              .filter(n => n.id.startsWith('admin-broadcast-'))
+                              .map(n => n.id);
+                            if (broadcastIds.length > 0) {
+                              const existing: string[] = JSON.parse(localStorage.getItem(readBroadcastKey) || "[]");
+                              localStorage.setItem(readBroadcastKey, JSON.stringify([...new Set([...existing, ...broadcastIds])]));
+                            }
                             try {
                               const res = await customFetch("/api/notifications/read-all", { method: "POST" });
                               if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -2470,18 +2512,25 @@ Visuals & Integrity
                               setActiveNotification(n);
                               setShowNotificationDropdown(false);
                               if (currentUser && !n.isRead) {
-                                try {
-                                  const res = await customFetch("/api/notifications", {
-                                    method: "POST",
-                                    headers: { "Content-Type": "application/json" },
-                                    body: JSON.stringify({ ...n, isRead: true })
-                                  });
-                                  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                                } catch (err) {
-                                  console.error("Failed to persist notification read status:", err);
-                                  // Revert on failure so UI reflects real saved state
-                                  setNotifications(prev => prev.map(notif => notif.id === n.id ? { ...notif, isRead: false } : notif));
-                                  triggerToast(lang === 'zh' ? '已读状态未能保存，请检查网络后重试' : 'Failed to save read status, please retry.');
+                                if (n.id.startsWith('admin-broadcast-')) {
+                                  // Broadcast: persist read state in localStorage
+                                  const readBroadcastKey = `career_ai_read_broadcasts_${currentUser.id}`;
+                                  const existing: string[] = JSON.parse(localStorage.getItem(readBroadcastKey) || "[]");
+                                  localStorage.setItem(readBroadcastKey, JSON.stringify([...new Set([...existing, n.id])]));
+                                } else {
+                                  try {
+                                    const res = await customFetch("/api/notifications", {
+                                      method: "POST",
+                                      headers: { "Content-Type": "application/json" },
+                                      body: JSON.stringify({ ...n, isRead: true })
+                                    });
+                                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                                  } catch (err) {
+                                    console.error("Failed to persist notification read status:", err);
+                                    // Revert on failure so UI reflects real saved state
+                                    setNotifications(prev => prev.map(notif => notif.id === n.id ? { ...notif, isRead: false } : notif));
+                                    triggerToast(lang === 'zh' ? '已读状态未能保存，请检查网络后重试' : 'Failed to save read status, please retry.');
+                                  }
                                 }
                               }
                             }}
