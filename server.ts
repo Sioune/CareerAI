@@ -4839,13 +4839,22 @@ ${originalText}
       let faviconUrl = logoUrl;
       if (ext !== "svg") {
         try {
-          const img = await Jimp.read(req.file.buffer);
-          const size = Math.min(img.getWidth(), img.getHeight());
-          const faviconBuf = await img.crop(0, 0, size, size).resize(64, 64).getBufferAsync(Jimp.MIME_PNG);
           const faviconFilename = `favicon-${ts}.png`;
-          fs.writeFileSync(path.join(uploadsDir, faviconFilename), faviconBuf);
-          faviconUrl = `/uploads/${faviconFilename}`;
-        } catch { /* fallback: use logo as favicon */ }
+          const faviconPath = path.join(uploadsDir, faviconFilename);
+          await Promise.race([
+            (async () => {
+              const img = await Jimp.read(req.file.buffer);
+              const size = Math.min(img.getWidth(), img.getHeight());
+              await new Promise<void>((resolve, reject) => {
+                img.crop(0, 0, size, size).resize(64, 64).write(faviconPath, (err: any) => {
+                  if (err) reject(err); else resolve();
+                });
+              });
+              faviconUrl = `/uploads/${faviconFilename}`;
+            })(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("jimp timeout")), 8000)),
+          ]);
+        } catch (e) { console.warn("[Logo] favicon generation skipped:", (e as any).message); }
       }
 
       await logAudit(req.admin, "logo_uploaded", "site_config", "brand", { logoUrl, faviconUrl });
