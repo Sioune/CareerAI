@@ -4826,7 +4826,15 @@ ${originalText}
   // ===================== Logo / Favicon Upload =====================
   const logoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 }, fileFilter: (_req, file, cb) => { cb(null, /^image\/(jpeg|jpg|png|gif|webp|svg\+xml)$/.test(file.mimetype)); } });
 
-  app.post("/api/admin/upload/logo", requireAdmin, requirePermission("site", "write"), logoUpload.single("file"), async (req: any, res) => {
+  // Wrapper: catches multer errors before they bubble to Vite's Connect finalhandler (which returns empty 404)
+  function runLogoUpload(req: any, res: any, next: any) {
+    logoUpload.single("file")(req, res, (err: any) => {
+      if (err) return res.status(400).json({ error: err.message || "文件上传失败" });
+      next();
+    });
+  }
+
+  app.post("/api/admin/upload/logo", requireAdmin, requirePermission("site", "write"), runLogoUpload, async (req: any, res) => {
     try {
       if (!req.file) return res.status(400).json({ error: "未收到文件" });
       const ts = Date.now();
