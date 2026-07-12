@@ -5632,6 +5632,185 @@ CareerAI Solutions — ${SITE_ORIGIN}/
   const hasDist = fs.existsSync(path.join(distPath, 'index.html'));
   const isProd = process.env.NODE_ENV === "production" || (hasDist && process.env.NODE_ENV !== "development");
 
+  // English landing page — crawlable URL with full English metadata
+  // Must be registered before Vite middleware so Express matches it first.
+  app.get('/en', (_req, res) => {
+    const BASE = 'https://ais-pre-jajkn2exl3isrxxhme6g2u-267389115360.us-west2.run.app';
+
+    const buildEnglishHtml = (scriptTag: string) => `<!doctype html>
+<html lang="en-US" class="scroll-smooth">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!-- Primary SEO Metadata (English) -->
+    <title>CareerAI Executive Resume Optimizer | AI Resume Restructuring & JD Alignment</title>
+    <meta name="description" content="CareerAI is an elite AI-powered resume optimizer for directors, VPs, and C-suite executives. Upload your resume and target role to get a deep match-score matrix, gap analysis, and an executive-grade rewrite — 100% aligned to real hiring demand." />
+    <meta name="keywords" content="CareerAI, Executive Resume Optimizer, AI Resume Rewrite, CV Restructuring, JD Matching Score, Resume Gap Analysis, leadership CV, C-suite resume, VP resume, director resume, AI resume builder" />
+    <meta name="author" content="CareerAI Solutions" />
+    <meta name="robots" content="index, follow" />
+
+    <!-- Canonical URL (English) -->
+    <link rel="canonical" href="${BASE}/en" />
+
+    <!-- hreflang: bilingual alternate URLs -->
+    <link rel="alternate" hreflang="zh-CN" href="${BASE}/" />
+    <link rel="alternate" hreflang="en" href="${BASE}/en" />
+    <link rel="alternate" hreflang="x-default" href="${BASE}/" />
+
+    <!-- Open Graph / Facebook (English) -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="${BASE}/en" />
+    <meta property="og:title" content="CareerAI | Executive Resume Optimizer & AI Restructuring" />
+    <meta property="og:description" content="AI-driven resume optimization for directors, executives, and technical leaders. Input your target role — CareerAI computes a deep match-score matrix and rewrites your CV into impact-focused executive achievements." />
+    <meta property="og:image" content="https://images.unsplash.com/photo-1454165804606-c3d57bc86b40?auto=format&fit=crop&w=1200&q=80" />
+    <meta property="og:site_name" content="CareerAI" />
+    <meta property="og:locale" content="en_US" />
+
+    <!-- Twitter (English) -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:url" content="${BASE}/en" />
+    <meta name="twitter:title" content="CareerAI | Executive Resume Optimizer & AI Restructuring" />
+    <meta name="twitter:description" content="AI-driven resume optimization workspace for directors, executives, and technical leaders. Restructures CVs into impact-focused executive achievements aligned to real JD requirements." />
+    <meta name="twitter:image" content="https://images.unsplash.com/photo-1454165804606-c3d57bc86b40?auto=format&fit=crop&w=1200&q=80" />
+
+    <!-- Generative Engine Optimization (GEO) -->
+    <meta name="ai-content-origin" content="CareerAI Professional Solutions" />
+    <meta name="ai-service-category" content="Professional Executive Career Development" />
+    <meta name="ai-knowledge-base" content="Executive resume rewriting, leadership language conversion, resume-to-JD alignment" />
+
+    <!-- Favicon -->
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon.svg" sizes="any" />
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+
+    <!-- Schema.org JSON-LD Structured Data (English) -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebApplication",
+      "name": "CareerAI",
+      "url": "${BASE}/en",
+      "logo": "https://images.unsplash.com/photo-1454165804606-c3d57bc86b40?auto=format&fit=crop&w=200&q=80",
+      "description": "AI-powered executive resume optimizer for directors, VPs, and C-suite leaders. Provides deep JD analysis, match-score matrix, and executive-grade resume restructuring.",
+      "applicationCategory": "BusinessApplication",
+      "operatingSystem": "All",
+      "inLanguage": "en-US",
+      "offers": {
+        "@type": "Offer",
+        "price": "19.00",
+        "priceCurrency": "CNY",
+        "priceValidUntil": "2027-12-31"
+      },
+      "featureList": [
+        "Executive target job JD parsing",
+        "Deep AI matching analysis and score matrix",
+        "C-level resume vocabulary action statement reconstruction",
+        "Secure local sandbox data isolation",
+        "Export to PDF and DOCX"
+      ],
+      "author": {
+        "@type": "Organization",
+        "name": "CareerAI Solutions",
+        "url": "${BASE}/"
+      }
+    }
+    </script>
+  </head>
+  <body class="bg-slate-50 antialiased selection:bg-blue-600/10 selection:text-blue-600">
+    <div id="root">
+      <!-- Static prerender for English crawlers (replaced by React on load) -->
+      <div style="font-family:Inter,ui-sans-serif,system-ui,sans-serif;max-width:960px;margin:0 auto;padding:2rem 1.5rem;color:#1e293b;">
+        <header style="display:flex;align-items:center;gap:1rem;margin-bottom:3rem;">
+          <div style="background:#2563eb;color:#fff;font-weight:700;font-size:1.25rem;padding:0.5rem 1rem;border-radius:8px;">CareerAI</div>
+          <span style="color:#64748b;font-size:0.875rem;">V0.4 PRO &middot; Executive Resume Optimizer</span>
+        </header>
+        <main>
+          <h1 style="font-size:2.5rem;font-weight:800;line-height:1.2;margin-bottom:1rem;color:#0f172a;">
+            Unlock Your Next AI Leadership Role
+          </h1>
+          <h2 style="font-size:1.25rem;font-weight:600;color:#2563eb;margin-bottom:1.5rem;">
+            AI-Powered Executive Resume Optimizer &mdash; Precision JD Alignment for Directors, VPs &amp; C-Suite
+          </h2>
+          <p style="font-size:1.1rem;color:#475569;max-width:720px;line-height:1.7;margin-bottom:2rem;">
+            CareerAI is an elite resume optimization platform built for senior managers, technical leaders, and executives. Powered by frontier large language models, it parses real executive job descriptions, computes a deep match-score matrix across every requirement, and delivers a fully restructured, leadership-grade resume — 100% aligned to actual hiring demand.
+          </p>
+          <p style="font-size:1rem;color:#64748b;max-width:680px;line-height:1.7;margin-bottom:2.5rem;">
+            Upload your resume, enter your target role, and CareerAI intelligently retrieves real JDs from top-tier companies, surfaces mandatory requirement gaps, and rewrites every bullet into STAR-format executive achievements with quantified business impact. Export to PDF, DOCX, or ZIP — ready to submit immediately.
+          </p>
+
+          <section style="margin-bottom:3rem;">
+            <h2 style="font-size:1.5rem;font-weight:700;margin-bottom:1.25rem;color:#0f172a;">Core Features</h2>
+            <ul style="list-style:none;padding:0;margin:0;display:grid;gap:1rem;">
+              <li style="padding:1.25rem;border:1px solid #e2e8f0;border-radius:12px;background:#f8fafc;">
+                <strong style="color:#2563eb;">JD Intelligence &mdash; Real-Market Job Analysis</strong>
+                <p style="margin:0.5rem 0 0;color:#475569;">Automatically retrieves real executive job descriptions from top-tier companies, extracts high-frequency skills, and maps mandatory requirements so you know exactly what the market demands.</p>
+              </li>
+              <li style="padding:1.25rem;border:1px solid #e2e8f0;border-radius:12px;background:#f8fafc;">
+                <strong style="color:#2563eb;">Match Score Matrix &mdash; Quantified Resume-to-JD Fit</strong>
+                <p style="margin:0.5rem 0 0;color:#475569;">Multi-dimensional scoring that quantifies how well your resume fits the target role, surfaces actionable gap analysis, and prioritizes the highest-impact improvements.</p>
+              </li>
+              <li style="padding:1.25rem;border:1px solid #e2e8f0;border-radius:12px;background:#f8fafc;">
+                <strong style="color:#2563eb;">AI Executive Rewrite &mdash; Leadership-Grade Language</strong>
+                <p style="margin:0.5rem 0 0;color:#475569;">Elevates experience bullets into STAR-format executive achievements with leadership vocabulary, quantified business impact, and C-suite caliber phrasing — fully aligned to the JD.</p>
+              </li>
+              <li style="padding:1.25rem;border:1px solid #e2e8f0;border-radius:12px;background:#f8fafc;">
+                <strong style="color:#2563eb;">Export PDF / DOCX &mdash; Submission-Ready Output</strong>
+                <p style="margin:0.5rem 0 0;color:#475569;">Export your optimized resume as PDF, DOCX, or ZIP — formatted, polished, and ready to submit to your target roles immediately.</p>
+              </li>
+            </ul>
+          </section>
+
+          <section style="margin-bottom:3rem;">
+            <h2 style="font-size:1.5rem;font-weight:700;margin-bottom:1.25rem;color:#0f172a;">Trending Executive Roles</h2>
+            <ul style="list-style:none;padding:0;margin:0;display:flex;flex-wrap:wrap;gap:0.75rem;">
+              <li style="padding:0.5rem 1rem;background:#eff6ff;color:#2563eb;border-radius:9999px;font-size:0.875rem;font-weight:500;">VP of AI Engineering</li>
+              <li style="padding:0.5rem 1rem;background:#eff6ff;color:#2563eb;border-radius:9999px;font-size:0.875rem;font-weight:500;">Chief Data Officer</li>
+              <li style="padding:0.5rem 1rem;background:#eff6ff;color:#2563eb;border-radius:9999px;font-size:0.875rem;font-weight:500;">Head of Generative AI</li>
+              <li style="padding:0.5rem 1rem;background:#eff6ff;color:#2563eb;border-radius:9999px;font-size:0.875rem;font-weight:500;">AI Product Director</li>
+              <li style="padding:0.5rem 1rem;background:#eff6ff;color:#2563eb;border-radius:9999px;font-size:0.875rem;font-weight:500;">Chief Technology Officer</li>
+              <li style="padding:0.5rem 1rem;background:#eff6ff;color:#2563eb;border-radius:9999px;font-size:0.875rem;font-weight:500;">Director of Machine Learning</li>
+              <li style="padding:0.5rem 1rem;background:#eff6ff;color:#2563eb;border-radius:9999px;font-size:0.875rem;font-weight:500;">VP of Engineering</li>
+              <li style="padding:0.5rem 1rem;background:#eff6ff;color:#2563eb;border-radius:9999px;font-size:0.875rem;font-weight:500;">Chief AI Officer</li>
+            </ul>
+          </section>
+
+          <section style="margin-bottom:3rem;">
+            <h2 style="font-size:1.5rem;font-weight:700;margin-bottom:1.25rem;color:#0f172a;">Privacy &amp; Data Security</h2>
+            <p style="color:#475569;line-height:1.7;">
+              All uploaded resumes are desensitized (phone numbers and email addresses redacted) and are never used for AI model training. Your career data is used solely for your optimization session and securely discarded afterward.
+            </p>
+          </section>
+        </main>
+        <footer style="border-top:1px solid #e2e8f0;padding-top:1.5rem;color:#94a3b8;font-size:0.8rem;">
+          &copy; 2026 CareerAI Solutions &middot; Executive Resume Optimizer
+        </footer>
+      </div>
+    </div>
+    ${scriptTag}
+  </body>
+</html>`;
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+
+    if (isProd) {
+      try {
+        const rawHtml = fs.readFileSync(path.join(distPath, 'index.html'), 'utf8');
+        const scriptMatch = rawHtml.match(/<script[^>]+src="[^"]*\.js"[^>]*><\/script>/g);
+        const scriptTags = scriptMatch ? scriptMatch.join('\n    ') : '<script type="module" src="/src/main.tsx"></script>';
+        res.send(buildEnglishHtml(scriptTags));
+      } catch {
+        res.send(buildEnglishHtml('<script type="module" src="/src/main.tsx"></script>'));
+      }
+    } else {
+      res.send(buildEnglishHtml('<script type="module" src="/src/main.tsx"></script>'));
+    }
+  });
+
   if (!isProd) {
     console.log("Starting development environment with Vite middleware...");
     const vite = await createViteServer({

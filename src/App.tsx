@@ -110,10 +110,13 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [activeTab, setActiveTab] = useState<'researched' | 'matching' | 'matched' | 'upgraded' | 'finalized' | null>(null);
   
-  // Multi-Language state
+  // Multi-Language state — seed from URL path (/en) so server-rendered English
+  // pages hydrate in English immediately, before any localStorage check.
   const [lang, setLang] = useState<'zh' | 'en'>(() => {
     const saved = localStorage.getItem('app_lang');
-    return (saved === 'en' || saved === 'zh') ? saved : 'zh';
+    if (saved === 'en' || saved === 'zh') return saved;
+    if (window.location.pathname.startsWith('/en')) return 'en';
+    return 'zh';
   });
 
   const toggleLang = (l: 'zh' | 'en') => {
