@@ -26,6 +26,8 @@
 ## Notes
 - Stack is Express serving a Vite React SPA.
 - Public SEO currently depends on a single `index.html` shell plus client-rendered React content.
+- Additional public SSR trust pages exist at `/terms`, `/privacy`, and `/help`.
+- English-language support exists in the client UI, but there is not yet a dedicated crawlable English URL.
 
 ## Dismissed categories
 - (None yet)
