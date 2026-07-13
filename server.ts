@@ -5723,11 +5723,11 @@ CareerAI Solutions — ${SITE_ORIGIN}/
   </head>
   <body class="bg-slate-50 antialiased selection:bg-blue-600/10 selection:text-blue-600">
     <div id="root">
-      <!-- Static prerender for English crawlers (replaced by React on load) -->
-      <div style="font-family:Inter,ui-sans-serif,system-ui,sans-serif;max-width:960px;margin:0 auto;padding:2rem 1.5rem;color:#1e293b;">
+      <!-- Static prerender for English crawlers (visually hidden, replaced by React on load) -->
+      <div aria-hidden="true" style="position:absolute;left:-9999px;top:-9999px;width:1px;height:1px;overflow:hidden;">
         <header style="display:flex;align-items:center;gap:1rem;margin-bottom:3rem;">
           <div style="background:#2563eb;color:#fff;font-weight:700;font-size:1.25rem;padding:0.5rem 1rem;border-radius:8px;">CareerAI</div>
-          <span style="color:#64748b;font-size:0.875rem;">V0.4 PRO &middot; Executive Resume Optimizer</span>
+          <span style="color:#64748b;font-size:0.875rem;">V1.0 &middot; Executive Resume Optimizer</span>
         </header>
         <main>
           <h1 style="font-size:2.5rem;font-weight:800;line-height:1.2;margin-bottom:1rem;color:#0f172a;">
