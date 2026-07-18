@@ -389,6 +389,21 @@ async function ensureFinanceTables() {
 }
 
 // 建表（幂等）：钱包账户、余额流水、营销费用台账、赠送活动配置、发放记录。
+async function ensureJobConclusionsTable() {
+  try {
+    await rawQuery(`CREATE TABLE IF NOT EXISTS job_research_conclusions (
+      id SERIAL PRIMARY KEY,
+      task_id TEXT NOT NULL UNIQUE,
+      target_role TEXT,
+      conclusions TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW())`);
+    console.log("[JDEvidence] ensureJobConclusionsTable OK");
+  } catch (err) {
+    console.error("[JDEvidence] ensureJobConclusionsTable failed:", err);
+  }
+}
+
 async function ensureWalletTables() {
   try {
     await rawQuery(`CREATE TABLE IF NOT EXISTS wallet_accounts (
@@ -925,6 +940,7 @@ async function startServer() {
     .catch((e) => console.error("[Finance] startup init failed:", e));
   // 余额与营销赠送：建表 + 种子默认注册活动（均幂等）。
   ensureWalletTables().catch((e) => console.error("[Wallet] startup init failed:", e));
+  ensureJobConclusionsTable().catch((e) => console.error("[JDEvidence] startup init failed:", e));
 
   app.use(express.json({ limit: "10mb" }));
 
@@ -1198,9 +1214,19 @@ async function startServer() {
       );
 
       // 财务台账 + 权益发放（与微信/支付宝支付回调保持一致）
+      // rawQuery returns snake_case columns; recordPaymentSuccess expects camelCase — map explicitly.
       const updatedOrder = await rawQuery(`SELECT * FROM payments WHERE business_order_no=$1`, [orderNo]);
       if (updatedOrder.rows.length > 0) {
-        await recordPaymentSuccess(updatedOrder.rows[0]);
+        const row = updatedOrder.rows[0];
+        await recordPaymentSuccess({
+          id: row.id,
+          status: row.status,
+          amount: row.amount,
+          userId: row.user_id,
+          taskId: row.task_id,
+          priceVersionId: row.price_version_id,
+          statusName: row.status_name,
+        });
       }
 
       return res.json({ success: true, transactionId: tx.id, balanceAfterCents: tx.balance_after_cents });
@@ -2754,24 +2780,145 @@ ${(resumeText || "").slice(0, 2000)}
     return res.json({ summary: "AI 高阶大模型岗位真实招聘数据研判完成，已对齐 28 份官方及第三方清洗数据源。", jdCount: 28 });
   });
 
-  app.get("/api/job-research/:task_id/conclusions", (req, res) => {
+  // Generate AI-powered JD evidence chain conclusions for a task
+  app.post("/api/job-research/:task_id/conclusions/generate", async (req, res) => {
     const { task_id } = req.params;
-    const report = jobResearchCache.get(task_id);
-    if (report && report.conclusions) {
-      return res.json(report.conclusions);
+    const { targetRole, report } = req.body;
+
+    if (!aiClient) {
+      return res.status(503).json({ error: "AI 服务未配置", code: "no_client" });
     }
-    const simulated = getSimulatedReport("AI 产品负责人");
-    return res.json(simulated.conclusions);
+    if (!targetRole) {
+      return res.status(400).json({ error: "targetRole is required" });
+    }
+
+    const roleStr = targetRole as string;
+    const reportCtx = report ? JSON.stringify(report).slice(0, 3000) : "";
+
+    const prompt = `你是一位顶级猎头顾问，深度了解中国互联网和科技行业真实招聘市场。
+请基于以下目标岗位和市场研究数据，生成 4 条岗位核心研判结论（JD Evidence Chain），每条结论包含 3 个来自不同类型企业的真实岗位描述佐证文本。
+
+目标岗位：${roleStr}
+市场研究摘要：${reportCtx}
+
+要求：
+1. 每条结论必须是该岗位市场上真实的高频要求（不是泛泛而谈），结论之间不得重复。
+2. frequency 字段代表该要求在该岗位 JD 中的出现频率，范围 50-98，不同结论值需有差异。
+3. category 字段为简短的技能分类标签（4-8个汉字），如"战略规划""技术落地""团队管理""商业变现"等。
+4. evidences 数组包含 3 个来自不同类型企业（如"某头部互联网大厂""某知名AI独角兽""某跨国咨询集团""某港股上市科技企业"等）的具体岗位描述片段，文本需是招聘JD原文风格，80-120字。
+5. suggestion 字段给出针对目标岗位的简历优化建议，具体可操作。
+6. 输出严格遵循 JSON 数组格式，不要包含任何额外文字。
+
+注意：结论和佐证内容必须与目标岗位"${roleStr}"高度相关，不得使用与该岗位无关的通用描述。`;
+
+    try {
+      const response = await withGeminiTimeout(aiClient.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                id: { type: Type.STRING },
+                title: { type: Type.STRING },
+                frequency: { type: Type.INTEGER },
+                category: { type: Type.STRING },
+                detail: { type: Type.STRING },
+                suggestion: { type: Type.STRING },
+                evidences: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      id: { type: Type.STRING },
+                      companyType: { type: Type.STRING },
+                      text: { type: Type.STRING },
+                      summary: { type: Type.STRING },
+                      type: { type: Type.STRING },
+                    },
+                    required: ["id", "companyType", "text", "summary", "type"],
+                  },
+                },
+              },
+              required: ["id", "title", "frequency", "category", "detail", "suggestion", "evidences"],
+            },
+          },
+        },
+      }), "jd-conclusions-generate");
+
+      await logAiCostEvent(task_id, "gemini-3.5-flash", "jd-conclusions-generate", response.usageMetadata);
+
+      if (!response.text) {
+        return res.status(502).json({ error: "AI 未返回有效内容", code: "empty" });
+      }
+
+      const conclusions = JSON.parse(response.text.trim());
+      if (!Array.isArray(conclusions) || conclusions.length === 0) {
+        return res.status(502).json({ error: "AI 返回格式异常", code: "parse_failed" });
+      }
+
+      // Persist to DB (UPSERT by task_id)
+      try {
+        await rawQuery(
+          `INSERT INTO job_research_conclusions (task_id, target_role, conclusions, updated_at)
+           VALUES ($1, $2, $3, NOW())
+           ON CONFLICT (task_id) DO UPDATE SET conclusions=$3, target_role=$2, updated_at=NOW()`,
+          [task_id, roleStr, JSON.stringify(conclusions)],
+        );
+      } catch (dbErr) {
+        console.error("[JDEvidence] DB upsert failed:", dbErr);
+      }
+
+      // Populate in-memory cache
+      jobResearchCache.set(task_id, { ...(jobResearchCache.get(task_id) || {}), conclusions });
+
+      return res.json(conclusions);
+    } catch (err: any) {
+      logCleanGeminiError("jd-conclusions-generate", err);
+      const { code, message } = classifyGeminiError(err);
+      return res.status(code === "timeout" ? 504 : 502).json({ error: message, code });
+    }
   });
 
-  app.get("/api/job-research/:task_id/conclusions/:conclusion_id/evidences", (req, res) => {
-    const { task_id, conclusion_id } = req.params;
-    const report = jobResearchCache.get(task_id);
-    const conclusions = report?.conclusions || getSimulatedReport("AI 产品负责人").conclusions;
-    const conclusion = conclusions.find((c: any) => c.id === conclusion_id);
-    if (conclusion) {
-      return res.json(conclusion.evidences);
+  // Read JD evidence chain conclusions for a task (DB-first, no hardcoded fallback)
+  app.get("/api/job-research/:task_id/conclusions", async (req, res) => {
+    const { task_id } = req.params;
+    // 1. In-memory cache
+    const cached = jobResearchCache.get(task_id);
+    if (cached?.conclusions) return res.json(cached.conclusions);
+    // 2. DB
+    try {
+      const rows = await rawQuery(
+        `SELECT conclusions FROM job_research_conclusions WHERE task_id=$1`,
+        [task_id],
+      );
+      if (rows.rows.length > 0) {
+        const conclusions = JSON.parse(rows.rows[0].conclusions);
+        jobResearchCache.set(task_id, { ...(cached || {}), conclusions });
+        return res.json(conclusions);
+      }
+    } catch (dbErr) {
+      console.error("[JDEvidence] DB read failed:", dbErr);
     }
+    // 3. Not generated yet — return empty so frontend knows to trigger generation
+    return res.json([]);
+  });
+
+  app.get("/api/job-research/:task_id/conclusions/:conclusion_id/evidences", async (req, res) => {
+    const { task_id, conclusion_id } = req.params;
+    const cached = jobResearchCache.get(task_id);
+    let conclusions = cached?.conclusions || [];
+    if (!conclusions.length) {
+      try {
+        const rows = await rawQuery(`SELECT conclusions FROM job_research_conclusions WHERE task_id=$1`, [task_id]);
+        if (rows.rows.length > 0) conclusions = JSON.parse(rows.rows[0].conclusions);
+      } catch {}
+    }
+    const conclusion = conclusions.find((c: any) => c.id === conclusion_id);
+    if (conclusion) return res.json(conclusion.evidences);
     return res.status(404).json({ error: "Conclusion not found" });
   });
 

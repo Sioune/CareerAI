@@ -795,17 +795,36 @@ Visuals & Integrity
       return;
     }
 
-    // 1. Fetch Job Research Evidence Chain
+    // 1. Fetch (or auto-generate) Job Research Evidence Chain
     const fetchConclusions = async () => {
       setIsLoadingConclusions(true);
       try {
         const res = await customFetch(`/api/job-research/${currentTask.id}/conclusions`);
         if (res.ok) {
           const data = await res.json();
-          setJobResearchConclusions(data);
+          if (Array.isArray(data) && data.length > 0) {
+            setJobResearchConclusions(data);
+            return;
+          }
+        }
+        // Not yet generated — trigger AI generation now
+        const token = localStorage.getItem('career_ai_token');
+        const genRes = await customFetch(`/api/job-research/${currentTask.id}/conclusions/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          body: JSON.stringify({
+            targetRole: currentTask.targetRole,
+            report: currentTask.report,
+          }),
+        });
+        if (genRes.ok) {
+          const generated = await genRes.json();
+          if (Array.isArray(generated) && generated.length > 0) {
+            setJobResearchConclusions(generated);
+          }
         }
       } catch (e) {
-        console.error("Failed to fetch conclusions:", e);
+        console.error("Failed to fetch/generate conclusions:", e);
       } finally {
         setIsLoadingConclusions(false);
       }
@@ -3881,15 +3900,29 @@ Visuals & Integrity
                     </div>
 
                     {/* JD Evidence Chain Component */}
-                    {jobResearchConclusions && jobResearchConclusions.length > 0 && (
+                    {(isLoadingConclusions || (jobResearchConclusions && jobResearchConclusions.length > 0)) && (
                       <div className="col-span-1 lg:col-span-12 bg-white border border-slate-200 p-6 rounded-2xl shadow-sm">
                         <div className="flex items-center gap-2 mb-4 pb-3 border-b border-slate-100">
                           <BookOpen className="w-5 h-5 text-blue-600" />
                           <h3 className="font-bold text-slate-950 text-sm uppercase tracking-wider">Premium JD Evidence Chain (百万真实岗位原汁原味佐证研判链)</h3>
+                          {isLoadingConclusions && <Loader2 className="w-4 h-4 text-blue-400 animate-spin ml-1" />}
                         </div>
                         <p className="text-xs text-slate-500 mb-6 leading-relaxed">
-                          以下核心结论由 CareerAI 底层研判引擎对全网百万级真实招聘信息要求（JD）经特征归纳聚类分析得出。点击下方卡片，查看来自代表性大厂或独角兽的原始 JD 佐证文本，体验高精准度的评估报告。
+                          以下核心结论由 CareerAI 研判引擎针对「{currentTask?.targetRole}」岗位实时生成，基于对真实招聘信息（JD）的特征归纳聚类分析。点击卡片查看来自代表性企业的原始 JD 佐证文本。
                         </p>
+                        {isLoadingConclusions && jobResearchConclusions.length === 0 && (
+                          <div className="space-y-3">
+                            {[1,2,3,4].map(i => (
+                              <div key={i} className="border border-slate-150 rounded-xl p-4 animate-pulse bg-slate-50">
+                                <div className="flex items-center gap-3">
+                                  <div className="h-5 w-16 bg-slate-200 rounded" />
+                                  <div className="h-4 w-48 bg-slate-200 rounded" />
+                                </div>
+                              </div>
+                            ))}
+                            <p className="text-center text-xs text-slate-400 mt-3">AI 正在针对「{currentTask?.targetRole}」岗位生成专属佐证研判链…</p>
+                          </div>
+                        )}
                         
                         <div className="space-y-3">
                           {jobResearchConclusions.map((conclusion: any) => {
