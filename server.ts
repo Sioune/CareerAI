@@ -5394,14 +5394,16 @@ ${originalText}
 
   // Static trust/legal pages — must be registered before Vite middleware
   // so that crawlers reach real HTML without executing JavaScript.
-  const SITE_URL = 'https://ais-pre-jajkn2exl3isrxxhme6g2u-267389115360.us-west2.run.app';
-  const OG_IMAGE = `${SITE_URL}/og-image.png`;
+  // Single authoritative origin used for all canonical/OG/hreflang URLs across
+  // every server-rendered page, crawl files, and the SPA shell.
+  const SITE_ORIGIN = (process.env.SITE_ORIGIN || process.env.VITE_SITE_ORIGIN || 'https://careerai.app').replace(/\/$/, '');
+  const OG_IMAGE = `${SITE_ORIGIN}/og-image.png`;
 
   function trustPage(title: string, body: string, opts: {
     description: string;
     path: string;
   }): string {
-    const canonicalUrl = `${SITE_URL}${opts.path}`;
+    const canonicalUrl = `${SITE_ORIGIN}${opts.path}`;
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -5581,9 +5583,7 @@ ${originalText}
     next();
   });
 
-  // Dynamic crawl files — inject SITE_ORIGIN so the correct production host is
-  // always used regardless of which deployment serves the request.
-  const SITE_ORIGIN = (process.env.SITE_ORIGIN || process.env.VITE_SITE_ORIGIN || 'https://careerai.app').replace(/\/$/, '');
+  // Dynamic crawl files — SITE_ORIGIN is declared above alongside the trust pages.
 
   app.get('/robots.txt', (_req: any, res: any) => {
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -5593,9 +5593,43 @@ ${originalText}
   });
 
   app.get('/sitemap.xml', (_req: any, res: any) => {
+    const today = new Date().toISOString().slice(0, 10);
     res.setHeader('Content-Type', 'application/xml; charset=utf-8');
     res.send(
-      `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url>\n    <loc>${SITE_ORIGIN}/</loc>\n    <changefreq>weekly</changefreq>\n    <priority>1.0</priority>\n  </url>\n</urlset>\n`
+      `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>${SITE_ORIGIN}/</loc>
+    <lastmod>${today}</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+  </url>
+  <url>
+    <loc>${SITE_ORIGIN}/en</loc>
+    <lastmod>${today}</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.9</priority>
+  </url>
+  <url>
+    <loc>${SITE_ORIGIN}/terms</loc>
+    <lastmod>${today}</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.4</priority>
+  </url>
+  <url>
+    <loc>${SITE_ORIGIN}/privacy</loc>
+    <lastmod>${today}</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.4</priority>
+  </url>
+  <url>
+    <loc>${SITE_ORIGIN}/help</loc>
+    <lastmod>${today}</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.5</priority>
+  </url>
+</urlset>
+`
     );
   });
 
@@ -5635,7 +5669,7 @@ CareerAI Solutions — ${SITE_ORIGIN}/
   // English landing page — crawlable URL with full English metadata
   // Must be registered before Vite middleware so Express matches it first.
   app.get('/en', (_req, res) => {
-    const BASE = 'https://ais-pre-jajkn2exl3isrxxhme6g2u-267389115360.us-west2.run.app';
+    const BASE = SITE_ORIGIN;
 
     const buildEnglishHtml = (scriptTag: string) => `<!doctype html>
 <html lang="en-US" class="scroll-smooth">
@@ -5811,8 +5845,29 @@ CareerAI Solutions — ${SITE_ORIGIN}/
     }
   });
 
+  // Whitelist of real public HTML routes.  Any non-file path that does not
+  // appear here (and is not an admin SPA path or API route) gets a genuine
+  // HTTP 404 so crawlers do not index junk URLs.
+  const PUBLIC_HTML_ROUTES = new Set(['/', '/en', '/terms', '/privacy', '/help']);
+
+  function isKnownHtmlRoute(p: string): boolean {
+    // Exact public routes, or the admin SPA sub-tree (/admin and /admin/*)
+    return PUBLIC_HTML_ROUTES.has(p) || p === '/admin' || p.startsWith('/admin/');
+  }
+
   if (!isProd) {
     console.log("Starting development environment with Vite middleware...");
+    // Guard unknown HTML paths before handing off to Vite so dev behaviour
+    // matches production: unknown routes → 404 rather than the homepage shell.
+    app.use((req: any, res: any, next: any) => {
+      if (/\.[a-zA-Z0-9]+$/.test(req.path)) return next(); // static asset
+      if (req.path.startsWith('/api/')) return next();
+      // Pass all Vite internal runtime paths (HMR, client, transforms, etc.)
+      if (req.path.startsWith('/@')) return next();
+      if (req.path.startsWith('/node_modules/')) return next();
+      if (isKnownHtmlRoute(req.path)) return next();
+      return res.status(404).type('text/plain').send('Not Found');
+    });
     const vite = await createViteServer({
       server: { middlewareMode: true, allowedHosts: true as const },
       appType: "spa",
@@ -5821,11 +5876,14 @@ CareerAI Solutions — ${SITE_ORIGIN}/
   } else {
     console.log("Starting production environment serving compiled static assets from dist/...");
     app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      // Return 404 for file-like paths (paths with a file extension) that were
-      // not found by express.static — prevents HTML soft-404s for crawlers.
+    app.get('*', (req: any, res: any) => {
+      // Return 404 for file-like paths not served by express.static.
       if (/\.[a-zA-Z0-9]+$/.test(req.path)) {
         return res.status(404).end();
+      }
+      // Return 404 for unrecognised HTML paths — prevents soft-404 indexing.
+      if (!isKnownHtmlRoute(req.path)) {
+        return res.status(404).type('text/plain').send('Not Found');
       }
       res.sendFile(path.join(distPath, 'index.html'));
     });
