@@ -2531,9 +2531,9 @@ function WalletManagementTab() {
   const handleGift = async () => {
     setGiftLoading(true); setGiftMsg('');
     try {
-      const uidNum = parseInt(giftUserId.trim(), 10);
-      if (isNaN(uidNum) || uidNum <= 0) {
-        setGiftMsg('失败：用户 ID 必须是数字（在用户列表中查看 ID 列）');
+      const uid = giftUserId.trim();
+      if (!uid) {
+        setGiftMsg('失败：用户 UID 不能为空');
         setGiftLoading(false);
         return;
       }
@@ -2543,11 +2543,11 @@ function WalletManagementTab() {
         setGiftLoading(false);
         return;
       }
-      await apiFetch(`/api/admin/users/${uidNum}/wallet/gift`, {
+      await apiFetch(`/api/admin/users/${encodeURIComponent(uid)}/wallet/gift`, {
         method: 'POST',
         body: JSON.stringify({ amountCents, reason: giftReason }),
       });
-      setGiftMsg(`赠送成功！已向用户 ID=${uidNum} 赠送 ${(amountCents / 100).toFixed(2)} 元`);
+      setGiftMsg(`赠送成功！已向 UID=${uid} 赠送 ${(amountCents / 100).toFixed(2)} 元`);
       setGiftAmount(''); setGiftReason(''); setGiftUserId('');
       loadTx();
     } catch (e: any) { setGiftMsg(`失败：${e.message}`); }
@@ -2582,8 +2582,8 @@ function WalletManagementTab() {
         <h3 className="font-semibold text-slate-800 mb-3">人工赠送余额</h3>
         <div className="flex flex-wrap gap-2 items-end">
           <div>
-            <label className="text-xs text-slate-500 block mb-1">用户 ID (数字)</label>
-            <input className="border rounded px-2 py-1 text-sm w-28" placeholder="用户ID" value={giftUserId} onChange={(e) => setGiftUserId(e.target.value)} />
+            <label className="text-xs text-slate-500 block mb-1">用户 UID</label>
+            <input className="border rounded px-2 py-1 text-sm w-36" placeholder="如 subtitler" value={giftUserId} onChange={(e) => setGiftUserId(e.target.value)} />
           </div>
           <div>
             <label className="text-xs text-slate-500 block mb-1">金额（元，≤500）</label>

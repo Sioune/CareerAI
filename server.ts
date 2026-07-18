@@ -4108,9 +4108,9 @@ ${originalText}
   app.post("/api/admin/users/:userId/wallet/gift", requireAdmin, requirePermission("finance", "write"), async (req: any, res) => {
     try {
       const admin = req.admin;
-      const targetUserId = parseInt(req.params.userId, 10);
-      if (isNaN(targetUserId) || targetUserId <= 0) {
-        return res.status(400).json({ error: "userId 必须为正整数（数字 ID，非用户名）" });
+      const targetUid = String(req.params.userId || '').trim();
+      if (!targetUid) {
+        return res.status(400).json({ error: "uid 不能为空" });
       }
       const { amountCents, reason } = req.body;
 
@@ -4136,11 +4136,12 @@ ${originalText}
         return res.status(400).json({ error: "超出今日赠送额度（单日上限2000元）" });
       }
 
-      // 目标用户校验
-      const targetUser = await rawQuery(`SELECT * FROM users WHERE id = $1`, [targetUserId]);
-      if (targetUser.rows.length === 0) return res.status(404).json({ error: "用户不存在" });
+      // 目标用户校验（按 uid 文本字段查询）
+      const targetUser = await rawQuery(`SELECT * FROM users WHERE uid = $1`, [targetUid]);
+      if (targetUser.rows.length === 0) return res.status(404).json({ error: `用户 uid="${targetUid}" 不存在` });
+      const targetUserId = targetUser.rows[0].id; // 数字主键，用于钱包操作
 
-      const idempotencyKey = `admin_gift_${admin.username}_${targetUserId}_${Date.now()}`;
+      const idempotencyKey = `admin_gift_${admin.username}_${targetUid}_${Date.now()}`;
       const { tx, walletAccount } = await creditWallet({
         userId: targetUserId,
         amountCents,
