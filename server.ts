@@ -229,7 +229,9 @@ async function getEffectiveModelPrice(provider: string, model: string): Promise<
 async function logAiCostEvent(taskId: string | undefined, model: string, operation: string, usage: any) {
   try {
     const tokensIn = usage?.promptTokenCount || 0;
-    const tokensOut = usage?.candidatesTokenCount || 0;
+    // thoughtsTokenCount = Gemini 2.5 thinking tokens; billed at output rate, must be included.
+    // cachedContentTokenCount = cached input discount tokens (still counted toward input billing).
+    const tokensOut = (usage?.candidatesTokenCount || 0) + (usage?.thoughtsTokenCount || 0);
     const price = await getEffectiveModelPrice("gemini", model);
     // 微分 = 分 × 1,000,000。tokens × (分/百万tokens) 恰为整数微分，避免小额调用被 Math.round 抹成 0（PRD §8.4）。
     const costMicroCents = tokensIn * price.inputPerMillion + tokensOut * price.outputPerMillion;
@@ -856,11 +858,27 @@ async function streamGeminiJSON(
         receivedChars += t.length;
         lastChunkAt = Date.now();
       }
-      // Capture usageMetadata from any chunk (last chunk typically has final counts)
+      // Capture usageMetadata from each chunk; last chunk has final cumulative counts.
       if ((chunk as any).usageMetadata) lastUsageMetadata = (chunk as any).usageMetadata;
     }
 
-    if (finished || clientGone) return;
+    // Bug fix #3: @google/genai v2 exposes a final aggregated response after the stream
+    // completes that is more reliable than chunk-level usageMetadata fields.
+    if (!lastUsageMetadata) {
+      try {
+        const agg = await (stream as any).response;
+        if (agg?.usageMetadata) lastUsageMetadata = agg.usageMetadata;
+      } catch {}
+    }
+
+    if (finished || clientGone) {
+      // Bug fix #2: even on early exit (timeout or client disconnect) we still have
+      // whatever partial usageMetadata we saw — log it so tokens aren't silently dropped.
+      if (onUsage && lastUsageMetadata) {
+        try { onUsage(params.model || "gemini-3.5-flash", lastUsageMetadata); } catch {}
+      }
+      return;
+    }
     finished = true;
     clearInterval(heartbeat);
 
