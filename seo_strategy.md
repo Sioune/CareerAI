@@ -25,9 +25,10 @@
 
 ## Notes
 - Stack is Express serving a Vite React SPA.
-- Public SEO currently depends on a single `index.html` shell plus client-rendered React content.
+- The Chinese homepage SEO still depends on a single `index.html` shell plus client-rendered React content; `/en` and the trust pages are server-rendered from `server.ts`.
 - Additional public SSR trust pages exist at `/terms`, `/privacy`, and `/help`.
-- English-language support exists in the client UI, but there is not yet a dedicated crawlable English URL.
+- A dedicated crawlable English landing page now exists at `/en`.
+- Crawl-governance files are served dynamically from `server.ts` (`/robots.txt`, `/sitemap.xml`, `/llms.txt`).
 
 ## Dismissed categories
 - (None yet)
