@@ -378,6 +378,86 @@ export const reconciliations = pgTable('reconciliations', {
   updatedAt: timestamp('updated_at').defaultNow(),
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 用户余额与营销赠送（PRD V1.0）
+// 追加式、不可篡改：只 INSERT，不 UPDATE/DELETE 流水；修正走反向流水（GIFT_REVERSAL）。
+// 金额单位一律为「分」（整数），绝不存浮点数。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 余额账户：每个用户唯一；available_amount_cents 为派生汇总，由后端在写流水时同步更新。
+export const walletAccounts = pgTable('wallet_accounts', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull().unique(),
+  availableAmountCents: integer('available_amount_cents').notNull().default(0),
+  totalCreditCents: integer('total_credit_cents').notNull().default(0),
+  totalDebitCents: integer('total_debit_cents').notNull().default(0),
+  version: integer('version').notNull().default(1), // 乐观锁版本号
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// 余额流水（追加式账本）
+// tx_type: ADMIN_GIFT | REGISTER_GIFT | CONSUMPTION | GIFT_REVERSAL | REFUND_RETURN
+// amount_cents 带符号：正=入账，负=扣减
+export const walletTransactions = pgTable('wallet_transactions', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  txType: text('tx_type').notNull(),
+  amountCents: integer('amount_cents').notNull(),
+  balanceAfterCents: integer('balance_after_cents').notNull(),
+  sourceId: text('source_id'), // campaign_id / order_id / refund_id 等
+  operatorId: text('operator_id'), // admin username 或 'SYSTEM'
+  idempotencyKey: text('idempotency_key').unique(),
+  description: text('description'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+// 营销费用台账（追加式，正=费用，负=冲正）
+// expense_type: ADMIN_GIFT | REGISTER_GIFT | GIFT_REVERSAL
+export const marketingExpenses = pgTable('marketing_expenses', {
+  id: serial('id').primaryKey(),
+  expenseType: text('expense_type').notNull(),
+  amountCents: integer('amount_cents').notNull(),
+  userId: integer('user_id'),
+  campaignId: integer('campaign_id'),
+  walletTransactionId: integer('wallet_transaction_id'),
+  operatorId: text('operator_id'),
+  status: text('status').notNull().default('SETTLED'), // SETTLED | REVERSED | ERROR
+  reason: text('reason'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+// 赠送活动配置（当前仅 REGISTER 类型，结构预留扩展）
+export const giftCampaigns = pgTable('gift_campaigns', {
+  id: serial('id').primaryKey(),
+  name: text('name').notNull(),
+  campaignType: text('campaign_type').notNull().default('REGISTER'),
+  enabled: boolean('enabled').notNull().default(false),
+  giftAmountCents: integer('gift_amount_cents').notNull().default(2000), // 默认20元
+  startAt: timestamp('start_at'),
+  endAt: timestamp('end_at'),
+  copywriting: text('copywriting'), // 到账文案，支持 {amount}
+  ctaText: text('cta_text'),
+  targetUrl: text('target_url'),
+  channels: text('channels').default('all'),
+  updatedByAdmin: text('updated_by_admin'),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// 活动发放记录（幂等去重：UNIQUE(campaign_id, user_id)）
+// grant_status: pending | granted | failed
+export const giftGrantRecords = pgTable('gift_grant_records', {
+  id: serial('id').primaryKey(),
+  campaignId: integer('campaign_id').notNull(),
+  userId: integer('user_id').notNull(),
+  grantStatus: text('grant_status').notNull().default('pending'),
+  walletTransactionId: integer('wallet_transaction_id'),
+  failureReason: text('failure_reason'),
+  grantedAt: timestamp('granted_at'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
   resumeVersions: many(resumeVersions),

@@ -4,6 +4,7 @@ import {
   adminMfa, siteConfigs, aiProviders, aiModels, promptVersions, supportTickets, ticketReplies, notifications, riskFlags, revenueAllocations,
   approvals, products, skus, priceVersions,
   entitlementLedger, financeLedger, modelPrices, reconciliations,
+  walletAccounts, walletTransactions, marketingExpenses, giftCampaigns, giftGrantRecords,
 } from "./schema.ts";
 
 const { Pool } = pg;
@@ -52,6 +53,11 @@ const tableMap = new Map<any, string>([
   [financeLedger,           "finance_ledger"],
   [modelPrices,             "model_prices"],
   [reconciliations,         "reconciliations"],
+  [walletAccounts,          "wallet_accounts"],
+  [walletTransactions,      "wallet_transactions"],
+  [marketingExpenses,       "marketing_expenses"],
+  [giftCampaigns,           "gift_campaigns"],
+  [giftGrantRecords,        "gift_grant_records"],
 ]);
 
 // ─── Column name helpers ──────────────────────────────────────────────────────
@@ -188,6 +194,32 @@ const fieldToCol: Record<string, string> = {
   closedAt:          "closed_at",
   reopenReason:      "reopen_reason",
   reopenedByAdmin:   "reopened_by_admin",
+
+  // 余额与营销赠送
+  availableAmountCents: "available_amount_cents",
+  totalCreditCents:     "total_credit_cents",
+  totalDebitCents:      "total_debit_cents",
+  txType:               "tx_type",
+  balanceAfterCents:    "balance_after_cents",
+  sourceId:             "source_id",
+  operatorId:           "operator_id",
+  idempotencyKey:       "idempotency_key",
+  expenseType:          "expense_type",
+  walletTransactionId:  "wallet_transaction_id",
+  campaignId:           "campaign_id",
+  campaignType:         "campaign_type",
+  giftAmountCents:      "gift_amount_cents",
+  startAt:              "start_at",
+  endAt:                "end_at",
+  copywriting:          "copywriting",
+  ctaText:              "cta_text",
+  targetUrl:            "target_url",
+  channels:             "channels",
+  updatedByAdmin:       "updated_by_admin",
+  grantStatus:          "grant_status",
+  walletTxId:           "wallet_transaction_id",
+  failureReason:        "failure_reason",
+  grantedAt:            "granted_at",
 };
 
 const colToField: Record<string, string> = {
@@ -321,6 +353,31 @@ const colToField: Record<string, string> = {
   closed_at:           "closedAt",
   reopen_reason:       "reopenReason",
   reopened_by_admin:   "reopenedByAdmin",
+
+  // 余额与营销赠送
+  available_amount_cents: "availableAmountCents",
+  total_credit_cents:     "totalCreditCents",
+  total_debit_cents:      "totalDebitCents",
+  tx_type:                "txType",
+  balance_after_cents:    "balanceAfterCents",
+  source_id:              "sourceId",
+  operator_id:            "operatorId",
+  idempotency_key:        "idempotencyKey",
+  expense_type:           "expenseType",
+  wallet_transaction_id:  "walletTransactionId",
+  campaign_id:            "campaignId",
+  campaign_type:          "campaignType",
+  gift_amount_cents:      "giftAmountCents",
+  start_at:               "startAt",
+  end_at:                 "endAt",
+  copywriting:            "copywriting",
+  cta_text:               "ctaText",
+  target_url:             "targetUrl",
+  channels:               "channels",
+  updated_by_admin:       "updatedByAdmin",
+  grant_status:           "grantStatus",
+  failure_reason:         "failureReason",
+  granted_at:             "grantedAt",
 };
 
 function colName(fieldObj: any): string {

@@ -67,6 +67,7 @@ import {
   adminMfa, siteConfigs, aiProviders, aiModels, promptVersions, supportTickets, ticketReplies, notifications, riskFlags, revenueAllocations,
   approvals, products, skus, priceVersions,
   entitlementLedger, financeLedger, modelPrices, reconciliations,
+  walletAccounts, walletTransactions, marketingExpenses, giftCampaigns, giftGrantRecords,
 } from "./src/db/schema.ts";
 import { createPaymentOrder, queryPaymentStatus, createRefund, isPaymentConfigured } from "./src/lib/payment-client.ts";
 import { hasPermission, ROLES as ADMIN_ROLE_LIST, type PermModule } from "./src/shared/permissions.ts";
@@ -385,6 +386,86 @@ async function ensureFinanceTables() {
   }
 }
 
+// 建表（幂等）：钱包账户、余额流水、营销费用台账、赠送活动配置、发放记录。
+async function ensureWalletTables() {
+  try {
+    await rawQuery(`CREATE TABLE IF NOT EXISTS wallet_accounts (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL UNIQUE,
+      available_amount_cents INTEGER NOT NULL DEFAULT 0,
+      total_credit_cents INTEGER NOT NULL DEFAULT 0,
+      total_debit_cents INTEGER NOT NULL DEFAULT 0,
+      version INTEGER NOT NULL DEFAULT 1,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW())`);
+
+    await rawQuery(`CREATE TABLE IF NOT EXISTS wallet_transactions (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      tx_type TEXT NOT NULL,
+      amount_cents INTEGER NOT NULL,
+      balance_after_cents INTEGER NOT NULL,
+      source_id TEXT,
+      operator_id TEXT,
+      idempotency_key TEXT UNIQUE,
+      description TEXT,
+      created_at TIMESTAMP DEFAULT NOW())`);
+
+    await rawQuery(`CREATE TABLE IF NOT EXISTS marketing_expenses (
+      id SERIAL PRIMARY KEY,
+      expense_type TEXT NOT NULL,
+      amount_cents INTEGER NOT NULL,
+      user_id INTEGER,
+      campaign_id INTEGER,
+      wallet_transaction_id INTEGER,
+      operator_id TEXT,
+      status TEXT NOT NULL DEFAULT 'SETTLED',
+      reason TEXT,
+      created_at TIMESTAMP DEFAULT NOW())`);
+
+    await rawQuery(`CREATE TABLE IF NOT EXISTS gift_campaigns (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      campaign_type TEXT NOT NULL DEFAULT 'REGISTER',
+      enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      gift_amount_cents INTEGER NOT NULL DEFAULT 2000,
+      start_at TIMESTAMP,
+      end_at TIMESTAMP,
+      copywriting TEXT,
+      cta_text TEXT,
+      target_url TEXT,
+      channels TEXT DEFAULT 'all',
+      updated_by_admin TEXT,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW())`);
+
+    await rawQuery(`CREATE TABLE IF NOT EXISTS gift_grant_records (
+      id SERIAL PRIMARY KEY,
+      campaign_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      grant_status TEXT NOT NULL DEFAULT 'pending',
+      wallet_transaction_id INTEGER,
+      failure_reason TEXT,
+      granted_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT NOW())`);
+
+    await rawQuery(`CREATE UNIQUE INDEX IF NOT EXISTS ux_gift_grant_records_campaign_user ON gift_grant_records (campaign_id, user_id)`);
+    await rawQuery(`CREATE INDEX IF NOT EXISTS ix_wallet_transactions_user ON wallet_transactions (user_id, created_at DESC)`);
+    await rawQuery(`CREATE INDEX IF NOT EXISTS ix_marketing_expenses_created ON marketing_expenses (created_at DESC)`);
+
+    // 种子：注册赠送活动默认配置（20元，默认开启，永久有效）
+    await rawQuery(
+      `INSERT INTO gift_campaigns (name, campaign_type, enabled, gift_amount_cents, copywriting, cta_text, target_url, channels)
+       VALUES ($1, 'REGISTER', TRUE, 2000, $2, '立即体验', '/optimize', 'all')
+       ON CONFLICT DO NOTHING`,
+      ["新用户注册体验金", "恭喜获得{amount}体验余额，可立即体验AI简历优化。"],
+    );
+    console.log("[Wallet] ensureWalletTables OK");
+  } catch (err) {
+    console.error("[Wallet] ensureWalletTables failed:", err);
+  }
+}
+
 // 启动回填（幂等）：为历史「已支付」订单与「已退款」退款单补记现金流水与权益，使对账在历史日也平账。
 // 只补现金口径与权益发放，不臆测历史任务是否已履约（履约收入仅在实际优化时确认）。
 async function backfillFinanceLedgers() {
@@ -399,6 +480,186 @@ async function backfillFinanceLedgers() {
     }
   } catch (err) {
     console.error("[Finance] backfillFinanceLedgers failed:", err);
+  }
+}
+
+// ─── 钱包核心辅助函数 ─────────────────────────────────────────────────────────
+// PRD §8 异常处理：涉及金额的写操作用 rawQuery 事务保证原子性。
+
+/**
+ * 向用户余额账户入账（正数）。
+ * 1. UPSERT wallet_accounts（若无账户则创建，有则原子递增）
+ * 2. INSERT wallet_transactions
+ * 3. INSERT marketing_expenses（营销赠送类型时）
+ * 返回新流水行。
+ */
+async function creditWallet(opts: {
+  userId: number;
+  amountCents: number;         // 必须 > 0
+  txType: string;              // ADMIN_GIFT | REGISTER_GIFT | REFUND_RETURN
+  sourceId?: string;
+  operatorId?: string;
+  description?: string;
+  idempotencyKey?: string;
+  campaignId?: number;
+  expenseType?: string;        // 若提供则同时写营销费用台账
+  reason?: string;
+}): Promise<{ tx: any; walletAccount: any }> {
+  const { userId, amountCents, txType, sourceId, operatorId = "SYSTEM", description, idempotencyKey, campaignId, expenseType, reason } = opts;
+  if (amountCents <= 0) throw new Error("creditWallet: amountCents must be positive");
+
+  // 1. 幂等检查
+  if (idempotencyKey) {
+    const existRows = await rawQuery(`SELECT * FROM wallet_transactions WHERE idempotency_key = $1`, [idempotencyKey]);
+    if (existRows.rows.length > 0) {
+      const acctRows = await rawQuery(`SELECT * FROM wallet_accounts WHERE user_id = $1`, [userId]);
+      return { tx: existRows.rows[0], walletAccount: acctRows.rows[0] };
+    }
+  }
+
+  // 2. UPSERT 账户（乐观锁版本自增）并获取最新余额
+  const upsertResult = await rawQuery(
+    `INSERT INTO wallet_accounts (user_id, available_amount_cents, total_credit_cents, total_debit_cents, version, updated_at)
+     VALUES ($1, $2, $2, 0, 1, NOW())
+     ON CONFLICT (user_id) DO UPDATE SET
+       available_amount_cents = wallet_accounts.available_amount_cents + $2,
+       total_credit_cents = wallet_accounts.total_credit_cents + $2,
+       version = wallet_accounts.version + 1,
+       updated_at = NOW()
+     RETURNING *`,
+    [userId, amountCents],
+  );
+  const walletAccount = upsertResult.rows[0];
+  const balanceAfter = walletAccount.available_amount_cents;
+
+  // 3. 写流水
+  const txResult = await rawQuery(
+    `INSERT INTO wallet_transactions (user_id, tx_type, amount_cents, balance_after_cents, source_id, operator_id, idempotency_key, description, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW()) RETURNING *`,
+    [userId, txType, amountCents, balanceAfter, sourceId ?? null, operatorId, idempotencyKey ?? null, description ?? null],
+  );
+  const tx = txResult.rows[0];
+
+  // 4. 营销费用台账（仅赠送类）
+  if (expenseType) {
+    await rawQuery(
+      `INSERT INTO marketing_expenses (expense_type, amount_cents, user_id, campaign_id, wallet_transaction_id, operator_id, status, reason, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,'SETTLED',$7,NOW())`,
+      [expenseType, amountCents, userId, campaignId ?? null, tx.id, operatorId, reason ?? null],
+    );
+  }
+
+  return { tx, walletAccount };
+}
+
+/**
+ * 从用户余额扣减（幂等）。余额不足时抛出错误。
+ */
+async function debitWallet(opts: {
+  userId: number;
+  amountCents: number;         // 必须 > 0
+  txType: string;              // CONSUMPTION
+  sourceId?: string;
+  operatorId?: string;
+  description?: string;
+  idempotencyKey: string;      // 扣减必须提供幂等键
+}): Promise<{ tx: any; walletAccount: any }> {
+  const { userId, amountCents, txType, sourceId, operatorId = "SYSTEM", description, idempotencyKey } = opts;
+  if (amountCents <= 0) throw new Error("debitWallet: amountCents must be positive");
+
+  // 幂等检查
+  const existRows = await rawQuery(`SELECT * FROM wallet_transactions WHERE idempotency_key = $1`, [idempotencyKey]);
+  if (existRows.rows.length > 0) {
+    const acctRows = await rawQuery(`SELECT * FROM wallet_accounts WHERE user_id = $1`, [userId]);
+    return { tx: existRows.rows[0], walletAccount: acctRows.rows[0] };
+  }
+
+  // 乐观扣减（余额不足时 WHERE 条件不满足，rowCount=0）
+  const updateResult = await rawQuery(
+    `UPDATE wallet_accounts SET
+       available_amount_cents = available_amount_cents - $2,
+       total_debit_cents = total_debit_cents + $2,
+       version = version + 1,
+       updated_at = NOW()
+     WHERE user_id = $1 AND available_amount_cents >= $2
+     RETURNING *`,
+    [userId, amountCents],
+  );
+  if (updateResult.rowCount === 0) {
+    throw new Error("余额不足");
+  }
+  const walletAccount = updateResult.rows[0];
+  const balanceAfter = walletAccount.available_amount_cents;
+
+  const txResult = await rawQuery(
+    `INSERT INTO wallet_transactions (user_id, tx_type, amount_cents, balance_after_cents, source_id, operator_id, idempotency_key, description, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW()) RETURNING *`,
+    [userId, txType, -amountCents, balanceAfter, sourceId ?? null, operatorId, idempotencyKey, description ?? null],
+  );
+  return { tx: txResult.rows[0], walletAccount };
+}
+
+/**
+ * 注册赠送：用户完成注册后调用，自动检查活跃 REGISTER 活动并发放。
+ * 失败不阻断注册主流程（调用方 catch 吃掉异常）。
+ */
+async function grantRegisterBonus(userId: number): Promise<{ granted: boolean; amountCents: number; campaign?: any }> {
+  // 1. 取活跃注册活动（start_at<=now<=end_at or null, enabled=true）
+  const campaignRows = await rawQuery(
+    `SELECT * FROM gift_campaigns
+     WHERE campaign_type = 'REGISTER'
+       AND enabled = TRUE
+       AND (start_at IS NULL OR start_at <= NOW())
+       AND (end_at IS NULL OR end_at >= NOW())
+     ORDER BY id ASC LIMIT 1`,
+  );
+  if (campaignRows.rows.length === 0) return { granted: false, amountCents: 0 };
+  const campaign = campaignRows.rows[0];
+
+  // 2. 幂等：同一用户同一活动只发一次
+  const existGrant = await rawQuery(
+    `SELECT * FROM gift_grant_records WHERE campaign_id = $1 AND user_id = $2`,
+    [campaign.id, userId],
+  );
+  if (existGrant.rows.length > 0 && existGrant.rows[0].grant_status === "granted") {
+    return { granted: false, amountCents: 0, campaign };
+  }
+
+  // 3. 占位记录（pending），防并发重复
+  await rawQuery(
+    `INSERT INTO gift_grant_records (campaign_id, user_id, grant_status, created_at)
+     VALUES ($1, $2, 'pending', NOW())
+     ON CONFLICT (campaign_id, user_id) DO NOTHING`,
+    [campaign.id, userId],
+  );
+
+  // 4. 入账
+  const idempotencyKey = `register_gift_${campaign.id}_${userId}`;
+  try {
+    const { tx } = await creditWallet({
+      userId,
+      amountCents: campaign.gift_amount_cents,
+      txType: "REGISTER_GIFT",
+      sourceId: String(campaign.id),
+      operatorId: "SYSTEM",
+      description: campaign.name,
+      idempotencyKey,
+      campaignId: campaign.id,
+      expenseType: "REGISTER_GIFT",
+      reason: campaign.name,
+    });
+
+    await rawQuery(
+      `UPDATE gift_grant_records SET grant_status='granted', wallet_transaction_id=$1, granted_at=NOW() WHERE campaign_id=$2 AND user_id=$3`,
+      [tx.id, campaign.id, userId],
+    );
+    return { granted: true, amountCents: campaign.gift_amount_cents, campaign };
+  } catch (err: any) {
+    await rawQuery(
+      `UPDATE gift_grant_records SET grant_status='failed', failure_reason=$1 WHERE campaign_id=$2 AND user_id=$3`,
+      [String(err?.message ?? err), campaign.id, userId],
+    );
+    throw err;
   }
 }
 
@@ -644,6 +905,8 @@ async function startServer() {
   ensureFinanceTables()
     .then(() => backfillFinanceLedgers())
     .catch((e) => console.error("[Finance] startup init failed:", e));
+  // 余额与营销赠送：建表 + 种子默认注册活动（均幂等）。
+  ensureWalletTables().catch((e) => console.error("[Wallet] startup init failed:", e));
 
   app.use(express.json({ limit: "10mb" }));
 
@@ -703,7 +966,29 @@ async function startServer() {
       }
 
       const token = jwt.sign({ uid, email }, JWT_SECRET, { expiresIn: "30d" });
-      return res.json({ success: true, token, user: { id: String(uid), username: username.trim() } });
+
+      // 注册赠送：失败不阻断注册主流程
+      let giftResult: { granted: boolean; amountCents: number; campaign?: any } = { granted: false, amountCents: 0 };
+      try {
+        if (newUser?.id) {
+          giftResult = await grantRegisterBonus(newUser.id);
+        }
+      } catch (giftErr) {
+        console.warn("[Wallet] grantRegisterBonus failed (non-blocking):", giftErr);
+      }
+
+      return res.json({
+        success: true, token,
+        user: { id: String(uid), username: username.trim() },
+        giftGranted: giftResult.granted,
+        giftAmountCents: giftResult.amountCents,
+        giftCampaignName: giftResult.campaign?.name ?? null,
+        giftCopywriting: giftResult.campaign?.copywriting
+          ? giftResult.campaign.copywriting.replace("{amount}", `${(giftResult.amountCents / 100).toFixed(2)}元`)
+          : null,
+        giftCtaText: giftResult.campaign?.cta_text ?? null,
+        giftTargetUrl: giftResult.campaign?.target_url ?? null,
+      });
     } catch (err: any) {
       console.error("Registration error:", err);
       return res.status(500).json({ error: err.message });
@@ -788,6 +1073,116 @@ async function startServer() {
       return res.json({ success: true, referredUids });
     } catch (err: any) {
       console.error("Referral claim error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ─── 用户余额接口 ───────────────────────────────────────────────────────────────
+
+  // GET /api/wallet — 查询当前用户余额账户
+  app.get("/api/wallet", async (req, res) => {
+    try {
+      const user = await getDbUserFromHeader(req.headers.authorization);
+      if (!user) return res.status(401).json({ error: "未登录" });
+      const rows = await rawQuery(`SELECT * FROM wallet_accounts WHERE user_id = $1`, [user.id]);
+      if (rows.rows.length === 0) {
+        return res.json({ availableAmountCents: 0, totalCreditCents: 0, totalDebitCents: 0, version: 0 });
+      }
+      const acct = rows.rows[0];
+      return res.json({
+        availableAmountCents: acct.available_amount_cents,
+        totalCreditCents: acct.total_credit_cents,
+        totalDebitCents: acct.total_debit_cents,
+        version: acct.version,
+      });
+    } catch (err: any) {
+      console.error("GET /api/wallet error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/wallet/transactions — 查询余额流水（分页，type 过滤）
+  app.get("/api/wallet/transactions", async (req, res) => {
+    try {
+      const user = await getDbUserFromHeader(req.headers.authorization);
+      if (!user) return res.status(401).json({ error: "未登录" });
+      const page = Math.max(1, parseInt(String(req.query.page || "1"), 10));
+      const pageSize = Math.min(50, Math.max(1, parseInt(String(req.query.pageSize || "20"), 10)));
+      const txType = req.query.type as string | undefined;
+      const offset = (page - 1) * pageSize;
+
+      let countSql = `SELECT COUNT(*) FROM wallet_transactions WHERE user_id = $1`;
+      let dataSql = `SELECT * FROM wallet_transactions WHERE user_id = $1`;
+      const params: any[] = [user.id];
+      if (txType) {
+        countSql += ` AND tx_type = $2`;
+        dataSql += ` AND tx_type = $2`;
+        params.push(txType);
+      }
+      dataSql += ` ORDER BY created_at DESC LIMIT ${pageSize} OFFSET ${offset}`;
+
+      const [countRows, dataRows] = await Promise.all([
+        rawQuery(countSql, params),
+        rawQuery(dataSql, params),
+      ]);
+      const total = parseInt(countRows.rows[0].count, 10);
+      return res.json({
+        total,
+        page,
+        pageSize,
+        data: dataRows.rows.map((r: any) => ({
+          id: r.id,
+          txType: r.tx_type,
+          amountCents: r.amount_cents,
+          balanceAfterCents: r.balance_after_cents,
+          description: r.description,
+          createdAt: r.created_at,
+        })),
+      });
+    } catch (err: any) {
+      console.error("GET /api/wallet/transactions error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/payments/:orderNo/pay-by-wallet — 余额支付订单（幂等）
+  app.post("/api/payments/:orderNo/pay-by-wallet", async (req, res) => {
+    try {
+      const user = await getDbUserFromHeader(req.headers.authorization);
+      if (!user) return res.status(401).json({ error: "未登录" });
+      const { orderNo } = req.params;
+
+      // 查订单
+      const orderRows = await rawQuery(
+        `SELECT * FROM payments WHERE business_order_no = $1 AND user_id = $2`,
+        [orderNo, user.id],
+      );
+      if (orderRows.rows.length === 0) return res.status(404).json({ error: "订单不存在" });
+      const order = orderRows.rows[0];
+      if (order.status === 2) return res.json({ success: true, alreadyPaid: true });
+      if (order.status !== 1) return res.status(400).json({ error: "订单状态不可支付" });
+
+      const idempotencyKey = `wallet_pay_${orderNo}`;
+      const { tx } = await debitWallet({
+        userId: user.id,
+        amountCents: order.amount,
+        txType: "CONSUMPTION",
+        sourceId: orderNo,
+        operatorId: user.uid,
+        description: `订单支付 ${orderNo}`,
+        idempotencyKey,
+      });
+
+      // 更新订单为已支付
+      await rawQuery(
+        `UPDATE payments SET status=2, status_name='已支付', paid_at=NOW(), updated_at=NOW() WHERE business_order_no=$1`,
+        [orderNo],
+      );
+
+      return res.json({ success: true, transactionId: tx.id, balanceAfterCents: tx.balance_after_cents });
+    } catch (err: any) {
+      console.error("POST /api/payments/:orderNo/pay-by-wallet error:", err);
+      if (err.message === "余额不足") return res.status(400).json({ error: "余额不足" });
       return res.status(500).json({ error: err.message });
     }
   });
@@ -3673,6 +4068,273 @@ ${originalText}
       });
     } catch (err: any) {
       console.error("Admin overview error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ─── 后台余额与营销赠送管理路由 ────────────────────────────────────────────────
+
+  // GET /api/admin/wallet/transactions — 全局余额流水查询（支持 uid、type、page）
+  app.get("/api/admin/wallet/transactions", requireAdmin, requirePermission("finance", "read"), async (req, res) => {
+    try {
+      const page = Math.max(1, parseInt(String(req.query.page || "1"), 10));
+      const pageSize = Math.min(100, Math.max(1, parseInt(String(req.query.pageSize || "20"), 10)));
+      const txType = req.query.type as string | undefined;
+      const uid = req.query.uid as string | undefined;
+      const offset = (page - 1) * pageSize;
+
+      let where = "1=1";
+      const params: any[] = [];
+      let pIdx = 1;
+      if (txType) { where += ` AND wt.tx_type = $${pIdx++}`; params.push(txType); }
+      if (uid) { where += ` AND u.uid ILIKE $${pIdx++}`; params.push(`%${uid}%`); }
+
+      const countSql = `SELECT COUNT(*) FROM wallet_transactions wt LEFT JOIN users u ON u.id = wt.user_id WHERE ${where}`;
+      const dataSql = `SELECT wt.*, u.uid, u.email FROM wallet_transactions wt LEFT JOIN users u ON u.id = wt.user_id WHERE ${where} ORDER BY wt.created_at DESC LIMIT ${pageSize} OFFSET ${offset}`;
+
+      const [countRows, dataRows] = await Promise.all([rawQuery(countSql, params), rawQuery(dataSql, params)]);
+      const total = parseInt(countRows.rows[0].count, 10);
+      return res.json({ total, page, pageSize, data: dataRows.rows.map((r: any) => ({
+        id: r.id, userId: r.user_id, uid: r.uid, email: r.email,
+        txType: r.tx_type, amountCents: r.amount_cents, balanceAfterCents: r.balance_after_cents,
+        sourceId: r.source_id, operatorId: r.operator_id, description: r.description, createdAt: r.created_at,
+      }))});
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/admin/users/:userId/wallet/gift — 人工赠送余额
+  app.post("/api/admin/users/:userId/wallet/gift", requireAdmin, requirePermission("finance", "write"), async (req: any, res) => {
+    try {
+      const admin = req.admin;
+      const targetUserId = parseInt(req.params.userId, 10);
+      const { amountCents, reason } = req.body;
+
+      if (!amountCents || !Number.isInteger(amountCents) || amountCents <= 0) {
+        return res.status(400).json({ error: "金额必须为正整数（分）" });
+      }
+      if (amountCents > 50000) { // 单笔 ≤500元
+        return res.status(400).json({ error: "单笔赠送不得超过500元（50000分）" });
+      }
+      if (!reason?.trim()) {
+        return res.status(400).json({ error: "赠送原因不能为空" });
+      }
+
+      // 单日额度：该管理员今日累计赠送 ≤200000分
+      const todayTotal = await rawQuery(
+        `SELECT COALESCE(SUM(amount_cents),0) AS total FROM marketing_expenses
+         WHERE operator_id = $1 AND expense_type = 'ADMIN_GIFT'
+           AND created_at >= CURRENT_DATE AND created_at < CURRENT_DATE + INTERVAL '1 day'`,
+        [admin.username],
+      );
+      const todaySoFar = parseInt(todayTotal.rows[0].total, 10);
+      if (todaySoFar + amountCents > 200000) {
+        return res.status(400).json({ error: "超出今日赠送额度（单日上限2000元）" });
+      }
+
+      // 目标用户校验
+      const targetUser = await rawQuery(`SELECT * FROM users WHERE id = $1`, [targetUserId]);
+      if (targetUser.rows.length === 0) return res.status(404).json({ error: "用户不存在" });
+
+      const idempotencyKey = `admin_gift_${admin.username}_${targetUserId}_${Date.now()}`;
+      const { tx, walletAccount } = await creditWallet({
+        userId: targetUserId,
+        amountCents,
+        txType: "ADMIN_GIFT",
+        operatorId: admin.username,
+        description: `管理员赠送：${reason.trim()}`,
+        idempotencyKey,
+        expenseType: "ADMIN_GIFT",
+        reason: reason.trim(),
+      });
+
+      await logAudit(admin, "wallet_admin_gift", "user", String(targetUserId), {
+        amountCents, reason: reason.trim(), txId: tx.id, balanceAfterCents: walletAccount.available_amount_cents,
+      });
+
+      return res.json({ success: true, transactionId: tx.id, balanceAfterCents: walletAccount.available_amount_cents });
+    } catch (err: any) {
+      console.error("POST /api/admin/users/:userId/wallet/gift error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/admin/wallet/transactions/:txId/reverse — 赠送冲正（仅 super_admin/finance）
+  app.post("/api/admin/wallet/transactions/:txId/reverse", requireAdmin, requireRole("finance", "super_admin"), async (req: any, res) => {
+    try {
+      const admin = req.admin;
+      const txId = parseInt(req.params.txId, 10);
+      const { reason } = req.body;
+      if (!reason?.trim()) return res.status(400).json({ error: "冲正原因不能为空" });
+
+      // 查原流水
+      const origRows = await rawQuery(`SELECT * FROM wallet_transactions WHERE id = $1`, [txId]);
+      if (origRows.rows.length === 0) return res.status(404).json({ error: "原流水不存在" });
+      const orig = origRows.rows[0];
+      if (orig.tx_type !== "ADMIN_GIFT" && orig.tx_type !== "REGISTER_GIFT") {
+        return res.status(400).json({ error: "仅支持对赠送类流水冲正" });
+      }
+      if (orig.amount_cents <= 0) return res.status(400).json({ error: "原流水不是入账记录" });
+
+      // 检查是否已冲正
+      const existRev = await rawQuery(
+        `SELECT * FROM wallet_transactions WHERE source_id = $1 AND tx_type = 'GIFT_REVERSAL'`,
+        [String(txId)],
+      );
+      if (existRev.rows.length > 0) return res.status(409).json({ error: "该流水已被冲正" });
+
+      // 执行扣减（反向入账）
+      const updateResult = await rawQuery(
+        `UPDATE wallet_accounts SET
+           available_amount_cents = GREATEST(0, available_amount_cents - $2),
+           total_debit_cents = total_debit_cents + $2,
+           version = version + 1, updated_at = NOW()
+         WHERE user_id = $1 RETURNING *`,
+        [orig.user_id, orig.amount_cents],
+      );
+      const walletAccount = updateResult.rows[0];
+      const balanceAfter = walletAccount?.available_amount_cents ?? 0;
+
+      const reversalTx = await rawQuery(
+        `INSERT INTO wallet_transactions (user_id, tx_type, amount_cents, balance_after_cents, source_id, operator_id, description, created_at)
+         VALUES ($1,'GIFT_REVERSAL',$2,$3,$4,$5,$6,NOW()) RETURNING *`,
+        [orig.user_id, -orig.amount_cents, balanceAfter, String(txId), admin.username, `冲正原因：${reason.trim()}`],
+      );
+
+      // 营销费用台账（负值冲正）
+      await rawQuery(
+        `INSERT INTO marketing_expenses (expense_type, amount_cents, user_id, wallet_transaction_id, operator_id, status, reason, created_at)
+         VALUES ('GIFT_REVERSAL',$1,$2,$3,$4,'SETTLED',$5,NOW())`,
+        [-orig.amount_cents, orig.user_id, reversalTx.rows[0].id, admin.username, reason.trim()],
+      );
+
+      await logAudit(admin, "wallet_reversal", "wallet_transaction", String(txId), { reason: reason.trim(), reversalTxId: reversalTx.rows[0].id });
+
+      return res.json({ success: true, reversalTransactionId: reversalTx.rows[0].id, balanceAfterCents: balanceAfter });
+    } catch (err: any) {
+      console.error("POST /api/admin/wallet/transactions/:txId/reverse error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/admin/gift-campaigns/register — 查询注册赠送活动配置
+  app.get("/api/admin/gift-campaigns/register", requireAdmin, requirePermission("finance", "read"), async (req, res) => {
+    try {
+      const rows = await rawQuery(`SELECT * FROM gift_campaigns WHERE campaign_type = 'REGISTER' ORDER BY id ASC LIMIT 1`);
+      if (rows.rows.length === 0) return res.json(null);
+      const c = rows.rows[0];
+      return res.json({
+        id: c.id, name: c.name, enabled: c.enabled,
+        giftAmountCents: c.gift_amount_cents, startAt: c.start_at, endAt: c.end_at,
+        copywriting: c.copywriting, ctaText: c.cta_text, targetUrl: c.target_url,
+        channels: c.channels, updatedByAdmin: c.updated_by_admin, updatedAt: c.updated_at,
+      });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // PUT /api/admin/gift-campaigns/register — 更新注册赠送活动配置
+  app.put("/api/admin/gift-campaigns/register", requireAdmin, requirePermission("finance", "write"), async (req: any, res) => {
+    try {
+      const admin = req.admin;
+      const { enabled, giftAmountCents, copywriting, ctaText, targetUrl, startAt, endAt } = req.body;
+
+      if (giftAmountCents !== undefined && (!Number.isInteger(giftAmountCents) || giftAmountCents < 0)) {
+        return res.status(400).json({ error: "赠送金额必须为非负整数（分）" });
+      }
+
+      const existing = await rawQuery(`SELECT id FROM gift_campaigns WHERE campaign_type = 'REGISTER' ORDER BY id ASC LIMIT 1`);
+      let campaignId: number;
+      if (existing.rows.length === 0) {
+        const ins = await rawQuery(
+          `INSERT INTO gift_campaigns (name, campaign_type, enabled, gift_amount_cents, copywriting, cta_text, target_url, start_at, end_at, updated_by_admin, updated_at)
+           VALUES ('新用户注册体验金','REGISTER',$1,$2,$3,$4,$5,$6,$7,$8,NOW()) RETURNING id`,
+          [enabled ?? false, giftAmountCents ?? 2000, copywriting ?? null, ctaText ?? null, targetUrl ?? null, startAt ?? null, endAt ?? null, admin.username],
+        );
+        campaignId = ins.rows[0].id;
+      } else {
+        campaignId = existing.rows[0].id;
+        const sets: string[] = ["updated_at = NOW()", `updated_by_admin = '${admin.username}'`];
+        const params: any[] = [];
+        let pIdx = 1;
+        if (enabled !== undefined) { sets.push(`enabled = $${pIdx++}`); params.push(enabled); }
+        if (giftAmountCents !== undefined) { sets.push(`gift_amount_cents = $${pIdx++}`); params.push(giftAmountCents); }
+        if (copywriting !== undefined) { sets.push(`copywriting = $${pIdx++}`); params.push(copywriting); }
+        if (ctaText !== undefined) { sets.push(`cta_text = $${pIdx++}`); params.push(ctaText); }
+        if (targetUrl !== undefined) { sets.push(`target_url = $${pIdx++}`); params.push(targetUrl); }
+        if (startAt !== undefined) { sets.push(`start_at = $${pIdx++}`); params.push(startAt || null); }
+        if (endAt !== undefined) { sets.push(`end_at = $${pIdx++}`); params.push(endAt || null); }
+        params.push(campaignId);
+        await rawQuery(`UPDATE gift_campaigns SET ${sets.join(", ")} WHERE id = $${pIdx}`, params);
+      }
+
+      await logAudit(admin, "gift_campaign_update", "gift_campaign", String(campaignId), req.body);
+      const updated = await rawQuery(`SELECT * FROM gift_campaigns WHERE id = $1`, [campaignId]);
+      const c = updated.rows[0];
+      return res.json({
+        id: c.id, name: c.name, enabled: c.enabled,
+        giftAmountCents: c.gift_amount_cents, startAt: c.start_at, endAt: c.end_at,
+        copywriting: c.copywriting, ctaText: c.cta_text, targetUrl: c.target_url,
+        channels: c.channels, updatedByAdmin: c.updated_by_admin, updatedAt: c.updated_at,
+      });
+    } catch (err: any) {
+      console.error("PUT /api/admin/gift-campaigns/register error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/admin/marketing-expenses — 营销费用台账
+  app.get("/api/admin/marketing-expenses", requireAdmin, requirePermission("finance", "read"), async (req, res) => {
+    try {
+      const page = Math.max(1, parseInt(String(req.query.page || "1"), 10));
+      const pageSize = Math.min(100, Math.max(1, parseInt(String(req.query.pageSize || "20"), 10)));
+      const expenseType = req.query.type as string | undefined;
+      const uid = req.query.uid as string | undefined;
+      const offset = (page - 1) * pageSize;
+
+      let where = "1=1";
+      const params: any[] = [];
+      let pIdx = 1;
+      if (expenseType) { where += ` AND me.expense_type = $${pIdx++}`; params.push(expenseType); }
+      if (uid) { where += ` AND u.uid ILIKE $${pIdx++}`; params.push(`%${uid}%`); }
+
+      const countSql = `SELECT COUNT(*) FROM marketing_expenses me LEFT JOIN users u ON u.id = me.user_id WHERE ${where}`;
+      const dataSql = `SELECT me.*, u.uid, u.email FROM marketing_expenses me LEFT JOIN users u ON u.id = me.user_id WHERE ${where} ORDER BY me.created_at DESC LIMIT ${pageSize} OFFSET ${offset}`;
+
+      const [countRows, dataRows] = await Promise.all([rawQuery(countSql, params), rawQuery(dataSql, params)]);
+      const total = parseInt(countRows.rows[0].count, 10);
+      return res.json({ total, page, pageSize, data: dataRows.rows.map((r: any) => ({
+        id: r.id, expenseType: r.expense_type, amountCents: r.amount_cents,
+        userId: r.user_id, uid: r.uid, email: r.email,
+        campaignId: r.campaign_id, walletTransactionId: r.wallet_transaction_id,
+        operatorId: r.operator_id, status: r.status, reason: r.reason, createdAt: r.created_at,
+      }))});
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/admin/users/:userId/wallet — 查看指定用户的钱包余额与流水
+  app.get("/api/admin/users/:userId/wallet", requireAdmin, requirePermission("users", "read"), async (req, res) => {
+    try {
+      const targetUserId = parseInt(req.params.userId, 10);
+      const [acctRows, txRows] = await Promise.all([
+        rawQuery(`SELECT * FROM wallet_accounts WHERE user_id = $1`, [targetUserId]),
+        rawQuery(`SELECT * FROM wallet_transactions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50`, [targetUserId]),
+      ]);
+      const acct = acctRows.rows[0] ?? { available_amount_cents: 0, total_credit_cents: 0, total_debit_cents: 0 };
+      return res.json({
+        availableAmountCents: acct.available_amount_cents,
+        totalCreditCents: acct.total_credit_cents,
+        totalDebitCents: acct.total_debit_cents,
+        transactions: txRows.rows.map((r: any) => ({
+          id: r.id, txType: r.tx_type, amountCents: r.amount_cents,
+          balanceAfterCents: r.balance_after_cents, description: r.description, createdAt: r.created_at,
+        })),
+      });
+    } catch (err: any) {
       return res.status(500).json({ error: err.message });
     }
   });

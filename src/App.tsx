@@ -486,6 +486,18 @@ Visuals & Integrity
   const [authPassword, setAuthPassword] = useState('');
   const [showUserDropdown, setShowUserDropdown] = useState(false);
 
+  // 余额钱包状态
+  const [walletBalance, setWalletBalance] = useState<number | null>(null);
+  const [showWalletHistory, setShowWalletHistory] = useState(false);
+  const [walletHistory, setWalletHistory] = useState<any[]>([]);
+  const [walletHistoryLoading, setWalletHistoryLoading] = useState(false);
+
+  // 注册赠送弹窗
+  const [showGiftModal, setShowGiftModal] = useState(false);
+  const [giftModalData, setGiftModalData] = useState<{
+    amountCents: number; copywriting: string | null; ctaText: string | null;
+  } | null>(null);
+
   // Input states for New Role Task
   const [targetRole, setTargetRole] = useState("");
   const [industry, setIndustry] = useState("");
@@ -570,6 +582,17 @@ Visuals & Integrity
       setCurrentUser(null);
     }
   }, []);
+
+  // 已登录用户：挂载时拉取余额
+  useEffect(() => {
+    if (!currentUser) { setWalletBalance(null); return; }
+    const token = localStorage.getItem("career_ai_token");
+    if (!token) return;
+    fetch('/api/wallet', { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => r.ok ? r.json() : null)
+      .then((d) => { if (d) setWalletBalance(d.availableAmountCents); })
+      .catch(() => {});
+  }, [currentUser]);
 
   // Dynamic SEO and GEO Localization Synchronizer
   useEffect(() => {
@@ -1225,6 +1248,26 @@ Visuals & Integrity
       setCurrentUser(data.user);
       setAuthUsername('');
       setAuthPassword('');
+
+      // 注册赠送弹窗
+      if (authMode === 'register' && data.giftGranted && data.giftAmountCents > 0) {
+        setGiftModalData({
+          amountCents: data.giftAmountCents,
+          copywriting: data.giftCopywriting,
+          ctaText: data.giftCtaText,
+        });
+        setShowGiftModal(true);
+      }
+
+      // 拉取余额
+      try {
+        const walletRes = await fetch('/api/wallet', { headers: { Authorization: `Bearer ${data.token}` } });
+        if (walletRes.ok) {
+          const walletData = await walletRes.json();
+          setWalletBalance(walletData.availableAmountCents);
+        }
+      } catch {}
+
       triggerToast(
         authMode === 'register'
           ? (lang === 'zh' ? '注册成功，高管工作台已激活！' : 'Registration successful, workspace enabled!')
@@ -1244,6 +1287,7 @@ Visuals & Integrity
     localStorage.removeItem("career_ai_current_user");
     setCurrentUser(null);
     setShowUserDropdown(false);
+    setWalletBalance(null);
     triggerToast(lang === 'zh' ? '已安全退出登录' : 'Logged out safely.');
   };
 
@@ -2716,10 +2760,16 @@ Visuals & Integrity
               {showUserDropdown && (
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setShowUserDropdown(false)} />
-                  <div className="absolute right-0 top-full mt-2 w-48 bg-white border border-slate-200 rounded-xl shadow-lg p-2 z-50">
+                  <div className="absolute right-0 top-full mt-2 w-52 bg-white border border-slate-200 rounded-xl shadow-lg p-2 z-50">
                     <div className="px-3 py-2 border-b border-slate-100">
                       <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">{t.currentUserLabel}</p>
                       <p className="text-xs font-bold text-slate-800 mt-1 truncate">{currentUser.username}</p>
+                      {walletBalance !== null && (
+                        <div className="mt-2 flex items-center justify-between">
+                          <span className="text-[10px] text-slate-500">{lang === 'zh' ? '账户余额' : 'Balance'}</span>
+                          <span className="text-[11px] font-bold text-green-600">¥{(walletBalance / 100).toFixed(2)}</span>
+                        </div>
+                      )}
                     </div>
                     <button 
                       onClick={handleLogout}
@@ -5721,6 +5771,45 @@ Visuals & Integrity
       {/* Help Center Modal */}
       {showHelpCenter && (
         <HelpCenter onClose={() => setShowHelpCenter(false)} lang={lang} siteConfig={siteConfig} />
+      )}
+
+      {/* 注册赠送到账弹窗 */}
+      {showGiftModal && giftModalData && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm" onClick={() => setShowGiftModal(false)} />
+          <div className="relative bg-white rounded-2xl shadow-2xl p-8 max-w-sm w-full text-center">
+            {/* 庆祝图标 */}
+            <div className="text-5xl mb-3">🎉</div>
+            <h2 className="text-xl font-bold text-slate-900 mb-1">
+              {lang === 'zh' ? '新人专属赠送' : 'Welcome Gift'}
+            </h2>
+            <div className="my-4 py-4 bg-green-50 rounded-xl border border-green-200">
+              <p className="text-3xl font-bold text-green-600">
+                ¥{(giftModalData.amountCents / 100).toFixed(2)}
+              </p>
+              <p className="text-xs text-green-700 mt-1">
+                {lang === 'zh' ? '已存入您的账户余额' : 'Added to your account balance'}
+              </p>
+            </div>
+            {giftModalData.copywriting && (
+              <p className="text-sm text-slate-600 mb-4">{giftModalData.copywriting}</p>
+            )}
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowGiftModal(false)}
+                className="flex-1 px-4 py-2.5 border border-slate-200 text-slate-600 rounded-xl text-sm font-medium hover:bg-slate-50 transition-colors"
+              >
+                {lang === 'zh' ? '稍后使用' : 'Later'}
+              </button>
+              <button
+                onClick={() => setShowGiftModal(false)}
+                className="flex-1 px-4 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-700 transition-colors"
+              >
+                {giftModalData.ctaText ?? (lang === 'zh' ? '立即体验' : 'Start Now')}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

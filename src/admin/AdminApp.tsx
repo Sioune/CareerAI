@@ -105,6 +105,7 @@ function LoginScreen({ onLoggedIn }: { onLoggedIn: () => void }) {
 type PageKey =
   | 'overview' | 'todos' | 'monitor'
   | 'users' | 'benefits' | 'privacy' | 'tickets'
+  | 'wallet' | 'giftCampaign' | 'marketingExpense'
   | 'tasks' | 'results' | 'qc' | 'failures' | 'files'
   | 'products' | 'orders' | 'refunds' | 'referrals'
   | 'finance' | 'allocation' | 'reconcile'
@@ -127,6 +128,7 @@ const NAV: NavGroup[] = [
   { label: '用户与客户', pages: [
     { key: 'users', label: '用户列表', module: 'users' },
     { key: 'benefits', label: '权益账本', module: 'users' },
+    { key: 'wallet', label: '余额管理', module: 'finance' },
     { key: 'privacy', label: '隐私请求', module: 'users', planned: true },
     { key: 'tickets', label: '客服工单', module: 'tickets' },
   ]},
@@ -147,6 +149,8 @@ const NAV: NavGroup[] = [
     { key: 'finance', label: '账本 · Token成本 · 毛利', module: 'finance' },
     { key: 'allocation', label: '收入分配', module: 'finance' },
     { key: 'reconcile', label: '对账 · 结算报表', module: 'finance' },
+    { key: 'giftCampaign', label: '注册赠送配置', module: 'finance' },
+    { key: 'marketingExpense', label: '营销费用台账', module: 'finance' },
   ]},
   { label: '网站运营', pages: [
     { key: 'site', label: '品牌 · 页面/CMS · 法律', module: 'site' },
@@ -2493,6 +2497,384 @@ function ReconcileTab({ adminRole }: { adminRole: string }) {
   );
 }
 
+// ─── 余额管理 Tab ──────────────────────────────────────────────────────────────
+function WalletManagementTab() {
+  const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
+  const [txData, setTxData] = useState<any[]>([]);
+  const [total, setTotal] = useState(0);
+  const [txType, setTxType] = useState('');
+  const [error, setError] = useState('');
+
+  const [giftUserId, setGiftUserId] = useState('');
+  const [giftAmount, setGiftAmount] = useState('');
+  const [giftReason, setGiftReason] = useState('');
+  const [giftLoading, setGiftLoading] = useState(false);
+  const [giftMsg, setGiftMsg] = useState('');
+
+  const [reverseId, setReverseId] = useState('');
+  const [reverseReason, setReverseReason] = useState('');
+  const [reverseLoading, setReverseLoading] = useState(false);
+  const [reverseMsg, setReverseMsg] = useState('');
+
+  const loadTx = useCallback(() => {
+    const params = new URLSearchParams({ page: String(page), pageSize: '20' });
+    if (txType) params.set('type', txType);
+    if (search) params.set('uid', search);
+    apiFetch(`/api/admin/wallet/transactions?${params}`)
+      .then((d) => { setTxData(d.data); setTotal(d.total); })
+      .catch((e) => setError(e.message));
+  }, [page, txType, search]);
+
+  useEffect(() => { loadTx(); }, [loadTx]);
+
+  const handleGift = async () => {
+    setGiftLoading(true); setGiftMsg('');
+    try {
+      const amountCents = Math.round(parseFloat(giftAmount) * 100);
+      await apiFetch(`/api/admin/users/${giftUserId}/wallet/gift`, {
+        method: 'POST',
+        body: JSON.stringify({ amountCents, reason: giftReason }),
+      });
+      setGiftMsg(`赠送成功！已向用户 ID=${giftUserId} 赠送 ${giftAmount} 元`);
+      setGiftAmount(''); setGiftReason(''); setGiftUserId('');
+      loadTx();
+    } catch (e: any) { setGiftMsg(`失败：${e.message}`); }
+    setGiftLoading(false);
+  };
+
+  const handleReverse = async () => {
+    setReverseLoading(true); setReverseMsg('');
+    try {
+      await apiFetch(`/api/admin/wallet/transactions/${reverseId}/reverse`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: reverseReason }),
+      });
+      setReverseMsg(`冲正成功！流水 ID=${reverseId}`);
+      setReverseId(''); setReverseReason('');
+      loadTx();
+    } catch (e: any) { setReverseMsg(`失败：${e.message}`); }
+    setReverseLoading(false);
+  };
+
+  const TX_LABELS: Record<string, string> = {
+    ADMIN_GIFT: '人工赠送', REGISTER_GIFT: '注册赠送', CONSUMPTION: '消费扣减',
+    GIFT_REVERSAL: '赠送冲正', REFUND_RETURN: '退款返还',
+  };
+
+  return (
+    <div>
+      <h2 className="text-lg font-bold text-slate-900 mb-4">余额管理</h2>
+
+      {/* 人工赠送 */}
+      <div className="bg-white rounded-xl border border-slate-200 p-4 mb-4">
+        <h3 className="font-semibold text-slate-800 mb-3">人工赠送余额</h3>
+        <div className="flex flex-wrap gap-2 items-end">
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">用户 ID (数字)</label>
+            <input className="border rounded px-2 py-1 text-sm w-28" placeholder="用户ID" value={giftUserId} onChange={(e) => setGiftUserId(e.target.value)} />
+          </div>
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">金额（元，≤500）</label>
+            <input className="border rounded px-2 py-1 text-sm w-24" placeholder="如 20.00" type="number" min="0.01" max="500" step="0.01" value={giftAmount} onChange={(e) => setGiftAmount(e.target.value)} />
+          </div>
+          <div className="flex-1 min-w-48">
+            <label className="text-xs text-slate-500 block mb-1">赠送原因（必填）</label>
+            <input className="border rounded px-2 py-1 text-sm w-full" placeholder="如：活动补偿、客服关怀" value={giftReason} onChange={(e) => setGiftReason(e.target.value)} />
+          </div>
+          <button
+            onClick={handleGift}
+            disabled={giftLoading || !giftUserId || !giftAmount || !giftReason}
+            className="px-3 py-1.5 bg-green-600 text-white rounded text-sm disabled:opacity-50"
+          >{giftLoading ? '处理中…' : '确认赠送'}</button>
+        </div>
+        {giftMsg && <p className={`mt-2 text-sm ${giftMsg.startsWith('失败') ? 'text-red-600' : 'text-green-600'}`}>{giftMsg}</p>}
+      </div>
+
+      {/* 冲正 */}
+      <div className="bg-white rounded-xl border border-slate-200 p-4 mb-4">
+        <h3 className="font-semibold text-slate-800 mb-3">赠送冲正（仅限 finance / super_admin）</h3>
+        <div className="flex flex-wrap gap-2 items-end">
+          <div>
+            <label className="text-xs text-slate-500 block mb-1">原流水 ID</label>
+            <input className="border rounded px-2 py-1 text-sm w-28" placeholder="流水ID" value={reverseId} onChange={(e) => setReverseId(e.target.value)} />
+          </div>
+          <div className="flex-1 min-w-48">
+            <label className="text-xs text-slate-500 block mb-1">冲正原因（必填）</label>
+            <input className="border rounded px-2 py-1 text-sm w-full" placeholder="如：误操作、活动取消" value={reverseReason} onChange={(e) => setReverseReason(e.target.value)} />
+          </div>
+          <button
+            onClick={handleReverse}
+            disabled={reverseLoading || !reverseId || !reverseReason}
+            className="px-3 py-1.5 bg-red-600 text-white rounded text-sm disabled:opacity-50"
+          >{reverseLoading ? '处理中…' : '确认冲正'}</button>
+        </div>
+        {reverseMsg && <p className={`mt-2 text-sm ${reverseMsg.startsWith('失败') ? 'text-red-600' : 'text-green-600'}`}>{reverseMsg}</p>}
+      </div>
+
+      {/* 流水列表 */}
+      <div className="bg-white rounded-xl border border-slate-200 p-4">
+        <div className="flex flex-wrap gap-2 items-center mb-3">
+          <h3 className="font-semibold text-slate-800">全局余额流水</h3>
+          <input className="border rounded px-2 py-1 text-sm w-40" placeholder="按用户UID筛选" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
+          <select className="border rounded px-2 py-1 text-sm" value={txType} onChange={(e) => { setTxType(e.target.value); setPage(1); }}>
+            <option value="">全部类型</option>
+            {Object.entries(TX_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          </select>
+          <span className="text-xs text-slate-500">共 {total} 条</span>
+        </div>
+        {error && <p className="text-red-600 text-sm mb-2">{error}</p>}
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs border-collapse">
+            <thead>
+              <tr className="bg-slate-50 text-left">
+                {['ID','用户UID','类型','金额(分)','余额后(分)','说明','操作人','时间'].map((h) => (
+                  <th key={h} className="px-2 py-2 border-b border-slate-200 font-medium text-slate-600">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {txData.map((r) => (
+                <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50">
+                  <td className="px-2 py-1.5 font-mono">{r.id}</td>
+                  <td className="px-2 py-1.5">{r.uid ?? r.userId}</td>
+                  <td className="px-2 py-1.5">
+                    <span className={`px-1.5 py-0.5 rounded text-xs ${r.txType === 'GIFT_REVERSAL' ? 'bg-red-100 text-red-700' : r.amountCents > 0 ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}`}>
+                      {TX_LABELS[r.txType] ?? r.txType}
+                    </span>
+                  </td>
+                  <td className={`px-2 py-1.5 font-mono ${r.amountCents > 0 ? 'text-green-700' : 'text-red-600'}`}>{r.amountCents > 0 ? '+' : ''}{r.amountCents}</td>
+                  <td className="px-2 py-1.5 font-mono">{r.balanceAfterCents}</td>
+                  <td className="px-2 py-1.5 max-w-48 truncate" title={r.description}>{r.description ?? '-'}</td>
+                  <td className="px-2 py-1.5">{r.operatorId ?? 'SYSTEM'}</td>
+                  <td className="px-2 py-1.5 text-slate-500">{r.createdAt ? new Date(r.createdAt).toLocaleString('zh-CN') : '-'}</td>
+                </tr>
+              ))}
+              {txData.length === 0 && <tr><td colSpan={8} className="text-center py-6 text-slate-400 text-sm">暂无流水数据</td></tr>}
+            </tbody>
+          </table>
+        </div>
+        <div className="flex gap-2 mt-3 justify-end">
+          <button disabled={page <= 1} onClick={() => setPage(p => p - 1)} className="px-3 py-1 border rounded text-sm disabled:opacity-40">上一页</button>
+          <span className="text-sm text-slate-500 self-center">第 {page} 页</span>
+          <button disabled={txData.length < 20} onClick={() => setPage(p => p + 1)} className="px-3 py-1 border rounded text-sm disabled:opacity-40">下一页</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── 注册赠送配置 Tab ─────────────────────────────────────────────────────────
+function GiftCampaignTab() {
+  const [config, setConfig] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  const [form, setForm] = useState({
+    enabled: false,
+    giftAmountYuan: '20.00',
+    copywriting: '',
+    ctaText: '立即体验',
+    targetUrl: '/optimize',
+    startAt: '',
+    endAt: '',
+  });
+
+  useEffect(() => {
+    apiFetch('/api/admin/gift-campaigns/register')
+      .then((d) => {
+        if (d) {
+          setConfig(d);
+          setForm({
+            enabled: d.enabled,
+            giftAmountYuan: (d.giftAmountCents / 100).toFixed(2),
+            copywriting: d.copywriting ?? '',
+            ctaText: d.ctaText ?? '立即体验',
+            targetUrl: d.targetUrl ?? '/optimize',
+            startAt: d.startAt ? d.startAt.slice(0, 10) : '',
+            endAt: d.endAt ? d.endAt.slice(0, 10) : '',
+          });
+        }
+      })
+      .catch((e) => setMsg(e.message))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true); setMsg('');
+    try {
+      const giftAmountCents = Math.round(parseFloat(form.giftAmountYuan) * 100);
+      if (isNaN(giftAmountCents) || giftAmountCents < 0) throw new Error('金额格式错误');
+      const payload: any = {
+        enabled: form.enabled,
+        giftAmountCents,
+        copywriting: form.copywriting || null,
+        ctaText: form.ctaText || null,
+        targetUrl: form.targetUrl || null,
+        startAt: form.startAt || null,
+        endAt: form.endAt || null,
+      };
+      const updated = await apiFetch('/api/admin/gift-campaigns/register', { method: 'PUT', body: JSON.stringify(payload) });
+      setConfig(updated);
+      setMsg('保存成功！');
+    } catch (e: any) { setMsg(`保存失败：${e.message}`); }
+    setSaving(false);
+  };
+
+  if (loading) return <p className="text-slate-500 text-sm">加载中…</p>;
+
+  return (
+    <div>
+      <h2 className="text-lg font-bold text-slate-900 mb-4">注册赠送配置</h2>
+      <div className="bg-white rounded-xl border border-slate-200 p-6 max-w-2xl">
+        <div className="space-y-4">
+          <div className="flex items-center gap-3">
+            <label className="font-medium text-sm text-slate-700 w-32">活动开关</label>
+            <button
+              onClick={() => setForm(f => ({ ...f, enabled: !f.enabled }))}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${form.enabled ? 'bg-green-500' : 'bg-slate-300'}`}
+            >
+              <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${form.enabled ? 'translate-x-6' : 'translate-x-1'}`} />
+            </button>
+            <span className={`text-sm font-medium ${form.enabled ? 'text-green-600' : 'text-slate-400'}`}>{form.enabled ? '已开启' : '已关闭'}</span>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <label className="font-medium text-sm text-slate-700 w-32">赠送金额（元）</label>
+            <input className="border rounded px-3 py-1.5 text-sm w-32" type="number" min="0" step="0.01" value={form.giftAmountYuan} onChange={(e) => setForm(f => ({ ...f, giftAmountYuan: e.target.value }))} />
+            <span className="text-xs text-slate-400">= {Math.round(parseFloat(form.giftAmountYuan || '0') * 100)} 分</span>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <label className="font-medium text-sm text-slate-700 w-32">到账文案</label>
+            <input className="border rounded px-3 py-1.5 text-sm flex-1" placeholder="支持 {amount} 变量" value={form.copywriting} onChange={(e) => setForm(f => ({ ...f, copywriting: e.target.value }))} />
+          </div>
+
+          <div className="flex items-center gap-3">
+            <label className="font-medium text-sm text-slate-700 w-32">引导按钮文案</label>
+            <input className="border rounded px-3 py-1.5 text-sm w-40" value={form.ctaText} onChange={(e) => setForm(f => ({ ...f, ctaText: e.target.value }))} />
+          </div>
+
+          <div className="flex items-center gap-3">
+            <label className="font-medium text-sm text-slate-700 w-32">跳转页面路径</label>
+            <input className="border rounded px-3 py-1.5 text-sm w-48" value={form.targetUrl} onChange={(e) => setForm(f => ({ ...f, targetUrl: e.target.value }))} />
+          </div>
+
+          <div className="flex items-center gap-3">
+            <label className="font-medium text-sm text-slate-700 w-32">活动开始日期</label>
+            <input type="date" className="border rounded px-3 py-1.5 text-sm" value={form.startAt} onChange={(e) => setForm(f => ({ ...f, startAt: e.target.value }))} />
+            <span className="text-xs text-slate-400">（留空 = 立即生效）</span>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <label className="font-medium text-sm text-slate-700 w-32">活动结束日期</label>
+            <input type="date" className="border rounded px-3 py-1.5 text-sm" value={form.endAt} onChange={(e) => setForm(f => ({ ...f, endAt: e.target.value }))} />
+            <span className="text-xs text-slate-400">（留空 = 永久有效）</span>
+          </div>
+        </div>
+
+        <div className="mt-6 flex items-center gap-3">
+          <button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-blue-600 text-white rounded text-sm disabled:opacity-50">
+            {saving ? '保存中…' : '保存配置'}
+          </button>
+          {msg && <p className={`text-sm ${msg.startsWith('保存失败') ? 'text-red-600' : 'text-green-600'}`}>{msg}</p>}
+        </div>
+
+        {config && (
+          <div className="mt-4 pt-4 border-t border-slate-100 text-xs text-slate-400">
+            最后更新：{config.updatedByAdmin ?? '—'} @ {config.updatedAt ? new Date(config.updatedAt).toLocaleString('zh-CN') : '—'}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── 营销费用台账 Tab ─────────────────────────────────────────────────────────
+function MarketingExpenseTab() {
+  const [page, setPage] = useState(1);
+  const [data, setData] = useState<any[]>([]);
+  const [total, setTotal] = useState(0);
+  const [expenseType, setExpenseType] = useState('');
+  const [uidSearch, setUidSearch] = useState('');
+  const [error, setError] = useState('');
+
+  const load = useCallback(() => {
+    const params = new URLSearchParams({ page: String(page), pageSize: '20' });
+    if (expenseType) params.set('type', expenseType);
+    if (uidSearch) params.set('uid', uidSearch);
+    apiFetch(`/api/admin/marketing-expenses?${params}`)
+      .then((d) => { setData(d.data); setTotal(d.total); })
+      .catch((e) => setError(e.message));
+  }, [page, expenseType, uidSearch]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const TYPE_LABELS: Record<string, string> = {
+    ADMIN_GIFT: '人工赠送', REGISTER_GIFT: '注册赠送', GIFT_REVERSAL: '赠送冲正',
+  };
+
+  const totalShown = data.reduce((sum, r) => sum + r.amountCents, 0);
+
+  return (
+    <div>
+      <h2 className="text-lg font-bold text-slate-900 mb-4">营销费用台账</h2>
+      <div className="bg-white rounded-xl border border-slate-200 p-4">
+        <div className="flex flex-wrap gap-2 items-center mb-3">
+          <input className="border rounded px-2 py-1 text-sm w-40" placeholder="按用户UID筛选" value={uidSearch} onChange={(e) => { setUidSearch(e.target.value); setPage(1); }} />
+          <select className="border rounded px-2 py-1 text-sm" value={expenseType} onChange={(e) => { setExpenseType(e.target.value); setPage(1); }}>
+            <option value="">全部类型</option>
+            {Object.entries(TYPE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          </select>
+          <span className="text-xs text-slate-500">共 {total} 条 · 当页合计 {(totalShown / 100).toFixed(2)} 元</span>
+        </div>
+        {error && <p className="text-red-600 text-sm mb-2">{error}</p>}
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs border-collapse">
+            <thead>
+              <tr className="bg-slate-50 text-left">
+                {['ID','费用类型','金额(元)','用户UID','关联流水ID','操作人','状态','原因','时间'].map((h) => (
+                  <th key={h} className="px-2 py-2 border-b border-slate-200 font-medium text-slate-600">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((r) => (
+                <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50">
+                  <td className="px-2 py-1.5 font-mono">{r.id}</td>
+                  <td className="px-2 py-1.5">
+                    <span className={`px-1.5 py-0.5 rounded text-xs ${r.expenseType === 'GIFT_REVERSAL' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>
+                      {TYPE_LABELS[r.expenseType] ?? r.expenseType}
+                    </span>
+                  </td>
+                  <td className={`px-2 py-1.5 font-mono ${r.amountCents < 0 ? 'text-red-600' : 'text-green-700'}`}>{(r.amountCents / 100).toFixed(2)}</td>
+                  <td className="px-2 py-1.5">{r.uid ?? r.userId ?? '-'}</td>
+                  <td className="px-2 py-1.5 font-mono">{r.walletTransactionId ?? '-'}</td>
+                  <td className="px-2 py-1.5">{r.operatorId ?? 'SYSTEM'}</td>
+                  <td className="px-2 py-1.5">
+                    <span className={`px-1.5 py-0.5 rounded text-xs ${r.status === 'SETTLED' ? 'bg-green-100 text-green-700' : r.status === 'REVERSED' ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-600'}`}>
+                      {r.status === 'SETTLED' ? '已入账' : r.status === 'REVERSED' ? '已冲正' : r.status}
+                    </span>
+                  </td>
+                  <td className="px-2 py-1.5 max-w-40 truncate" title={r.reason}>{r.reason ?? '-'}</td>
+                  <td className="px-2 py-1.5 text-slate-500">{r.createdAt ? new Date(r.createdAt).toLocaleString('zh-CN') : '-'}</td>
+                </tr>
+              ))}
+              {data.length === 0 && <tr><td colSpan={9} className="text-center py-6 text-slate-400 text-sm">暂无营销费用记录</td></tr>}
+            </tbody>
+          </table>
+        </div>
+        <div className="flex gap-2 mt-3 justify-end">
+          <button disabled={page <= 1} onClick={() => setPage(p => p - 1)} className="px-3 py-1 border rounded text-sm disabled:opacity-40">上一页</button>
+          <span className="text-sm text-slate-500 self-center">第 {page} 页</span>
+          <button disabled={data.length < 20} onClick={() => setPage(p => p + 1)} className="px-3 py-1 border rounded text-sm disabled:opacity-40">下一页</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PlannedTab({ title }: { title: string }) {
   return (
     <div>
@@ -2562,6 +2944,9 @@ export default function AdminApp() {
         {page === 'security' && <SecurityTab />}
         {page === 'monitor' && <PlannedTab title="实时监控" />}
         {page === 'benefits' && <BenefitsTab />}
+        {page === 'wallet' && <WalletManagementTab />}
+        {page === 'giftCampaign' && <GiftCampaignTab />}
+        {page === 'marketingExpense' && <MarketingExpenseTab />}
         {page === 'privacy' && <PlannedTab title="隐私请求" />}
         {page === 'results' && <PlannedTab title="结果版本" />}
         {page === 'qc' && <PlannedTab title="质量抽检" />}
