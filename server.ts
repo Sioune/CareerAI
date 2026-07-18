@@ -5663,7 +5663,7 @@ CareerAI Solutions — ${SITE_ORIGIN}/
     <meta property="og:url" content="${BASE}/en" />
     <meta property="og:title" content="CareerAI | Executive Resume Optimizer & AI Restructuring" />
     <meta property="og:description" content="AI-driven resume optimization for directors, executives, and technical leaders. Input your target role — CareerAI computes a deep match-score matrix and rewrites your CV into impact-focused executive achievements." />
-    <meta property="og:image" content="https://images.unsplash.com/photo-1454165804606-c3d57bc86b40?auto=format&fit=crop&w=1200&q=80" />
+    <meta property="og:image" content="${BASE}/og-image.png" />
     <meta property="og:site_name" content="CareerAI" />
     <meta property="og:locale" content="en_US" />
 
@@ -5672,7 +5672,7 @@ CareerAI Solutions — ${SITE_ORIGIN}/
     <meta name="twitter:url" content="${BASE}/en" />
     <meta name="twitter:title" content="CareerAI | Executive Resume Optimizer & AI Restructuring" />
     <meta name="twitter:description" content="AI-driven resume optimization workspace for directors, executives, and technical leaders. Restructures CVs into impact-focused executive achievements aligned to real JD requirements." />
-    <meta name="twitter:image" content="https://images.unsplash.com/photo-1454165804606-c3d57bc86b40?auto=format&fit=crop&w=1200&q=80" />
+    <meta name="twitter:image" content="${BASE}/og-image.png" />
 
     <!-- Generative Engine Optimization (GEO) -->
     <meta name="ai-content-origin" content="CareerAI Professional Solutions" />
@@ -5695,7 +5695,7 @@ CareerAI Solutions — ${SITE_ORIGIN}/
       "@type": "WebApplication",
       "name": "CareerAI",
       "url": "${BASE}/en",
-      "logo": "https://images.unsplash.com/photo-1454165804606-c3d57bc86b40?auto=format&fit=crop&w=200&q=80",
+      "logo": "${BASE}/logo.png",
       "description": "AI-powered executive resume optimizer for directors, VPs, and C-suite leaders. Provides deep JD analysis, match-score matrix, and executive-grade resume restructuring.",
       "applicationCategory": "BusinessApplication",
       "operatingSystem": "All",
