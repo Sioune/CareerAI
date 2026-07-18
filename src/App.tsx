@@ -451,6 +451,8 @@ Visuals & Integrity
   const [paymentOrderStatus, setPaymentOrderStatus] = useState<number | null>(null); // 1待支付 2已支付 3失败 4已取消 5已过期
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [isVerifyingPayment, setIsVerifyingPayment] = useState(false);
+  const [isPayingByWallet, setIsPayingByWallet] = useState(false);
+  const [walletPayError, setWalletPayError] = useState<string | null>(null);
   const [isLoadingAdditionalGaps, setIsLoadingAdditionalGaps] = useState(false);
   const paymentPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [referralStatus, setReferralStatus] = useState<{ unclaimedCredits: number; required: number; readyToClaim: boolean } | null>(null);
@@ -1929,6 +1931,45 @@ Visuals & Integrity
       triggerToast(lang === 'zh' ? '网络连接出错，请重试' : 'Network connection error, please try again.');
     } finally {
       setIsVerifyingPayment(false);
+    }
+  };
+
+  const handleWalletPay = async () => {
+    if (!currentTask || !businessOrderNo || !pendingSkuCode) return;
+    setIsPayingByWallet(true);
+    setWalletPayError(null);
+    try {
+      const token = localStorage.getItem('career_ai_token');
+      const res = await fetch(`/api/payments/${businessOrderNo}/pay-by-wallet`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setWalletPayError(data.error || '余额支付失败，请重试');
+        return;
+      }
+      // 支付成功：更新余额 + 关闭弹窗 + 触发任务解锁
+      if (data.balanceAfterCents !== undefined) setWalletBalance(data.balanceAfterCents);
+      stopPaymentPolling();
+      setShowQRModal(false);
+      setWalletPayError(null);
+      const sku = pendingSkuCode;
+      setPurchasedSkus(prev => prev.includes(sku) ? prev : [...prev, sku]);
+      await persistSkuPurchase(currentTask.id, sku);
+      if (sku === 'CSAnalysis') {
+        triggerToast(lang === 'zh' ? '🔓 余额支付成功！正在启动简历匹配分析…' : '🔓 Paid! Starting resume match analysis…');
+        await handleMatchResume(true);
+      } else if (CV_SKUS.includes(sku)) {
+        triggerToast(lang === 'zh' ? '🎉 余额支付成功！正在生成优化简历…' : '🎉 Paid! Generating optimized resume…');
+        await runResumeOptimizationForTask(currentTask.id, sku);
+      } else {
+        triggerToast(lang === 'zh' ? '🎉 余额支付成功！' : '🎉 Payment successful!');
+      }
+    } catch (err: any) {
+      setWalletPayError(lang === 'zh' ? '网络异常，请重试' : 'Network error, please retry');
+    } finally {
+      setIsPayingByWallet(false);
     }
   };
 
@@ -5467,6 +5508,49 @@ Visuals & Integrity
                         {lang === 'zh' ? '实付金额：' : 'Total Paid:'}
                         <strong className="font-extrabold text-sm text-slate-900 ml-1">{displayPrice}</strong>
                       </div>
+                    </div>
+                  );
+                })()}
+
+                {/* 余额支付区块 */}
+                {currentUser && (() => {
+                  const catalogItem = pricingCatalog.find(p => p.skuCode === pendingSkuCode);
+                  const orderCents = catalogItem?.amountCents ?? 0;
+                  const hasSufficient = walletBalance !== null && walletBalance >= orderCents;
+                  return (
+                    <div className={`rounded-xl border p-3 mb-4 ${hasSufficient ? 'bg-blue-50/60 border-blue-200' : 'bg-slate-50 border-slate-200'}`}>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-[11px] font-extrabold text-slate-700 flex items-center gap-1.5">
+                          <span>💳</span>
+                          <span>{lang === 'zh' ? '账户余额支付' : 'Wallet Payment'}</span>
+                        </span>
+                        <span className={`text-xs font-bold ${hasSufficient ? 'text-blue-700' : 'text-slate-400'}`}>
+                          {walletBalance !== null
+                            ? `¥${(walletBalance / 100).toFixed(2)}`
+                            : lang === 'zh' ? '加载中…' : 'Loading…'}
+                        </span>
+                      </div>
+                      {!hasSufficient && walletBalance !== null && (
+                        <p className="text-[10px] text-slate-500 mb-2">
+                          {lang === 'zh'
+                            ? `余额不足（还差 ¥${((orderCents - walletBalance) / 100).toFixed(2)}），请扫码支付或先充值`
+                            : `Insufficient balance (short by ¥${((orderCents - walletBalance) / 100).toFixed(2)}). Please scan to pay.`}
+                        </p>
+                      )}
+                      {walletPayError && (
+                        <p className="text-[10px] text-red-600 mb-2">{walletPayError}</p>
+                      )}
+                      <button
+                        onClick={handleWalletPay}
+                        disabled={!hasSufficient || isPayingByWallet}
+                        className="w-full py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-bold rounded-lg text-xs flex items-center justify-center gap-1.5 transition-all"
+                      >
+                        {isPayingByWallet ? (
+                          <><Loader2 className="w-3.5 h-3.5 animate-spin" /><span>{lang === 'zh' ? '支付中…' : 'Processing…'}</span></>
+                        ) : (
+                          <span>{lang === 'zh' ? `立即余额支付 ¥${orderCents > 0 ? (orderCents / 100).toFixed(2) : '--'}` : `Pay with Balance ¥${orderCents > 0 ? (orderCents / 100).toFixed(2) : '--'}`}</span>
+                        )}
+                      </button>
                     </div>
                   );
                 })()}

@@ -1179,6 +1179,12 @@ async function startServer() {
         [orderNo],
       );
 
+      // 财务台账 + 权益发放（与微信/支付宝支付回调保持一致）
+      const updatedOrder = await rawQuery(`SELECT * FROM payments WHERE business_order_no=$1`, [orderNo]);
+      if (updatedOrder.rows.length > 0) {
+        await recordPaymentSuccess(updatedOrder.rows[0]);
+      }
+
       return res.json({ success: true, transactionId: tx.id, balanceAfterCents: tx.balance_after_cents });
     } catch (err: any) {
       console.error("POST /api/payments/:orderNo/pay-by-wallet error:", err);
