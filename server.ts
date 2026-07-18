@@ -4109,6 +4109,9 @@ ${originalText}
     try {
       const admin = req.admin;
       const targetUserId = parseInt(req.params.userId, 10);
+      if (isNaN(targetUserId) || targetUserId <= 0) {
+        return res.status(400).json({ error: "userId 必须为正整数（数字 ID，非用户名）" });
+      }
       const { amountCents, reason } = req.body;
 
       if (!amountCents || !Number.isInteger(amountCents) || amountCents <= 0) {

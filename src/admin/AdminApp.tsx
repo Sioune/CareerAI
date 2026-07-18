@@ -2531,12 +2531,23 @@ function WalletManagementTab() {
   const handleGift = async () => {
     setGiftLoading(true); setGiftMsg('');
     try {
+      const uidNum = parseInt(giftUserId.trim(), 10);
+      if (isNaN(uidNum) || uidNum <= 0) {
+        setGiftMsg('失败：用户 ID 必须是数字（在用户列表中查看 ID 列）');
+        setGiftLoading(false);
+        return;
+      }
       const amountCents = Math.round(parseFloat(giftAmount) * 100);
-      await apiFetch(`/api/admin/users/${giftUserId}/wallet/gift`, {
+      if (isNaN(amountCents) || amountCents <= 0) {
+        setGiftMsg('失败：金额格式不正确');
+        setGiftLoading(false);
+        return;
+      }
+      await apiFetch(`/api/admin/users/${uidNum}/wallet/gift`, {
         method: 'POST',
         body: JSON.stringify({ amountCents, reason: giftReason }),
       });
-      setGiftMsg(`赠送成功！已向用户 ID=${giftUserId} 赠送 ${giftAmount} 元`);
+      setGiftMsg(`赠送成功！已向用户 ID=${uidNum} 赠送 ${(amountCents / 100).toFixed(2)} 元`);
       setGiftAmount(''); setGiftReason(''); setGiftUserId('');
       loadTx();
     } catch (e: any) { setGiftMsg(`失败：${e.message}`); }
