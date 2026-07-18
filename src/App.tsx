@@ -2941,25 +2941,30 @@ Visuals & Integrity
                 {/* Footer Section */}
                 <div className="border-t border-slate-100 pt-5 mt-auto flex flex-col gap-3">
                   {currentUser && (
-                    <div className="flex items-center justify-between gap-3 bg-slate-50 p-3 rounded-xl border border-slate-100 mb-2">
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <div className="w-8 h-8 rounded-full bg-blue-600 text-white shrink-0 flex items-center justify-center font-bold text-xs">
-                          {currentUser.username.substring(0, 2).toUpperCase()}
+                    <div className="bg-slate-50 p-3 rounded-xl border border-slate-100 mb-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className="w-8 h-8 rounded-full bg-blue-600 text-white shrink-0 flex items-center justify-center font-bold text-xs">
+                            {currentUser.username.substring(0, 2).toUpperCase()}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider font-mono leading-none">ACTIVE USER</p>
+                            <p className="text-xs font-bold text-slate-800 truncate mt-1">{currentUser.username}</p>
+                          </div>
                         </div>
-                        <div className="min-w-0">
-                          <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider font-mono leading-none">ACTIVE USER</p>
-                          <p className="text-xs font-bold text-slate-800 truncate mt-1">{currentUser.username}</p>
-                        </div>
+                        <button
+                          onClick={() => { handleLogout(); setMobileMenuOpen(false); }}
+                          className="px-2.5 py-1.5 border border-rose-200 hover:bg-rose-50 text-rose-600 rounded-lg text-[10px] font-bold transition-colors shrink-0"
+                        >
+                          {t.logout}
+                        </button>
                       </div>
-                      <button 
-                        onClick={() => {
-                          handleLogout();
-                          setMobileMenuOpen(false);
-                        }}
-                        className="px-2.5 py-1.5 border border-rose-200 hover:bg-rose-50 text-rose-600 rounded-lg text-[10px] font-bold transition-colors shrink-0"
-                      >
-                        {t.logout}
-                      </button>
+                      {walletBalance !== null && (
+                        <div className="mt-2.5 pt-2 border-t border-slate-200 flex items-center justify-between">
+                          <span className="text-[10px] text-slate-500 font-medium">{lang === 'zh' ? '账户余额' : 'Balance'}</span>
+                          <span className="text-xs font-bold text-green-600">¥{(walletBalance / 100).toFixed(2)}</span>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -5777,14 +5782,14 @@ Visuals & Integrity
       {showGiftModal && giftModalData && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm" onClick={() => setShowGiftModal(false)} />
-          <div className="relative bg-white rounded-2xl shadow-2xl p-8 max-w-sm w-full text-center">
+          <div className="relative bg-white rounded-2xl shadow-2xl p-5 sm:p-8 max-w-sm w-full text-center">
             {/* 庆祝图标 */}
-            <div className="text-5xl mb-3">🎉</div>
-            <h2 className="text-xl font-bold text-slate-900 mb-1">
+            <div className="text-4xl sm:text-5xl mb-2 sm:mb-3">🎉</div>
+            <h2 className="text-lg sm:text-xl font-bold text-slate-900 mb-1">
               {lang === 'zh' ? '新人专属赠送' : 'Welcome Gift'}
             </h2>
-            <div className="my-4 py-4 bg-green-50 rounded-xl border border-green-200">
-              <p className="text-3xl font-bold text-green-600">
+            <div className="my-3 sm:my-4 py-3 sm:py-4 bg-green-50 rounded-xl border border-green-200">
+              <p className="text-2xl sm:text-3xl font-bold text-green-600">
                 ¥{(giftModalData.amountCents / 100).toFixed(2)}
               </p>
               <p className="text-xs text-green-700 mt-1">
@@ -5792,18 +5797,18 @@ Visuals & Integrity
               </p>
             </div>
             {giftModalData.copywriting && (
-              <p className="text-sm text-slate-600 mb-4">{giftModalData.copywriting}</p>
+              <p className="text-sm text-slate-600 mb-3 sm:mb-4">{giftModalData.copywriting}</p>
             )}
-            <div className="flex gap-3">
+            <div className="flex gap-2 sm:gap-3">
               <button
                 onClick={() => setShowGiftModal(false)}
-                className="flex-1 px-4 py-2.5 border border-slate-200 text-slate-600 rounded-xl text-sm font-medium hover:bg-slate-50 transition-colors"
+                className="flex-1 px-3 sm:px-4 py-2.5 border border-slate-200 text-slate-600 rounded-xl text-sm font-medium hover:bg-slate-50 transition-colors"
               >
                 {lang === 'zh' ? '稍后使用' : 'Later'}
               </button>
               <button
                 onClick={() => setShowGiftModal(false)}
-                className="flex-1 px-4 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-700 transition-colors"
+                className="flex-1 px-3 sm:px-4 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-700 transition-colors"
               >
                 {giftModalData.ctaText ?? (lang === 'zh' ? '立即体验' : 'Start Now')}
               </button>
